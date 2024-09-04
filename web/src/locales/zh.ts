@@ -570,8 +570,8 @@ export default {
       503: '服务不可用，服务器暂时过载或维护。',
       504: '网关超时。',
       requestError: '请求错误',
-      networkAnomalyDescription: '您的网络发生异常，无法连接服务器',
-      networkAnomaly: '网络异常',
+      networkAbnormalDescription: '您的网络发生异常，无法连接服务器',
+      networkAbnormal: '网络异常',
       hint: '提示',
     },
     fileManager: {

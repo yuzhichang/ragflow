@@ -594,9 +594,9 @@ The above is the content you need to summarize.`,
       503: 'The service is unavailable and the server is temporarily overloaded or undergoing maintenance.',
       504: 'Gateway timeout.',
       requestError: 'Request error',
-      networkAnomalyDescription:
+      networkAbnormalDescription:
         'There is an abnormality in your network and you cannot connect to the server.',
-      networkAnomaly: 'network anomaly',
+      networkAbnormal: 'network abnormal',
       hint: 'hint',
     },
     fileManager: {

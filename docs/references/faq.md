@@ -159,9 +159,9 @@ networks:
 
 Ignore this warning and continue. All system warnings can be ignored.
 
-#### 3.2 `network anomaly There is an abnormality in your network and you cannot connect to the server.`
+#### 3.2 `network abnormal There is an abnormality in your network and you cannot connect to the server.`
 
-![anomaly](https://github.com/infiniflow/ragflow/assets/93570324/beb7ad10-92e4-4a58-8886-bfb7cbd09e5d)
+![abnormal](https://github.com/infiniflow/ragflow/assets/93570324/beb7ad10-92e4-4a58-8886-bfb7cbd09e5d)
 
 You will not log in to RAGFlow unless the server is fully initialized. Run `docker logs -f ragflow-server`.
 

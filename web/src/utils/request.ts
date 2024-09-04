@@ -52,8 +52,8 @@ const errorHandler = (error: {
   const { response } = error;
   if (error.message === FAILED_TO_FETCH) {
     notification.error({
-      description: i18n.t('message.networkAnomalyDescription'),
-      message: i18n.t('message.networkAnomaly'),
+      description: i18n.t('message.networkAbnormalDescription'),
+      message: i18n.t('message.networkAbnormal'),
     });
   } else {
     if (response && response.status) {

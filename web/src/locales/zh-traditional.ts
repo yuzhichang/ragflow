@@ -553,8 +553,8 @@ export default {
       503: '服務不可用，服務器暫時過載或維護。',
       504: '網關超時。',
       requestError: '請求錯誤',
-      networkAnomalyDescription: '您的網絡發生異常，無法連接服務器',
-      networkAnomaly: '網絡異常',
+      networkAbnormalDescription: '您的網絡發生異常，無法連接服務器',
+      networkAbnormal: '網絡異常',
       hint: '提示',
     },
     fileManager: {
