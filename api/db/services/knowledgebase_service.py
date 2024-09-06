@@ -68,6 +68,16 @@ class KnowledgebaseService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def get_kb_ids(cls, tenant_id):
+        fields = [
+            cls.model.id,
+        ]
+        kbs = cls.model.select(*fields).where(cls.model.tenant_id == tenant_id)
+        kb_ids = [kb["id"] for kb in kbs]
+        return kb_ids
+
+    @classmethod
+    @DB.connection_context()
     def get_by_tenant_ids_by_offset(cls, joined_tenant_ids, user_id, offset, count, orderby, desc):
         kbs = cls.model.select().where(
             ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==

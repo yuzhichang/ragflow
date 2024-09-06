@@ -41,7 +41,7 @@ class Session(Base):
                                 "document_id": chunk["doc_id"],
                                 "document_name": chunk["docnm_kwd"],
                                 "dataset_id": chunk["kb_id"],
-                                "image_id": chunk["img_id"],
+                                "image_id": chunk["image_id"],
                                 "similarity": chunk["similarity"],
                                 "vector_similarity": chunk["vector_similarity"],
                                 "term_similarity": chunk["term_similarity"],

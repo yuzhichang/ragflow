@@ -119,7 +119,7 @@ This method retrieves the history of a specified conversation session.
     - `chunks`
         - `content_with_weight`: Content of the chunk.
         - `doc_name`: Name of the *hit* document.
-        - `img_id`: The image ID of the chunk. It is an optional field only for PDF, PPTX, and images. Call ['GET' /document/get/\<id\>](#get-document-content) to retrieve the image.
+        - `image_id`: The image ID of the chunk. It is an optional field only for PDF, PPTX, and images. Call ['GET' /document/get/\<id\>](#get-document-content) to retrieve the image.
         - `positions`: [page_number, [upleft corner(x, y)], [right bottom(x, y)]], the chunk position, only for PDF.
         - `similarity`: The hybrid similarity.
         - `term_similarity`: The keyword simimlarity.
@@ -160,7 +160,7 @@ This method retrieves the history of a specified conversation session.
                         "content_with_weight": "<table><caption>Table 1: OpenAGI task-solving performances under different settings for three closed-source LLMs. Boldface denotes the highest score under each learning schema.</caption>\n<tr><th  rowspan=2 >Metrics</th><th  >GPT-3.5-turbo</th><th></th><th  >Claude-2</th><th  >GPT-4</th></tr>\n<tr><th  >Zero</th><th  >Few</th><th  >Zero Few</th><th  >Zero Few</th></tr>\n<tr><td  >CLIP Score</td><td  >0.0</td><td  >0.0</td><td  >0.0 0.2543</td><td  >0.0 0.3055</td></tr>\n<tr><td  >BERT Score</td><td  >0.1914</td><td  >0.3820</td><td  >0.2111 0.5038</td><td  >0.2076 0.6307</td></tr>\n<tr><td  >ViT Score</td><td  >0.2437</td><td  >0.7497</td><td  >0.4082 0.5416</td><td  >0.5058 0.6480</td></tr>\n<tr><td  >Overall</td><td  >0.1450</td><td  >0.3772</td><td  >0.2064 0.4332</td><td  >0.2378 0.5281</td></tr>\n</table>",
                         "doc_id": "c790da40ea8911ee928e0242ac180005",
                         "doc_name": "OpenAGI When LLM Meets Domain Experts.pdf",
-                        "img_id": "afab9fdad6e511eebdb20242ac180006-d0bc7892c3ec4aeac071544fd56730a8",
+                        "image_id": "afab9fdad6e511eebdb20242ac180006-d0bc7892c3ec4aeac071544fd56730a8",
                         "important_kwd": [],
                         "kb_id": "afab9fdad6e511eebdb20242ac180006",
                         "positions": [
@@ -182,7 +182,7 @@ This method retrieves the history of a specified conversation session.
                         "content_with_weight": "5.5 Experimental Analysis\nThe main experimental results are tabulated in Tab. 1 and 2, showcasing the results for closed-source and open-source LLMs, respectively. The overall performance is calculated as the average of CLlP\n8\nBERT and ViT scores.",
                         "doc_id": "c790da40ea8911ee928e0242ac180005",
                         "doc_name": "OpenAGI When LLM Meets Domain Experts.pdf",
-                        "img_id": "afab9fdad6e511eebdb20242ac180006-7e2345d440383b756670e1b0f43a7007",
+                        "image_id": "afab9fdad6e511eebdb20242ac180006-7e2345d440383b756670e1b0f43a7007",
                         "important_kwd": [],
                         "kb_id": "afab9fdad6e511eebdb20242ac180006",
                         "positions": [
@@ -246,7 +246,7 @@ This method retrieves from RAGFlow Chat or RAGFlow Agent the answer to the user'
     - `chunks`: The retrieved chunks that contribute to the answer.  
         - `content_with_weight`: Content of the chunk.
         - `doc_name`: Name of the *hit* document.
-        - `img_id`: The image ID of the chunk. It is an optional field only for PDF, PPTX, and images. Call ['GET' /document/get/\<id\>](#get-document-content) to retrieve the image.
+        - `image_id`: The image ID of the chunk. It is an optional field only for PDF, PPTX, and images. Call ['GET' /document/get/\<id\>](#get-document-content) to retrieve the image.
         - `positions`: [page_number, [upleft corner(x, y)], [right bottom(x, y)]], the chunk position, only for PDF.
         - `similarity`: The hybrid similarity.
         - `term_similarity`: The keyword simimlarity.
@@ -268,7 +268,7 @@ This method retrieves from RAGFlow Chat or RAGFlow Agent the answer to the user'
             "content_with_weight": "<table><caption>Table 1: OpenAGI task-solving performances under different settings for three closed-source LLMs. Boldface denotes the highest score under each learning schema.</caption>\n<tr><th  rowspan=2 >Metrics</th><th  >GPT-3.5-turbo</th><th></th><th  >Claude-2</th><th  >GPT-4</th></tr>\n<tr><th  >Zero</th><th  >Few</th><th  >Zero Few</th><th  >Zero Few</th></tr>\n<tr><td  >CLIP Score</td><td  >0.0</td><td  >0.0</td><td  >0.0 0.2543</td><td  >0.0 0.3055</td></tr>\n<tr><td  >BERT Score</td><td  >0.1914</td><td  >0.3820</td><td  >0.2111 0.5038</td><td  >0.2076 0.6307</td></tr>\n<tr><td  >ViT Score</td><td  >0.2437</td><td  >0.7497</td><td  >0.4082 0.5416</td><td  >0.5058 0.6480</td></tr>\n<tr><td  >Overall</td><td  >0.1450</td><td  >0.3772</td><td  >0.2064 0.4332</td><td  >0.2378 0.5281</td></tr>\n</table>",
             "doc_id": "c790da40ea8911ee928e0242ac180005",
             "doc_name": "OpenAGI When LLM Meets Domain Experts.pdf",
-            "img_id": "afab9fdad6e511eebdb20242ac180006-d0bc7892c3ec4aeac071544fd56730a8",
+            "image_id": "afab9fdad6e511eebdb20242ac180006-d0bc7892c3ec4aeac071544fd56730a8",
             "important_kwd": [],
             "kb_id": "afab9fdad6e511eebdb20242ac180006",
             "positions": [
@@ -290,7 +290,7 @@ This method retrieves from RAGFlow Chat or RAGFlow Agent the answer to the user'
             "content_with_weight": "5.5 Experimental Analysis\nThe main experimental results are tabulated in Tab. 1 and 2, showcasing the results for closed-source and open-source LLMs, respectively. The overall performance is calculated as the average of CLlP\n8\nBERT and ViT scores. Here, only the task descriptions of the benchmark tasks are fed into LLMs (additional information, such as the input prompt and LLMs\u2019 outputs, is provided in Fig. A.4 and A.5 in supplementary). Broadly speaking, closed-source LLMs demonstrate superior performance on OpenAGI tasks, with GPT-4 leading the pack under both zero- and few-shot scenarios. In the open-source category, LLaMA-2-13B takes the lead, consistently posting top results across various learning schema--the performance possibly influenced by its larger model size. Notably, open-source LLMs significantly benefit from the tuning methods, particularly Fine-tuning and\u2019 RLTF. These methods mark noticeable enhancements for Flan-T5-Large, Vicuna-7B, and LLaMA-2-13B when compared with zero-shot and few-shot learning schema. In fact, each of these open-source models hits its pinnacle under the RLTF approach. Conclusively, with RLTF tuning, the performance of LLaMA-2-13B approaches that of GPT-3.5, illustrating its potential.",
             "doc_id": "c790da40ea8911ee928e0242ac180005",
             "doc_name": "OpenAGI When LLM Meets Domain Experts.pdf",
-            "img_id": "afab9fdad6e511eebdb20242ac180006-7e2345d440383b756670e1b0f43a7007",
+            "image_id": "afab9fdad6e511eebdb20242ac180006-7e2345d440383b756670e1b0f43a7007",
             "important_kwd": [],
             "kb_id": "afab9fdad6e511eebdb20242ac180006",
             "positions": [
@@ -463,12 +463,12 @@ This method retrieves the chunks of a specific document by `doc_name` or `doc_id
         {
             "content": "Figure 14: Per-request neural-net processingof RL-Cache.\n103\n(sn)\nCPU\n 102\nGPU\n8101\n100\n8\n16 64 256 1K\n4K",
             "doc_name": "RL-Cache.pdf",
-            "img_id": "0335167613f011ef91240242ac120006-b46c3524952f82dbe061ce9b123f2211"
+            "image_id": "0335167613f011ef91240242ac120006-b46c3524952f82dbe061ce9b123f2211"
         },
         {
             "content": "4.3 ProcessingOverheadof RL-CacheACKNOWLEDGMENTSThis section evaluates how effectively our RL-Cache implemen-tation leverages modern multi-core CPUs and GPUs to keep the per-request neural-net processing overhead low. Figure 14 depictsThis researchwas supported inpart by the Regional Government of Madrid (grant P2018/TCS-4499, EdgeData-CM)andU.S. National Science Foundation (grants CNS-1763617 andCNS-1717179).REFERENCES",
             "doc_name": "RL-Cache.pdf",
-            "img_id": "0335167613f011ef91240242ac120006-d4c12c43938eb55d2d8278eea0d7e6d7"
+            "image_id": "0335167613f011ef91240242ac120006-d4c12c43938eb55d2d8278eea0d7e6d7"
         }
     ],
     "retcode": 0,

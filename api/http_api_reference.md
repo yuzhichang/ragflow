@@ -1253,7 +1253,7 @@ Success:
                 "document_keyword": "1.txt",
                 "highlight": "<em>ragflow</em> content",
                 "id": "d78435d142bd5cf6704da62c778795c5",
-                "img_id": "",
+                "image_id": "",
                 "important_keywords": [
                     ""
                 ],
@@ -2045,7 +2045,7 @@ data: {
                     "docnm_kwd": "1.txt",
                     "kb_id": "c7ee74067a2c11efb21c0242ac120006",
                     "important_kwd": [],
-                    "img_id": "",
+                    "image_id": "",
                     "similarity": 0.4442746624416507,
                     "vector_similarity": 0.3843936320913369,
                     "term_similarity": 0.4699379611632138,

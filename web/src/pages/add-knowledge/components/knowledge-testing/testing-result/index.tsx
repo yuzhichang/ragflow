@@ -108,17 +108,17 @@ const TestingResult = ({ handleTesting }: IProps) => {
         {chunks.map((x) => (
           <Card key={x.chunk_id} title={<ChunkTitle item={x}></ChunkTitle>}>
             <Flex gap={'middle'}>
-              {x.img_id && (
+              {x.image_id && (
                 <Popover
                   placement="left"
                   content={
                     <Image
-                      id={x.img_id}
+                      id={x.image_id}
                       className={styles.imagePreview}
                     ></Image>
                   }
                 >
-                  <Image id={x.img_id} className={styles.image}></Image>
+                  <Image id={x.image_id} className={styles.image}></Image>
                 </Popover>
               )}
               <div>{x.content_with_weight}</div>

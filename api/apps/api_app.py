@@ -528,13 +528,14 @@ def list_chunks():
             return get_json_result(
                 data=False, retmsg="Can't find doc_name or doc_id"
             )
+        kb_ids = KnowledgebaseService.get_kb_ids(tenant_id)
 
-        res = retrievaler.chunk_list(doc_id=doc_id, tenant_id=tenant_id)
+        res = retrievaler.chunk_list(doc_id, tenant_id, kb_ids)
         res = [
             {
                 "content": res_item["content_with_weight"],
                 "doc_name": res_item["docnm_kwd"],
-                "img_id": res_item["img_id"]
+                "image_id": res_item["image_id"]
             } for res_item in res
         ]
 
@@ -734,9 +735,9 @@ def completion_faq():
 
             chunk_idxs = [int(match[2]) for match in re.findall(r'##\d\$\$', ans["answer"])]
             for chunk_idx in chunk_idxs[:1]:
-                if ans["reference"]["chunks"][chunk_idx]["img_id"]:
+                if ans["reference"]["chunks"][chunk_idx]["image_id"]:
                     try:
-                        bkt, nm = ans["reference"]["chunks"][chunk_idx]["img_id"].split("-")
+                        bkt, nm = ans["reference"]["chunks"][chunk_idx]["image_id"].split("-")
                         response = STORAGE_IMPL.get(bkt, nm)
                         data_type_picture["url"] = base64.b64encode(response).decode('utf-8')
                         data.append(data_type_picture)
@@ -779,9 +780,9 @@ def completion_faq():
 
         chunk_idxs = [int(match[2]) for match in re.findall(r'##\d\$\$', ans["answer"])]
         for chunk_idx in chunk_idxs[:1]:
-            if ans["reference"]["chunks"][chunk_idx]["img_id"]:
+            if ans["reference"]["chunks"][chunk_idx]["image_id"]:
                 try:
-                    bkt, nm = ans["reference"]["chunks"][chunk_idx]["img_id"].split("-")
+                    bkt, nm = ans["reference"]["chunks"][chunk_idx]["image_id"].split("-")
                     response = STORAGE_IMPL.get(bkt, nm)
                     data_type_picture["url"] = base64.b64encode(response).decode('utf-8')
                     data.append(data_type_picture)
@@ -840,6 +841,6 @@ def retrieval():
         return get_json_result(data=ranks)
     except Exception as e:
         if str(e).find("not_found") > 0:
-            return get_json_result(data=False, retmsg=f'No chunk found! Check the chunk status please!',
+            return get_json_result(data=False, retmsg='No chunk found! Check the chunk status please!',
                                    retcode=RetCode.DATA_ERROR)
         return server_error_response(e)

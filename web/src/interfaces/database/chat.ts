@@ -102,7 +102,7 @@ export interface Docagg {
 //   content_with_weight: string;
 //   doc_id: string;
 //   docnm_kwd: string;
-//   img_id: string;
+//   image_id: string;
 //   important_kwd: any[];
 //   kb_id: string;
 //   similarity: number;

@@ -155,7 +155,7 @@ const SearchPage = () => {
                             <Card className={styles.card}>
                               <Space>
                                 <ImageWithPopover
-                                  id={item.img_id}
+                                  id={item.image_id}
                                 ></ImageWithPopover>
                                 <Flex vertical gap={10}>
                                   <Popover
@@ -186,7 +186,7 @@ const SearchPage = () => {
                                     }
                                   >
                                     <FileIcon
-                                      id={item.img_id}
+                                      id={item.image_id}
                                       name={item.docnm_kwd}
                                     ></FileIcon>
                                     {item.docnm_kwd}
