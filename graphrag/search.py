@@ -14,10 +14,9 @@
 #  limitations under the License.
 #
 import json
-from copy import deepcopy
 
 import pandas as pd
-from elasticsearch_dsl import Q, Search
+from utils.data_store_conn import OrderByExpr
 
 from rag.nlp.search import Dealer
 
@@ -29,14 +28,14 @@ class KGSearch(Dealer):
             for d in sres["hits"]["hits"]:
                 try:
                     df.append(json.loads(d["_source"]["content_with_weight"]))
-                except Exception as e:
+                except Exception:
                     texts.append(d["_source"]["content_with_weight"])
                     pass
             if not df and not texts: return False
             if df:
                 try:
                     sres["hits"]["hits"][0]["_source"]["content_with_weight"] = title + "\n" + pd.DataFrame(df).to_csv()
-                except Exception as e:
+                except Exception:
                     pass
             else:
                 sres["hits"]["hits"][0]["_source"]["content_with_weight"] = title + "\n" + "\n".join(texts)
@@ -49,51 +48,42 @@ class KGSearch(Dealer):
                                  ])
 
         qst = req.get("question", "")
-        binary_query, keywords = self.qryr.question(qst, min_match="5%")
-        binary_query = self._add_filters(binary_query, req)
+        matchText, keywords = self.qryr.question(qst, min_match="5%")
+        condition = self.get_filters(req)
 
         ## Entity retrieval
-        bqry = deepcopy(binary_query)
-        bqry.filter.append(Q("terms", knowledge_graph_kwd=["entity"]))
-        s = Search()
-        s = s.query(bqry)[0: 32]
-
-        s = s.to_dict()
+        condition.update({"knowledge_graph_kwd": ["entity"]})
         q_vec = []
         if req.get("vector"):
             assert emb_mdl, "No embedding model selected"
-            s["knn"] = self._vector(
-                qst, emb_mdl, req.get(
-                    "similarity", 0.1), 1024)
-            s["knn"]["filter"] = bqry.to_dict()
-            q_vec = s["knn"]["query_vector"]
+            matchDense = self.get_vector(qst, emb_mdl, 1024)
+            q_vec = matchDense.embedding_data
 
-        ent_res = self.es.search(deepcopy(s), idxnm=idxnm, timeout="600s", src=src)
-        entities = [d["name_kwd"] for d in self.es.getSource(ent_res)]
-        ent_ids = self.es.getDocIds(ent_res)
+        ent_res = self.dataStore.search(src, condition, [matchText], OrderByExpr(), idxnm)
+        if(len(ent_res)>32):
+            ent_res = ent_res[0:32]
+        entities = [d["name_kwd"] for d in ent_res]
+        ent_ids = ent_res["doc_id"]
         if merge_into_first(ent_res, "-Entities-"):
             ent_ids = ent_ids[0:1]
 
         ## Community retrieval
-        bqry = deepcopy(binary_query)
-        bqry.filter.append(Q("terms", entities_kwd=entities))
-        bqry.filter.append(Q("terms", knowledge_graph_kwd=["community_report"]))
-        s = Search()
-        s = s.query(bqry)[0: 32]
-        s = s.to_dict()
-        comm_res = self.es.search(deepcopy(s), idxnm=idxnm, timeout="600s", src=src)
-        comm_ids = self.es.getDocIds(comm_res)
+        condition = self.get_filters(req)
+        condition.update({"entities_kwd": entities, "knowledge_graph_kwd": ["community_report"]})
+        comm_res = self.dataStore.search(src, condition, [matchText], OrderByExpr(), idxnm)
+        if(len(comm_res)>32):
+            comm_res = comm_res[0:32]
+        comm_ids = comm_res["doc_id"]
         if merge_into_first(comm_res, "-Community Report-"):
             comm_ids = comm_ids[0:1]
 
         ## Text content retrieval
-        bqry = deepcopy(binary_query)
-        bqry.filter.append(Q("terms", knowledge_graph_kwd=["text"]))
-        s = Search()
-        s = s.query(bqry)[0: 6]
-        s = s.to_dict()
-        txt_res = self.es.search(deepcopy(s), idxnm=idxnm, timeout="600s", src=src)
-        txt_ids = self.es.getDocIds(txt_res)
+        condition = self.get_filters(req)
+        condition.update({"knowledge_graph_kwd": ["text"]})
+        txt_res = self.dataStore.search(src, condition, [matchText], OrderByExpr(), idxnm)
+        if(len(txt_res)>6):
+            txt_res = txt_res[0:6]
+        txt_ids = txt_res["doc_id"]
         if merge_into_first(txt_res, "-Original Content-"):
             txt_ids = txt_ids[0:1]
 
@@ -101,8 +91,6 @@ class KGSearch(Dealer):
             total=len(ent_ids) + len(comm_ids) + len(txt_ids),
             ids=[*ent_ids, *comm_ids, *txt_ids],
             query_vector=q_vec,
-            aggregation=None,
-            highlight=None,
             field={**self.getFields(ent_res, src), **self.getFields(comm_res, src), **self.getFields(txt_res, src)},
             keywords=[]
         )
