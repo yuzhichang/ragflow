@@ -18,7 +18,7 @@ from datetime import date
 from enum import IntEnum, Enum
 from api.utils.file_utils import get_project_base_directory
 from api.utils.log_utils import LoggerFactory, getLogger
-import rag.utils.es_conn
+#import rag.utils.es_conn
 import rag.utils.infinity_conn
 
 # Logger
