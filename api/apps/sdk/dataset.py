@@ -26,6 +26,7 @@ from api.db.services.user_service import TenantService
 from api.settings import RetCode
 from api.utils import get_uuid
 from api.utils.api_utils import get_result, token_required, get_error_data_result, valid,get_parser_config
+from api.utils.log_utils import logger
 
 
 @manager.route('/datasets', methods=['POST'])
@@ -139,7 +140,7 @@ def update(tenant_id,dataset_id):
                 retmsg="Can't change `tenant_id`.")
     e, kb = KnowledgebaseService.get_by_id(dataset_id)
     if "parser_config" in req:
-        print(kb.parser_config,flush=True)
+        logger.debug(kb.parser_config)
         req["parser_config"]=kb.parser_config.update(req["parser_config"])
     if "chunk_count" in req:
         if req["chunk_count"] != kb.chunk_num:

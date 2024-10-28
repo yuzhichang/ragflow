@@ -22,6 +22,7 @@ from copy import deepcopy
 from multiprocessing.connection import Listener
 from threading import Thread
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
+from api.utils.log_utils import logger
 
 
 def torch_gc():
@@ -35,7 +36,7 @@ def torch_gc():
             try:
                 from torch.mps import empty_cache
                 empty_cache()
-            except Exception as e:
+            except Exception:
                 pass
     except Exception:
         pass
@@ -71,8 +72,8 @@ def rpc_server(hdlr, address, authkey):
             t = Thread(target=hdlr.handle_connection, args=(client,))
             t.daemon = True
             t.start()
-        except Exception as e:
-            print("【EXCEPTION】:", str(e))
+        except Exception:
+            logger.exception("rpc_server got exception")
 
 
 models = []
@@ -90,7 +91,7 @@ def chat(messages, gen_conf):
                     "max_tokens", 256)), "temperature": float(
                 gen_conf.get(
                     "temperature", 0.1))}
-        print(messages, conf)
+        logger.debug(f"messages: {messages}, conf: {conf}")
         text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -109,6 +110,7 @@ def chat(messages, gen_conf):
         return tokenizer.batch_decode(
             generated_ids, skip_special_tokens=True)[0]
     except Exception as e:
+        logger.exception("chat got exception")
         return str(e)
 
 
@@ -118,7 +120,7 @@ def chat_streamly(messages, gen_conf):
     try:
         torch_gc()
         conf = deepcopy(gen_conf)
-        print(messages, conf)
+        logger.debug(f"messages: {messages}, conf: {conf}")
         text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,

@@ -23,6 +23,7 @@ from api.utils import get_uuid
 from api.utils.api_utils import get_json_result, server_error_response, validate_request, get_data_error_result
 from agent.canvas import Canvas
 from peewee import MySQLDatabase, PostgresqlDatabase
+from api.utils.log_utils import logger
 
 
 @manager.route('/templates', methods=['GET'])
@@ -46,7 +47,7 @@ def rm():
     for i in request.json["canvas_ids"]:
         if not UserCanvasService.query(user_id=current_user.id,id=i):
             return get_json_result(
-                data=False, retmsg=f'Only owner of canvas authorized for this operation.',
+                data=False, retmsg='Only owner of canvas authorized for this operation.',
                 retcode=RetCode.OPERATING_ERROR)
         UserCanvasService.delete_by_id(i)
     return get_json_result(data=True)
@@ -70,7 +71,7 @@ def save():
     else:
         if not UserCanvasService.query(user_id=current_user.id, id=req["id"]):
             return get_json_result(
-                data=False, retmsg=f'Only owner of canvas authorized for this operation.',
+                data=False, retmsg='Only owner of canvas authorized for this operation.',
                 retcode=RetCode.OPERATING_ERROR)
         UserCanvasService.update_by_id(req["id"], req)
     return get_json_result(data=req)
@@ -96,7 +97,7 @@ def run():
         return get_data_error_result(retmsg="canvas not found.")
     if not UserCanvasService.query(user_id=current_user.id, id=req["id"]):
         return get_json_result(
-            data=False, retmsg=f'Only owner of canvas authorized for this operation.',
+            data=False, retmsg='Only owner of canvas authorized for this operation.',
             retcode=RetCode.OPERATING_ERROR)
 
     if not isinstance(cvs.dsl, str):
@@ -114,7 +115,7 @@ def run():
                 pass
             canvas.add_user_input(req["message"])
         answer = canvas.run(stream=stream)
-        print(canvas)
+        logger.info(canvas)
     except Exception as e:
         return server_error_response(e)
 
@@ -170,7 +171,7 @@ def reset():
             return get_data_error_result(retmsg="canvas not found.")
         if not UserCanvasService.query(user_id=current_user.id, id=req["id"]):
             return get_json_result(
-                data=False, retmsg=f'Only owner of canvas authorized for this operation.',
+                data=False, retmsg='Only owner of canvas authorized for this operation.',
                 retcode=RetCode.OPERATING_ERROR)
 
         canvas = Canvas(json.dumps(user_canvas.dsl), current_user.id)

@@ -9,7 +9,7 @@ import copy
 from elasticsearch import Elasticsearch
 from elasticsearch_dsl import Q, Search, Index
 from elastic_transport import ConnectionTimeout
-from rag.settings import doc_store_logger
+from api.utils.log_utils import logger
 from rag import settings
 from rag.utils import singleton
 from api.utils.file_utils import get_project_base_directory
@@ -18,7 +18,7 @@ from rag.utils.doc_store_conn import DocStoreConnection, MatchExpr, OrderByExpr,
 from rag.nlp import is_english, rag_tokenizer
 from . import rmSpace
 
-doc_store_logger.info("Elasticsearch sdk version: "+str(elasticsearch.__version__))
+logger.info("Elasticsearch sdk version: "+str(elasticsearch.__version__))
 
 
 @singleton
@@ -35,10 +35,10 @@ class ESConnection(DocStoreConnection):
                 )
                 if self.es:
                     self.info = self.es.info()
-                    doc_store_logger.info("Connect to es.")
+                    logger.info("Connect to es.")
                     break
-            except Exception as e:
-                doc_store_logger.error("Fail to connect to es: " + str(e))
+            except Exception:
+                logger.exception("Fail to connect to es")
                 time.sleep(1)
         if not self.es.ping():
             raise Exception("Can't connect to ES cluster")
@@ -68,14 +68,14 @@ class ESConnection(DocStoreConnection):
             return IndicesClient(self.es).create(index=indexName,
                                                  settings=self.mapping["settings"],
                                                  mappings=self.mapping["mappings"])
-        except Exception as e:
-            doc_store_logger.error("ES create index error %s ----%s" % (indexName, str(e)))
+        except Exception:
+            logger.exception("ES create index error %s" % (indexName))
 
     def deleteIdx(self, indexName: str, knowledgebaseId: str):
         try:
             return self.es.indices.delete(indexName, allow_no_indices=True)
-        except Exception as e:
-            doc_store_logger.error("ES delete index error %s ----%s" % (indexName, str(e)))
+        except Exception:
+            logger.exception("ES delete index error %s" % (indexName))
 
     def indexExist(self, indexName: str, knowledgebaseId: str) -> bool:
         s = Index(indexName, self.es)
@@ -83,7 +83,7 @@ class ESConnection(DocStoreConnection):
             try:
                 return s.exists()
             except Exception as e:
-                doc_store_logger.error("ES updateByQuery indexExist: " + str(e))
+                logger.exception("ES indexExist")
                 if str(e).find("Timeout") > 0 or str(e).find("Conflict") > 0:
                     continue
         return False
@@ -153,7 +153,7 @@ class ESConnection(DocStoreConnection):
         if limit!=0:
             s = s[offset:limit]
         q = s.to_dict()
-        # doc_store_logger.info("ESConnection.search [Q]: " + json.dumps(q))
+        # logger.info("ESConnection.search [Q]: " + json.dumps(q))
 
         for i in range(3):
             try:
@@ -165,18 +165,14 @@ class ESConnection(DocStoreConnection):
                                      _source=True)
                 if str(res.get("timed_out", "")).lower() == "true":
                     raise Exception("Es Timeout.")
-                # doc_store_logger.info("ESConnection.search res: " + str(res))
+                # logger.info("ESConnection.search res: " + str(res))
                 return res
             except Exception as e:
-                doc_store_logger.error(
-                    "ES search exception: " +
-                    str(e) +
-                    "[Q]: " +
-                    str(q))
+                logger.exception("ES search exception [Q]: " + str(q))
                 if str(e).find("Timeout") > 0:
                     continue
                 raise e
-        doc_store_logger.error("ES search timeout for 3 times!")
+        logger.error("ES search timeout for 3 times!")
         raise Exception("ES search timeout.")
 
     def get(self, chunkId: str, indexName: str, knowledgebaseId: str) -> dict:
@@ -188,15 +184,11 @@ class ESConnection(DocStoreConnection):
                     raise Exception("Es Timeout.")
                 return res
             except Exception as e:
-                doc_store_logger.error(
-                    "ES get exception: " +
-                    str(e) +
-                    "[Q]: " +
-                    chunkId)
+                logger.exception(f"ES get({chunkId}) got exception")
                 if str(e).find("Timeout") > 0:
                     continue
                 raise e
-        doc_store_logger.error("ES search timeout for 3 times!")
+        logger.error("ES search timeout for 3 times!")
         raise Exception("ES search timeout.")
 
     def insert(self, documents: list[dict], indexName: str, knowledgebaseId: str):
@@ -224,7 +216,7 @@ class ESConnection(DocStoreConnection):
                             res.append(str(item[action]["_id"]) + ":" + str(item[action]["error"]))
                 return res
             except Exception as e:
-                doc_store_logger.warning("Fail to bulk: " + str(e))
+                logger.warning("Fail to bulk: " + str(e))
                 if re.search(r"(Timeout|time out)", str(e), re.IGNORECASE):
                     time.sleep(3)
                     continue
@@ -242,9 +234,8 @@ class ESConnection(DocStoreConnection):
                 self.es.update(index=indexName, id=id, doc=doc)
                 return True
             except Exception as e:
-                doc_store_logger.error(
-                    "ES update exception: " + str(e) + " id:" + str(id) +
-                    json.dumps(condition, ensure_ascii=False))
+                logger.exception(
+                    f"ES failed to update(index={indexName}, id={id}, doc={json.dumps(condition, ensure_ascii=False)})")
                 if str(e).find("Timeout") > 0:
                     continue
         return False
@@ -265,7 +256,7 @@ class ESConnection(DocStoreConnection):
                     qry.must.append(Q("term", **{k: v}))
                 else:
                     raise Exception("Condition value must be int, str or list.")
-        doc_store_logger.info("ESConnection.delete [Q]: " + json.dumps(qry.to_dict()))
+        logger.info("ESConnection.delete [Q]: " + json.dumps(qry.to_dict()))
         for _ in range(10):
             try:
                 self.es.delete_by_query(
@@ -274,7 +265,7 @@ class ESConnection(DocStoreConnection):
                     refresh=True)
                 return True
             except Exception as e:
-                doc_store_logger.warning("Fail to delete: " + str(filter) + str(e))
+                logger.warning("Fail to delete: " + str(filter) + str(e))
                 if re.search(r"(Timeout|time out)", str(e), re.IGNORECASE):
                     time.sleep(3)
                     continue
@@ -358,7 +349,7 @@ class ESConnection(DocStoreConnection):
     SQL
     """
     def sql(self, sql: str, fetch_size: int, format: str):
-        doc_store_logger.info(f"ESConnection.sql get sql: {sql}")
+        logger.info(f"ESConnection.sql get sql: {sql}")
         sql = re.sub(r"[ `]+", " ", sql)
         sql = sql.replace("%", "")
         replaces = []
@@ -375,17 +366,17 @@ class ESConnection(DocStoreConnection):
 
         for p, r in replaces:
             sql = sql.replace(p, r, 1)
-        doc_store_logger.info(f"ESConnection.sql to es: {sql}")
+        logger.info(f"ESConnection.sql to es: {sql}")
 
         for i in range(3):
             try:
                 res = self.es.sql.query(body={"query": sql, "fetch_size": fetch_size}, format=format, request_timeout="2s")
                 return res
             except ConnectionTimeout:
-                doc_store_logger.error("ESConnection.sql timeout [Q]: " + sql)
+                logger.exception("ESConnection.sql timeout [Q]: " + sql)
                 continue
-            except Exception as e:
-                doc_store_logger.error(f"ESConnection.sql failure: {sql} => " + str(e))
+            except Exception:
+                logger.exception("ESConnection.sql got exception [Q]: " + sql)
                 return None
-        doc_store_logger.error("ESConnection.sql timeout for 3 times!")
+        logger.error("ESConnection.sql timeout for 3 times!")
         return None

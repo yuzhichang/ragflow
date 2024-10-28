@@ -25,14 +25,14 @@ from api.db.db_models import TenantLLM
 from api.db.services.llm_service import TenantLLMService, LLMService
 from api.utils.api_utils import server_error_response, validate_request, get_data_error_result
 from api.utils import get_uuid, get_format_time, decrypt, download_img, current_timestamp, datetime_format
-from api.db import UserTenantRole, LLMType, FileType
+from api.db import UserTenantRole, FileType
 from api.settings import RetCode, GITHUB_OAUTH, FEISHU_OAUTH, CHAT_MDL, EMBEDDING_MDL, ASR_MDL, IMAGE2TEXT_MDL, PARSERS, \
     API_KEY, \
     LLM_FACTORY, LLM_BASE_URL, RERANK_MDL
 from api.db.services.user_service import UserService, TenantService, UserTenantService
 from api.db.services.file_service import FileService
-from api.settings import stat_logger
 from api.utils.api_utils import get_json_result, construct_response
+from api.utils.log_utils import logger
 
 
 @manager.route('/login', methods=['POST', 'GET'])
@@ -101,7 +101,7 @@ def github_callback():
             try:
                 avatar = download_img(user_info["avatar_url"])
             except Exception as e:
-                stat_logger.exception(e)
+                logger.exception(e)
                 avatar = ""
             users = user_register(user_id, {
                 "access_token": session["access_token"],
@@ -123,7 +123,7 @@ def github_callback():
             return redirect("/?auth=%s" % user.get_id())
         except Exception as e:
             rollback_user_registration(user_id)
-            stat_logger.exception(e)
+            logger.exception(e)
             return redirect("/?error=%s" % str(e))
 
     # User has already registered, try to log in
@@ -174,7 +174,7 @@ def feishu_callback():
             try:
                 avatar = download_img(user_info["avatar_url"])
             except Exception as e:
-                stat_logger.exception(e)
+                logger.exception(e)
                 avatar = ""
             users = user_register(user_id, {
                 "access_token": session["access_token"],
@@ -196,7 +196,7 @@ def feishu_callback():
             return redirect("/?auth=%s" % user.get_id())
         except Exception as e:
             rollback_user_registration(user_id)
-            stat_logger.exception(e)
+            logger.exception(e)
             return redirect("/?error=%s" % str(e))
 
     # User has already registered, try to log in
@@ -212,7 +212,7 @@ def user_info_from_feishu(access_token):
     headers = {"Content-Type": "application/json; charset=utf-8",
                'Authorization': f"Bearer {access_token}"}
     res = requests.get(
-        f"https://open.feishu.cn/open-apis/authen/v1/user_info",
+        "https://open.feishu.cn/open-apis/authen/v1/user_info",
         headers=headers)
     user_info = res.json()["data"]
     user_info["email"] = None if user_info.get("email") == "" else user_info["email"]
@@ -269,7 +269,7 @@ def setting_user():
         UserService.update_by_id(current_user.id, update_dict)
         return get_json_result(data=True)
     except Exception as e:
-        stat_logger.exception(e)
+        logger.exception(e)
         return get_json_result(data=False, retmsg='Update failure!', retcode=RetCode.EXCEPTION_ERROR)
 
 
@@ -282,21 +282,21 @@ def user_profile():
 def rollback_user_registration(user_id):
     try:
         UserService.delete_by_id(user_id)
-    except Exception as e:
+    except Exception:
         pass
     try:
         TenantService.delete_by_id(user_id)
-    except Exception as e:
+    except Exception:
         pass
     try:
         u = UserTenantService.query(tenant_id=user_id)
         if u:
             UserTenantService.delete_by_id(u[0].id)
-    except Exception as e:
+    except Exception:
         pass
     try:
         TenantLLM.delete().where(TenantLLM.tenant_id == user_id).execute()
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -393,7 +393,7 @@ def user_add():
                                   retmsg=f"{nickname}, welcome aboard!")
     except Exception as e:
         rollback_user_registration(user_id)
-        stat_logger.exception(e)
+        logger.exception(e)
         return get_json_result(data=False,
                                retmsg=f'User registration failure, error: {str(e)}',
                                retcode=RetCode.EXCEPTION_ERROR)

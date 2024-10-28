@@ -27,9 +27,10 @@ from api.apps import app
 from api.db.runtime_config import RuntimeConfig
 from api.db.services.document_service import DocumentService
 from api.settings import (
-    HOST, HTTP_PORT, access_logger, database_logger, stat_logger,
+    HOST, HTTP_PORT
 )
 from api import utils
+from api.utils.log_utils import logger
 
 from api.db.db_models import init_database_tables as init_web_db
 from api.db.init_data import init_web_data
@@ -41,20 +42,20 @@ def update_progress():
         time.sleep(3)
         try:
             DocumentService.update_progress()
-        except Exception as e:
-            stat_logger.error("update_progress exception:" + str(e))
+        except Exception:
+            logger.exception("update_progress exception")
 
 
 if __name__ == '__main__':
-    print(r"""
+    logger.info(r"""
         ____   ___    ______ ______ __               
        / __ \ /   |  / ____// ____// /____  _      __
       / /_/ // /| | / / __ / /_   / // __ \| | /| / /
      / _, _// ___ |/ /_/ // __/  / // /_/ /| |/ |/ / 
     /_/ |_|/_/  |_|\____//_/    /_/ \____/ |__/|__/                             
 
-    """, flush=True)
-    stat_logger.info(
+    """)
+    logger.info(
         f'project base: {utils.file_utils.get_project_base_directory()}'
     )
 
@@ -73,7 +74,7 @@ if __name__ == '__main__':
 
     RuntimeConfig.DEBUG = args.debug
     if RuntimeConfig.DEBUG:
-        stat_logger.info("run on debug mode")
+        logger.info("run on debug mode")
 
     RuntimeConfig.init_env()
     RuntimeConfig.init_config(JOB_SERVER_HOST=HOST, HTTP_PORT=HTTP_PORT)
@@ -81,17 +82,17 @@ if __name__ == '__main__':
     peewee_logger = logging.getLogger('peewee')
     peewee_logger.propagate = False
     # rag_arch.common.log.ROpenHandler
-    peewee_logger.addHandler(database_logger.handlers[0])
-    peewee_logger.setLevel(database_logger.level)
+    peewee_logger.addHandler(logger.handlers[0])
+    peewee_logger.setLevel(logger.handlers[0].level)
 
     thr = ThreadPoolExecutor(max_workers=1)
     thr.submit(update_progress)
 
     # start http server
     try:
-        stat_logger.info("RAG Flow http server start...")
+        logger.info("RAG Flow http server start...")
         werkzeug_logger = logging.getLogger("werkzeug")
-        for h in access_logger.handlers:
+        for h in logger.handlers:
             werkzeug_logger.addHandler(h)
         run_simple(hostname=HOST, port=HTTP_PORT, application=app, threaded=True, use_reloader=RuntimeConfig.DEBUG, use_debugger=RuntimeConfig.DEBUG)
     except Exception:

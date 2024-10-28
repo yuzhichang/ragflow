@@ -19,7 +19,7 @@ import json
 from typing import List, Optional, Dict, Union
 from dataclasses import dataclass
 
-from rag.settings import doc_store_logger
+from api.utils.log_utils import logger
 from rag.utils import rmSpace
 from rag.nlp import rag_tokenizer, query
 import numpy as np
@@ -81,7 +81,7 @@ class Dealer:
         src = req.get("fields", ["docnm_kwd", "content_ltks", "kb_id", "image_id", "title_tks", "important_kwd",
                                  "doc_id", f"q_{len(q_vec)}_vec", "position_list", "knowledge_graph_kwd",
                                  "available_int", "content_with_weight"])
-        # doc_store_logger.info(f"Dealer.search index {idxnm} emb_mdl {str(emb_mdl.llm_name)} vector length {len(q_vec)}")
+        # logger.info(f"Dealer.search index {idxnm} emb_mdl {str(emb_mdl.llm_name)} vector length {len(q_vec)}")
 
         fusionExpr = FusionExpr("weighted_sum", topk, {"weights": "0.05, 0.95"})
         if not qst:
@@ -95,7 +95,7 @@ class Dealer:
         res = self.dataStore.search(src, highlightFields, filters, [matchText, matchDense, fusionExpr], orderBy, offset, limit, idxnm, kb_ids)
         total=self.dataStore.getTotal(res)
 
-        doc_store_logger.info(f"TOTAL: {total}")
+        logger.info(f"TOTAL: {total}")
 
         # If result is empty, try again with lower min_match
         if total == 0:
@@ -170,7 +170,7 @@ class Dealer:
                 continue
             idx.append(i)
             pieces_.append(t)
-        doc_store_logger.info("{} => {}".format(answer, pieces_))
+        logger.info("{} => {}".format(answer, pieces_))
         if not pieces_:
             return answer, set([])
 
@@ -191,7 +191,7 @@ class Dealer:
                                                                 chunks_tks,
                                                                 tkweight, vtweight)
                 mx = np.max(sim) * 0.99
-                doc_store_logger.info("{} SIM: {}".format(pieces_[i], mx))
+                logger.info("{} SIM: {}".format(pieces_[i], mx))
                 if mx < thr:
                     continue
                 cites[idx[i]] = list(
