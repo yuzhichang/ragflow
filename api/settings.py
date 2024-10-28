@@ -207,8 +207,8 @@ AUTHENTICATION_DEFAULT_TIMEOUT = 7 * 24 * 60 * 60  # s
 PRIVILEGE_COMMAND_WHITELIST = []
 CHECK_NODES_IDENTITY = False
 
-docStoreConn = rag.utils.es_conn.ESConnection()
-#docStoreConn = rag.utils.infinity_conn.InfinityConnection()
+#docStoreConn = rag.utils.es_conn.ESConnection()
+docStoreConn = rag.utils.infinity_conn.InfinityConnection()
 retrievaler = search.Dealer(docStoreConn)
 kg_retrievaler = kg_search.KGSearch(docStoreConn)
 
