@@ -13,7 +13,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-import json
 import os
 from collections import defaultdict
 from api.db import LLMType
@@ -26,7 +25,12 @@ from rag.utils.es_conn import ELASTICSEARCH
 from ranx import evaluate
 import pandas as pd
 from tqdm import tqdm
+import sys
+import time
+import argparse
 
+global max_docs
+max_docs = sys.maxsize
 
 class Benchmark:
     def __init__(self, kb_id):
@@ -66,12 +70,16 @@ class Benchmark:
     def ms_marco_index(self, file_path, index_name):
         qrels = defaultdict(dict)
         texts = defaultdict(dict)
+        docs_count = 0
         docs = []
         filelist = os.listdir(file_path)
         for dir in filelist:
+            if docs_count >= max_docs:
+                break
             data = pd.read_parquet(os.path.join(file_path, dir))
             for i in tqdm(range(len(data)), colour="green", desc="Indexing:" + dir):
-
+                if docs_count >= max_docs:
+                    break
                 query = data.iloc[i]['query']
                 for rel, text in zip(data.iloc[i]['passages']['is_selected'], data.iloc[i]['passages']['passage_text']):
                     d = {
@@ -82,22 +90,29 @@ class Benchmark:
                     texts[d["id"]] = text
                     qrels[query][d["id"]] = int(rel)
                 if len(docs) >= 32:
+                    docs_count += len(docs)
                     docs = self.embedding(docs)
                     ELASTICSEARCH.bulk(docs, search.index_name(index_name))
                     docs = []
 
-        docs = self.embedding(docs)
-        ELASTICSEARCH.bulk(docs, search.index_name(index_name))
+        if docs:
+            docs = self.embedding(docs)
+            ELASTICSEARCH.bulk(docs, search.index_name(index_name))
         return qrels, texts
 
     def trivia_qa_index(self, file_path, index_name):
         qrels = defaultdict(dict)
         texts = defaultdict(dict)
+        docs_count = 0
         docs = []
         filelist = os.listdir(file_path)
         for dir in filelist:
+            if docs_count >= max_docs:
+                break
             data = pd.read_parquet(os.path.join(file_path, dir))
             for i in tqdm(range(len(data)), colour="green", desc="Indexing:" + dir):
+                if docs_count >= max_docs:
+                    break
                 query = data.iloc[i]['question']
                 for rel, text in zip(data.iloc[i]["search_results"]['rank'],
                                      data.iloc[i]["search_results"]['search_context']):
@@ -111,10 +126,12 @@ class Benchmark:
                 if len(docs) >= 32:
                     docs = self.embedding(docs)
                     ELASTICSEARCH.bulk(docs, search.index_name(index_name))
+
                     docs = []
 
-        docs = self.embedding(docs)
-        ELASTICSEARCH.bulk(docs, search.index_name(index_name))
+        if docs:
+            docs = self.embedding(docs)
+            ELASTICSEARCH.bulk(docs, search.index_name(index_name))
         return qrels, texts
 
     def miracl_index(self, file_path, corpus_path, index_name):
@@ -135,14 +152,18 @@ class Benchmark:
 
         qrels = defaultdict(dict)
         texts = defaultdict(dict)
+        docs_count = 0
         docs = []
         for qrels_file in os.listdir(os.path.join(file_path, 'qrels')):
             if 'test' in qrels_file:
                 continue
-
+            if docs_count >= max_docs:
+                break
             tmp_data = pd.read_csv(os.path.join(file_path, 'qrels', qrels_file), sep='\t',
                                    names=['qid', 'Q0', 'docid', 'relevance'])
             for i in tqdm(range(len(tmp_data)), colour="green", desc="Indexing:" + qrels_file):
+                if docs_count >= max_docs:
+                    break
                 query = topics_total[tmp_data.iloc[i]['qid']]
                 text = corpus_total[tmp_data.iloc[i]['docid']]
                 rel = tmp_data.iloc[i]['relevance']
@@ -156,11 +177,12 @@ class Benchmark:
                 if len(docs) >= 32:
                     docs = self.embedding(docs)
                     ELASTICSEARCH.bulk(docs, search.index_name(index_name))
+
                     docs = []
 
-        docs = self.embedding(docs)
-        ELASTICSEARCH.bulk(docs, search.index_name(index_name))
-
+        if docs:
+            docs = self.embedding(docs)
+            ELASTICSEARCH.bulk(docs, search.index_name(index_name))
         return qrels, texts
 
     def save_results(self, qrels, run, texts, dataset, file_path):
@@ -184,6 +206,7 @@ class Benchmark:
     def __call__(self, dataset, file_path, miracl_corpus=''):
         if dataset == "ms_marco_v1.1":
             qrels, texts = self.ms_marco_index(file_path, "benchmark_ms_marco_v1.1")
+            time.sleep(10)
             run = self._get_retrieval(qrels, "benchmark_ms_marco_v1.1")
             print(dataset, evaluate(qrels, run, ["ndcg@10", "map@5", "mrr"]))
             self.save_results(qrels, run, texts, dataset, file_path)
@@ -217,18 +240,28 @@ class Benchmark:
 
 if __name__ == '__main__':
     print('*****************RAGFlow Benchmark*****************')
-    kb_id = input('Please input kb_id:\n')
+    parser = argparse.ArgumentParser(usage="benchmark.py <max_docs> <kb_id> <dataset> <dataset_path> [<miracl_corpus_path>])", description='RAGFlow Benchmark')
+    parser.add_argument('max_docs', metavar='max_docs', type=int, help='max docs to evaluate')
+    parser.add_argument('kb_id', metavar='kb_id', help='knowledgebase id')
+    parser.add_argument('dataset', metavar='dataset', help='dataset name, shall be one of ms_marco_v1.1(https://huggingface.co/datasets/microsoft/ms_marco), trivia_qa(https://huggingface.co/datasets/mandarjoshi/trivia_qa>), miracl(https://huggingface.co/datasets/miracl/miracl')
+    parser.add_argument('dataset_path', metavar='dataset_path', help='dataset path')
+    parser.add_argument('miracl_corpus_path', metavar='miracl_corpus_path', nargs='?', default="", help='miracl corpus path. Only needed when dataset is miracl')
+
+    args = parser.parse_args()
+    max_docs = args.max_docs
+    kb_id = args.kb_id
     ex = Benchmark(kb_id)
-    dataset = input(
-        'RAGFlow Benchmark Support:\n\tms_marco_v1.1:<https://huggingface.co/datasets/microsoft/ms_marco>\n\ttrivia_qa:<https://huggingface.co/datasets/mandarjoshi/trivia_qa>\n\tmiracl:<https://huggingface.co/datasets/miracl/miracl>\nPlease input dataset choice:\n')
-    if dataset in ['ms_marco_v1.1', 'trivia_qa']:
-        if dataset == "ms_marco_v1.1":
-            print("Notice: Please provide the ms_marco_v1.1 dataset only. ms_marco_v2.1 is not supported!")
-        dataset_path = input('Please input ' + dataset + ' dataset path:\n')
+
+    dataset = args.dataset
+    dataset_path = args.dataset_path
+
+    if dataset == "ms_marco_v1.1" or dataset == "trivia_qa":
         ex(dataset, dataset_path)
-    elif dataset == 'miracl':
-        dataset_path = input('Please input ' + dataset + ' dataset path:\n')
-        corpus_path = input('Please input ' + dataset + '-corpus dataset path:\n')
-        ex(dataset, dataset_path, miracl_corpus=corpus_path)
+    elif dataset == "miracl":
+        if len(args) < 5:
+            print('Please input the correct parameters!')
+            exit(1)
+        miracl_corpus_path = args[4]
+        ex(dataset, dataset_path, miracl_corpus=args.miracl_corpus_path)
     else:
         print("Dataset: ", dataset, "not supported!")
