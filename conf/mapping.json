@@ -131,7 +131,7 @@
       {
         "string": {
           "match_pattern": "regex",
-          "match": "^.*_(with_weight|list)$",
+          "match": "^.*_(with_weight|list|digest)$",
           "mapping": {
             "type": "text",
             "index": "false",

@@ -25,5 +25,6 @@
 	"available_int": {"type": "integer", "default": 1},
 	"knowledge_graph_kwd": {"type": "varchar", "default": ""},
 	"entities_kwd": {"type": "varchar", "default": ""},
-	"pagerank_fea": {"type": "integer", "default":  0}
+	"pagerank_fea": {"type": "integer", "default":  0},
+	"task_digest": {"type": "varchar", "default": ""}
 }
