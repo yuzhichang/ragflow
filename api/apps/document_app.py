@@ -361,8 +361,9 @@ def run():
             e, doc = DocumentService.get_by_id(id)
             if not e:
                 return get_data_error_result(message="Document not found!")
-            if settings.docStoreConn.indexExist(search.index_name(tenant_id), doc.kb_id):
-                settings.docStoreConn.delete({"doc_id": id}, search.index_name(tenant_id), doc.kb_id)
+            if req.get("delete", False):
+                if settings.docStoreConn.indexExist(search.index_name(tenant_id), doc.kb_id):
+                    settings.docStoreConn.delete({"doc_id": id}, search.index_name(tenant_id), doc.kb_id)
 
             if str(req["run"]) == TaskStatus.RUNNING.value:
                 TaskService.filter_delete([Task.doc_id == id])
