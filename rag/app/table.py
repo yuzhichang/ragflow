@@ -188,13 +188,20 @@ def chunk(filename, binary=None, from_page=0, to_page=10000000000,
                 del df[n]
         clmns = df.columns.values
         txts = list(copy.deepcopy(clmns))
-        py_clmns = [
-            PY.get_pinyins(
+        py_clmns = []
+        for i in range(len(clmns)):
+            column_name = PY.get_pinyins(
                 re.sub(
                     r"(/.*|（[^（）]+?）|\([^()]+?\))",
                     "",
-                    str(n)),
-                '_')[0] for n in clmns]
+                    str(clmns[i])),
+                '_')[0]
+            column_name = re.sub(r"[^a-zA-Z0-9]+", "", column_name)
+            if not column_name:
+                column_name = f"column_{i}"
+            if len(column_name) > 128:
+                column_name = column_name[:128]
+            py_clmns.append(column_name)
         clmn_tys = []
         for j in range(len(clmns)):
             cln, ty = column_data_type(df[clmns[j]])
