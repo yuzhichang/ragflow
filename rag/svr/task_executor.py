@@ -193,7 +193,7 @@ async def collect():
         FAILED_TASKS += 1
         logging.warning(f"collect task {msg['id']} {state}")
         redis_msg.ack()
-        return None
+        return None, None
     task["task_type"] = msg.get("task_type", "")
     return redis_msg, task
 
