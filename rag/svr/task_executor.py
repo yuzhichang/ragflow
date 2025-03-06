@@ -20,9 +20,7 @@ import random
 import sys
 
 from api.utils.log_utils import initRootLogger, get_project_base_directory
-from graphrag.general.index import WithCommunity, WithResolution, Dealer
-from graphrag.light.graph_extractor import GraphExtractor as LightKGExt
-from graphrag.general.graph_extractor import GraphExtractor as GeneralKGExt
+from graphrag.general.index import run_graphrag
 from graphrag.utils import get_llm_cache, set_llm_cache, get_tags_from_cache, set_tags_to_cache
 from rag.prompts import keyword_extraction, question_proposal, content_tagging
 
@@ -451,24 +449,6 @@ async def run_raptor(row, chat_mdl, embd_mdl, vector_size, callback=None):
         res.append(d)
         tk_count += num_tokens_from_string(content)
     return res, tk_count
-
-
-async def run_graphrag(row, chat_model, language, embedding_model, callback=None):
-    chunks = []
-    for d in settings.retrievaler.chunk_list(row["doc_id"], row["tenant_id"], [str(row["kb_id"])],
-                                             fields=["content_with_weight", "doc_id"]):
-        chunks.append((d["doc_id"], d["content_with_weight"]))
-
-    dealer = Dealer(LightKGExt if row["parser_config"]["graphrag"]["method"] != 'general' else GeneralKGExt,
-                    row["tenant_id"],
-                    str(row["kb_id"]),
-                    chat_model,
-                    chunks=chunks,
-                    language=language,
-                    entity_types=row["parser_config"]["graphrag"]["entity_types"],
-                    embed_bdl=embedding_model,
-                    callback=callback)
-    await dealer()
 
 
 async def do_handle_task(task):
