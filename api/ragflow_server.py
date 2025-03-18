@@ -29,11 +29,11 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 import threading
-
-from werkzeug.serving import run_simple
+import importlib
+import uvicorn
+from fastapi import FastAPI
 from api import settings
 from api.apps import app
-from api.db.runtime_config import RuntimeConfig
 from api.db.services.document_service import DocumentService
 from api import utils
 
@@ -64,6 +64,32 @@ def signal_handler(sig, frame):
     stop_event.set()
     time.sleep(1)
     sys.exit(0)
+
+def init_app_routes(app: FastAPI, routes_dirs: list[str]):
+    for routes_dir in routes_dirs:
+        for filename in os.listdir(routes_dir):
+            if filename.endswith(".py") and filename != "__init__.py":
+                module_name = filename[:-3]  # 去掉.py
+                module = importlib.import_module(f"{routes_dir}.{module_name}")
+                if hasattr(module, "router"):
+                    app.include_router(module.router)
+
+def get_cpu_limit():
+    try:
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as f:
+            cpu_quota = int(f.read().strip())
+
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as f:
+            cpu_period = int(f.read().strip())
+
+        if cpu_quota > 0 and cpu_period > 0:
+            return max(1, int(cpu_quota / cpu_period))
+        else:
+            import os
+            return os.cpu_count()
+    except FileNotFoundError:
+        import os
+        return os.cpu_count()
 
 if __name__ == '__main__':
     logging.info(r"""
@@ -102,13 +128,6 @@ if __name__ == '__main__':
         print(get_ragflow_version())
         sys.exit(0)
 
-    RuntimeConfig.DEBUG = args.debug
-    if RuntimeConfig.DEBUG:
-        logging.info("run on debug mode")
-
-    RuntimeConfig.init_env()
-    RuntimeConfig.init_config(JOB_SERVER_HOST=settings.HOST_IP, HTTP_PORT=settings.HOST_PORT)
-
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -118,14 +137,10 @@ if __name__ == '__main__':
     # start http server
     try:
         logging.info("RAGFlow HTTP server start...")
-        run_simple(
-            hostname=settings.HOST_IP,
-            port=settings.HOST_PORT,
-            application=app,
-            threaded=True,
-            use_reloader=RuntimeConfig.DEBUG,
-            use_debugger=RuntimeConfig.DEBUG,
-        )
+        app = FastAPI()
+        init_app_routes(app, ["apps", "apps/sdk"])
+        workers = max(get_cpu_limit() // 4, 1)
+        uvicorn.run(app, host=settings.HOST_IP, port=settings.HOST_PORT, workers=workers)
     except Exception:
         traceback.print_exc()
         stop_event.set()

@@ -21,7 +21,6 @@ from pathlib import Path
 from flask import Blueprint, Flask
 from werkzeug.wrappers.request import Request
 from flask_cors import CORS
-from flasgger import Swagger
 from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
 
 from api.db import StatusEnum
@@ -40,38 +39,6 @@ __all__ = ["app"]
 Request.json = property(lambda self: self.get_json(force=True, silent=True))
 
 app = Flask(__name__)
-
-# Add this at the beginning of your file to configure Swagger UI
-swagger_config = {
-    "headers": [],
-    "specs": [
-        {
-            "endpoint": "apispec",
-            "route": "/apispec.json",
-            "rule_filter": lambda rule: True,  # Include all endpoints
-            "model_filter": lambda tag: True,  # Include all models
-        }
-    ],
-    "static_url_path": "/flasgger_static",
-    "swagger_ui": True,
-    "specs_route": "/apidocs/",
-}
-
-swagger = Swagger(
-    app,
-    config=swagger_config,
-    template={
-        "swagger": "2.0",
-        "info": {
-            "title": "RAGFlow API",
-            "description": "",
-            "version": "1.0.0",
-        },
-        "securityDefinitions": {
-            "ApiKeyAuth": {"type": "apiKey", "name": "Authorization", "in": "header"}
-        },
-    },
-)
 
 CORS(app, supports_credentials=True, max_age=2592000)
 app.url_map.strict_slashes = False
