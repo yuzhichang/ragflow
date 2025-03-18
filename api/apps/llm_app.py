@@ -26,9 +26,12 @@ from api.db.db_models import TenantLLM
 from api.utils.api_utils import get_json_result
 from api.utils.file_utils import get_project_base_directory
 from rag.llm import EmbeddingModel, ChatModel, RerankModel, CvModel, TTSModel
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/llm")
 
 
-@manager.route('/factories', methods=['GET'])  # noqa: F821
+@router.get('/factories')
 @login_required
 def factories():
     try:
@@ -50,7 +53,7 @@ def factories():
         return server_error_response(e)
 
 
-@manager.route('/set_api_key', methods=['POST'])  # noqa: F821
+@router.post('/set_api_key')
 @login_required
 @validate_request("llm_factory", "api_key")
 def set_api_key():
@@ -132,7 +135,7 @@ def set_api_key():
     return get_json_result(data=True)
 
 
-@manager.route('/add_llm', methods=['POST'])  # noqa: F821
+@router.post('/add_llm')
 @login_required
 @validate_request("llm_factory")
 def add_llm():
@@ -287,7 +290,7 @@ def add_llm():
     return get_json_result(data=True)
 
 
-@manager.route('/delete_llm', methods=['POST'])  # noqa: F821
+@router.post('/delete_llm')
 @login_required
 @validate_request("llm_factory", "llm_name")
 def delete_llm():
@@ -298,7 +301,7 @@ def delete_llm():
     return get_json_result(data=True)
 
 
-@manager.route('/delete_factory', methods=['POST'])  # noqa: F821
+@router.post('/delete_factory')
 @login_required
 @validate_request("llm_factory")
 def delete_factory():
@@ -308,7 +311,7 @@ def delete_factory():
     return get_json_result(data=True)
 
 
-@manager.route('/my_llms', methods=['GET'])  # noqa: F821
+@router.get('/my_llms')
 @login_required
 def my_llms():
     try:
@@ -329,7 +332,7 @@ def my_llms():
         return server_error_response(e)
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
+@router.get('/list')
 @login_required
 def list_app():
     self_deployed = ["Youdao", "FastEmbed", "BAAI", "Ollama", "Xinference", "LocalAI", "LM-Studio", "GPUStack"]

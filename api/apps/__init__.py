@@ -32,7 +32,6 @@ from flask_session import Session
 from flask_login import LoginManager
 from api import settings
 from api.utils.api_utils import server_error_response
-from api.constants import API_VERSION
 
 __all__ = ["app"]
 
@@ -59,16 +58,6 @@ login_manager.init_app(app)
 
 commands.register_commands(app)
 
-
-def search_pages_path(pages_dir):
-    app_path_list = [
-        path for path in pages_dir.glob("*_app.py") if not path.name.startswith(".")
-    ]
-    api_path_list = [
-        path for path in pages_dir.glob("*sdk/*.py") if not path.name.startswith(".")
-    ]
-    app_path_list.extend(api_path_list)
-    return app_path_list
 
 
 

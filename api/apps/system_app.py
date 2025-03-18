@@ -36,9 +36,12 @@ from rag.utils.storage_factory import STORAGE_IMPL, STORAGE_IMPL_TYPE
 from timeit import default_timer as timer
 
 from rag.utils.redis_conn import REDIS_CONN
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/system")
 
 
-@manager.route("/version", methods=["GET"])  # noqa: F821
+@router.get("/version")
 @login_required
 def version():
     """
@@ -61,7 +64,7 @@ def version():
     return get_json_result(data=get_ragflow_version())
 
 
-@manager.route("/status", methods=["GET"])  # noqa: F821
+@router.get("/status")
 @login_required
 def status():
     """
@@ -170,7 +173,7 @@ def status():
     return get_json_result(data=res)
 
 
-@manager.route("/new_token", methods=["POST"])  # noqa: F821
+@router.post("/new_token")
 @login_required
 def new_token():
     """
@@ -220,7 +223,7 @@ def new_token():
         return server_error_response(e)
 
 
-@manager.route("/token_list", methods=["GET"])  # noqa: F821
+@router.get("/token_list")
 @login_required
 def token_list():
     """
@@ -268,7 +271,7 @@ def token_list():
         return server_error_response(e)
 
 
-@manager.route("/token/<token>", methods=["DELETE"])  # noqa: F821
+@router.post("/token/<token>")
 @login_required
 def rm(token):
     """

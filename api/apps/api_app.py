@@ -592,7 +592,7 @@ def list_kb_docs():
         return server_error_response(e)
 
 
-@manager.route('/document/infos', methods=['POST'])  # noqa: F821
+@router.post('/document/infos')
 @validate_request("doc_ids")
 def docinfos():
     token = request.headers.get('Authorization').split()[1]
@@ -606,7 +606,7 @@ def docinfos():
     return get_json_result(data=list(docs.dicts()))
 
 
-@manager.route('/document', methods=['DELETE'])  # noqa: F821
+@router.delete('/document')
 # @login_required
 def document_rm():
     token = request.headers.get('Authorization').split()[1]
@@ -665,7 +665,7 @@ def document_rm():
     return get_json_result(data=True)
 
 
-@manager.route('/completion_aibotk', methods=['POST'])  # noqa: F821
+@router.post('/completion_aibotk')
 @validate_request("Authorization", "conversation_id", "word")
 def completion_faq():
     import base64
@@ -806,8 +806,7 @@ def completion_faq():
     except Exception as e:
         return server_error_response(e)
 
-
-@manager.route('/retrieval', methods=['POST'])  # noqa: F821
+@router.post('/retrieval')
 @validate_request("kb_id", "question")
 def retrieval():
     token = request.headers.get('Authorization').split()[1]

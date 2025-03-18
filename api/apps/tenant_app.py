@@ -24,9 +24,12 @@ from api.db.services.user_service import UserTenantService, UserService
 
 from api.utils import get_uuid, delta_seconds
 from api.utils.api_utils import get_json_result, validate_request, server_error_response, get_data_error_result
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/tenant")
 
 
-@manager.route("/<tenant_id>/user/list", methods=["GET"])  # noqa: F821
+@router.get("/{tenant_id}/user/list")
 @login_required
 def user_list(tenant_id):
     if current_user.id != tenant_id:
@@ -44,7 +47,7 @@ def user_list(tenant_id):
         return server_error_response(e)
 
 
-@manager.route('/<tenant_id>/user', methods=['POST'])  # noqa: F821
+@router.post('/{tenant_id}/user')
 @login_required
 @validate_request("email")
 def create(tenant_id):
@@ -84,7 +87,7 @@ def create(tenant_id):
     return get_json_result(data=usr)
 
 
-@manager.route('/<tenant_id>/user/<user_id>', methods=['DELETE'])  # noqa: F821
+@router.delete('/{tenant_id}/user/{user_id}')
 @login_required
 def rm(tenant_id, user_id):
     if current_user.id != tenant_id and current_user.id != user_id:
@@ -100,7 +103,7 @@ def rm(tenant_id, user_id):
         return server_error_response(e)
 
 
-@manager.route("/list", methods=["GET"])  # noqa: F821
+@router.get("/list")
 @login_required
 def tenant_list():
     try:
@@ -112,7 +115,7 @@ def tenant_list():
         return server_error_response(e)
 
 
-@manager.route("/agree/<tenant_id>", methods=["PUT"])  # noqa: F821
+@router.put("/agree/{tenant_id}")
 @login_required
 def agree(tenant_id):
     try:

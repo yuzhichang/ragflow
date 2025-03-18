@@ -42,6 +42,9 @@ from api import settings
 from api.db.services.user_service import UserService, TenantService, UserTenantService
 from api.db.services.file_service import FileService
 from api.utils.api_utils import get_json_result, construct_response
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/user")
 
 
 @manager.route("/login", methods=["POST", "GET"])  # noqa: F821

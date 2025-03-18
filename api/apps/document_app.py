@@ -47,9 +47,12 @@ from rag.utils.storage_factory import STORAGE_IMPL
 from api.utils.file_utils import filename_type, thumbnail, get_project_base_directory
 from api.utils.web_utils import html2pdf, is_valid_url
 from api.constants import IMG_BASE64_PREFIX
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/document")
 
 
-@manager.route('/upload', methods=['POST'])  # noqa: F821
+@router.post('/upload')
 @login_required
 @validate_request("kb_id")
 def upload():
@@ -80,7 +83,7 @@ def upload():
     return get_json_result(data=files)
 
 
-@manager.route('/web_crawl', methods=['POST'])  # noqa: F821
+@router.post('/web_crawl')
 @login_required
 @validate_request("kb_id", "name", "url")
 def web_crawl():
@@ -147,7 +150,7 @@ def web_crawl():
     return get_json_result(data=True)
 
 
-@manager.route('/create', methods=['POST'])  # noqa: F821
+@router.post('/create')
 @login_required
 @validate_request("name", "kb_id")
 def create():
@@ -183,7 +186,7 @@ def create():
         return server_error_response(e)
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
+@router.get('/list')
 @login_required
 def list_docs():
     kb_id = request.args.get("kb_id")
@@ -218,7 +221,7 @@ def list_docs():
         return server_error_response(e)
 
 
-@manager.route('/infos', methods=['POST'])  # noqa: F821
+@router.post('/infos')
 @login_required
 def docinfos():
     req = request.json
@@ -234,8 +237,7 @@ def docinfos():
     return get_json_result(data=list(docs.dicts()))
 
 
-@manager.route('/thumbnails', methods=['GET'])  # noqa: F821
-# @login_required
+@router.get('/thumbnails')
 def thumbnails():
     doc_ids = request.args.get("doc_ids").split(",")
     if not doc_ids:
@@ -254,7 +256,7 @@ def thumbnails():
         return server_error_response(e)
 
 
-@manager.route('/change_status', methods=['POST'])  # noqa: F821
+@router.post('/change_status')
 @login_required
 @validate_request("doc_id", "status")
 def change_status():
@@ -293,7 +295,7 @@ def change_status():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
+@router.post('/rm')
 @login_required
 @validate_request("doc_id")
 def rm():
@@ -344,7 +346,7 @@ def rm():
     return get_json_result(data=True)
 
 
-@manager.route('/run', methods=['POST'])  # noqa: F821
+@router.post('/run')
 @login_required
 @validate_request("doc_ids", "run")
 def run(): 
@@ -387,7 +389,7 @@ def run():
         return server_error_response(e)
 
 
-@manager.route('/rename', methods=['POST'])  # noqa: F821
+@router.post('/rename')
 @login_required
 @validate_request("doc_id", "name")
 def rename():
@@ -428,7 +430,7 @@ def rename():
         return server_error_response(e)
 
 
-@manager.route('/get/<doc_id>', methods=['GET'])  # noqa: F821
+@router.get('/get/{doc_id}', methods=['GET'])  # noqa: F821
 # @login_required
 def get(doc_id):
     try:
@@ -453,7 +455,7 @@ def get(doc_id):
         return server_error_response(e)
 
 
-@manager.route('/change_parser', methods=['POST'])  # noqa: F821
+@router.post('/change_parser')
 @login_required
 @validate_request("doc_id", "parser_id")
 def change_parser():
@@ -504,7 +506,7 @@ def change_parser():
         return server_error_response(e)
 
 
-@manager.route('/image/<image_id>', methods=['GET'])  # noqa: F821
+@router.get('/image/<image_id>', methods=['GET'])  # noqa: F821
 # @login_required
 def get_image(image_id):
     try:
@@ -519,7 +521,7 @@ def get_image(image_id):
         return server_error_response(e)
 
 
-@manager.route('/upload_and_parse', methods=['POST'])  # noqa: F821
+@router.post('/upload_and_parse')
 @login_required
 @validate_request("conversation_id")
 def upload_and_parse():
@@ -538,7 +540,7 @@ def upload_and_parse():
     return get_json_result(data=doc_ids)
 
 
-@manager.route('/parse', methods=['POST'])  # noqa: F821
+@router.post('/parse')
 @login_required
 def parse():
     url = request.json.get("url") if request.json else ""
@@ -598,7 +600,7 @@ def parse():
     return get_json_result(data=txt)
 
 
-@manager.route('/set_meta', methods=['POST'])  # noqa: F821
+@router.post('/set_meta')
 @login_required
 @validate_request("doc_id", "meta")
 def set_meta():

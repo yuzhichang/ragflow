@@ -35,9 +35,12 @@ from api import settings
 from api.utils.api_utils import get_json_result
 import xxhash
 import re
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/chunk")
 
 
-@manager.route('/list', methods=['POST'])  # noqa: F821
+@router.post('/list')
 @login_required
 @validate_request("doc_id")
 def list_chunk():
@@ -86,7 +89,7 @@ def list_chunk():
         return server_error_response(e)
 
 
-@manager.route('/get', methods=['GET'])  # noqa: F821
+@router.get('/get')
 @login_required
 def get():
     chunk_id = request.args["chunk_id"]
@@ -117,7 +120,7 @@ def get():
         return server_error_response(e)
 
 
-@manager.route('/set', methods=['POST'])  # noqa: F821
+@router.post('/set')
 @login_required
 @validate_request("doc_id", "chunk_id", "content_with_weight")
 def set():
@@ -170,7 +173,7 @@ def set():
         return server_error_response(e)
 
 
-@manager.route('/switch', methods=['POST'])  # noqa: F821
+@router.post('/switch')
 @login_required
 @validate_request("chunk_ids", "available_int", "doc_id")
 def switch():
@@ -190,7 +193,7 @@ def switch():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
+@router.post('/rm')
 @login_required
 @validate_request("chunk_ids", "doc_id")
 def rm():
@@ -209,7 +212,7 @@ def rm():
         return server_error_response(e)
 
 
-@manager.route('/create', methods=['POST'])  # noqa: F821
+@router.post('/create')
 @login_required
 @validate_request("doc_id", "content_with_weight")
 def create():
@@ -259,7 +262,7 @@ def create():
         return server_error_response(e)
 
 
-@manager.route('/retrieval_test', methods=['POST'])  # noqa: F821
+@router.post('/retrieval_test')
 @login_required
 @validate_request("kb_id", "question")
 def retrieval_test():
@@ -331,7 +334,7 @@ def retrieval_test():
         return server_error_response(e)
 
 
-@manager.route('/knowledge_graph', methods=['GET'])  # noqa: F821
+@router.get('/knowledge_graph')
 @login_required
 def knowledge_graph():
     doc_id = request.args["doc_id"]

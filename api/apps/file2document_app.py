@@ -26,9 +26,12 @@ from api.db import FileType
 from api.db.services.document_service import DocumentService
 from api import settings
 from api.utils.api_utils import get_json_result
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/file2document")
 
 
-@manager.route('/convert', methods=['POST'])  # noqa: F821
+@router.post('/convert')
 @login_required
 @validate_request("file_ids", "kb_ids")
 def convert():
@@ -92,7 +95,7 @@ def convert():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
+@router.post('/rm')
 @login_required
 @validate_request("file_ids")
 def rm():

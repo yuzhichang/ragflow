@@ -15,7 +15,7 @@
 #
 import json
 import traceback
-from flask import request, Response
+from flask import request
 from flask_login import login_required, current_user
 from api.db.services.canvas_service import CanvasTemplateService, UserCanvasService
 from api.settings import RetCode
@@ -24,23 +24,24 @@ from api.utils.api_utils import get_json_result, server_error_response, validate
 from agent.canvas import Canvas
 from peewee import MySQLDatabase, PostgresqlDatabase
 from api.db.db_models import APIToken
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/canvas")
 
 
-@manager.route('/templates', methods=['GET'])  # noqa: F821
-@login_required
-def templates():
+@router.get('/templates')
+async def templates():
     return get_json_result(data=[c.to_dict() for c in CanvasTemplateService.get_all()])
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
-@login_required
-def canvas_list():
+@router.get('/list')
+async def canvas_list():
     return get_json_result(data=sorted([c.to_dict() for c in \
                                  UserCanvasService.query(user_id=current_user.id)], key=lambda x: x["update_time"]*-1)
                            )
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
+@router.post('/rm', methods=['POST'])
 @validate_request("canvas_ids")
 @login_required
 def rm():
@@ -53,7 +54,7 @@ def rm():
     return get_json_result(data=True)
 
 
-@manager.route('/set', methods=['POST'])  # noqa: F821
+@route.post('/set')
 @validate_request("dsl", "title")
 @login_required
 def save():
@@ -78,15 +79,17 @@ def save():
     return get_json_result(data=req)
 
 
-@manager.route('/get/<canvas_id>', methods=['GET'])  # noqa: F821
-@login_required
-def get(canvas_id):
+
+
+
+@router.get('/get/{canvas_id}')
+async def get(canvas_id: str):
     e, c = UserCanvasService.get_by_id(canvas_id)
     if not e:
         return get_data_error_result(message="canvas not found.")
     return get_json_result(data=c.to_dict())
 
-@manager.route('/getsse/<canvas_id>', methods=['GET'])  # type: ignore # noqa: F821
+@router.get('/getsse/<canvas_id>')
 def getsse(canvas_id):
     token = request.headers.get('Authorization').split()
     if len(token) != 2:
@@ -101,7 +104,7 @@ def getsse(canvas_id):
     return get_json_result(data=c.to_dict())
 
 
-@manager.route('/completion', methods=['POST'])  # noqa: F821
+@router.post('/completion')
 @validate_request("id")
 @login_required
 def run():
@@ -182,7 +185,7 @@ def run():
         return get_json_result(data={"answer": final_ans["content"], "reference": final_ans.get("reference", [])})
 
 
-@manager.route('/reset', methods=['POST'])  # noqa: F821
+@router.post('/reset')
 @validate_request("id")
 @login_required
 def reset():
@@ -205,7 +208,7 @@ def reset():
         return server_error_response(e)
 
 
-@manager.route('/input_elements', methods=['GET'])  # noqa: F821
+@router.get('/input_elements')
 @login_required
 def input_elements():
     cvs_id = request.args.get("id")
@@ -225,7 +228,7 @@ def input_elements():
         return server_error_response(e)
 
 
-@manager.route('/debug', methods=['POST'])  # noqa: F821
+@router.post('/debug')
 @validate_request("id", "component_id", "params")
 @login_required
 def debug():
@@ -249,7 +252,7 @@ def debug():
         return server_error_response(e)
 
 
-@manager.route('/test_db_connect', methods=['POST'])  # noqa: F821
+@router.post('/test_db_connect')
 @validate_request("db_type", "database", "username", "host", "port", "password")
 @login_required
 def test_db_connect():

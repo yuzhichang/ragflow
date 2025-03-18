@@ -25,9 +25,12 @@ from api import settings
 from api.utils.api_utils import server_error_response, get_data_error_result, validate_request
 from api.utils import get_uuid
 from api.utils.api_utils import get_json_result
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/dialog")
 
 
-@manager.route('/set', methods=['POST'])  # noqa: F821
+@router.post('/set')
 @login_required
 def set_dialog():
     req = request.json
@@ -114,7 +117,7 @@ def set_dialog():
         return server_error_response(e)
 
 
-@manager.route('/get', methods=['GET'])  # noqa: F821
+@router.get('/get')
 @login_required
 def get():
     dialog_id = request.args["dialog_id"]
@@ -140,7 +143,7 @@ def get_kb_names(kb_ids):
     return ids, nms
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
+@router.get('/list')
 @login_required
 def list_dialogs():
     try:
@@ -157,7 +160,7 @@ def list_dialogs():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
+@router.post('/rm')
 @login_required
 @validate_request("dialog_ids")
 def rm():

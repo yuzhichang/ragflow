@@ -34,6 +34,9 @@ from api import settings
 from rag.nlp import search
 from api.constants import DATASET_NAME_LIMIT
 from rag.settings import PAGERANK_FLD
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/kb")
 
 
 @manager.route('/create', methods=['post'])  # noqa: F821
