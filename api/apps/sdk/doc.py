@@ -44,6 +44,9 @@ from rag.utils import rmSpace
 from rag.utils.storage_factory import STORAGE_IMPL
 
 from pydantic import BaseModel, Field, validator
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/api/{API_VERSION}")
 
 MAXIMUM_OF_UPLOADING_FILES = 256
 
@@ -68,7 +71,7 @@ class Chunk(BaseModel):
         return value
 
 
-@manager.route("/datasets/<dataset_id>/documents", methods=["POST"])  # noqa: F821
+@router.post("/datasets/<dataset_id>/documents")
 @token_required
 def upload(dataset_id, tenant_id):
     """
@@ -180,7 +183,7 @@ def upload(dataset_id, tenant_id):
     return get_result(data=renamed_doc_list)
 
 
-@manager.route("/datasets/<dataset_id>/documents/<document_id>", methods=["PUT"])  # noqa: F821
+@router.put("/datasets/<dataset_id>/documents/<document_id>")
 @token_required
 def update_doc(tenant_id, dataset_id, document_id):
     """
@@ -335,7 +338,7 @@ def update_doc(tenant_id, dataset_id, document_id):
     return get_result()
 
 
-@manager.route("/datasets/<dataset_id>/documents/<document_id>", methods=["GET"])  # noqa: F821
+@router.get("/datasets/<dataset_id>/documents/<document_id>")
 @token_required
 def download(tenant_id, dataset_id, document_id):
     """
@@ -403,7 +406,7 @@ def download(tenant_id, dataset_id, document_id):
     )
 
 
-@manager.route("/datasets/<dataset_id>/documents", methods=["GET"])  # noqa: F821
+@router.get("/datasets/<dataset_id>/documents")
 @token_required
 def list_docs(dataset_id, tenant_id):
     """
@@ -539,7 +542,7 @@ def list_docs(dataset_id, tenant_id):
     return get_result(data={"total": tol, "docs": renamed_doc_list})
 
 
-@manager.route("/datasets/<dataset_id>/documents", methods=["DELETE"])  # noqa: F821
+@router.delete("/datasets/<dataset_id>/documents")
 @token_required
 def delete(tenant_id, dataset_id):
     """
@@ -636,7 +639,7 @@ def delete(tenant_id, dataset_id):
     return get_result()
 
 
-@manager.route("/datasets/<dataset_id>/chunks", methods=["POST"])  # noqa: F821
+@router.post("/datasets/<dataset_id>/chunks")
 @token_required
 def parse(tenant_id, dataset_id):
     """
@@ -703,7 +706,7 @@ def parse(tenant_id, dataset_id):
     return get_result()
 
 
-@manager.route("/datasets/<dataset_id>/chunks", methods=["DELETE"])  # noqa: F821
+@router.delete("/datasets/<dataset_id>/chunks")
 @token_required
 def stop_parsing(tenant_id, dataset_id):
     """
@@ -761,7 +764,7 @@ def stop_parsing(tenant_id, dataset_id):
     return get_result()
 
 
-@manager.route("/datasets/<dataset_id>/documents/<document_id>/chunks", methods=["GET"])  # noqa: F821
+@router.get("/datasets/<dataset_id>/documents/<document_id>/chunks")
 @token_required
 def list_chunks(tenant_id, dataset_id, document_id):
     """
@@ -928,9 +931,7 @@ def list_chunks(tenant_id, dataset_id, document_id):
     return get_result(data=res)
 
 
-@manager.route(  # noqa: F821
-    "/datasets/<dataset_id>/documents/<document_id>/chunks", methods=["POST"]
-)
+@router.post("/datasets/<dataset_id>/documents/<document_id>/chunks")
 @token_required
 def add_chunk(tenant_id, dataset_id, document_id):
     """
@@ -1069,9 +1070,7 @@ def add_chunk(tenant_id, dataset_id, document_id):
     # return get_result(data={"chunk_id": chunk_id})
 
 
-@manager.route(  # noqa: F821
-    "datasets/<dataset_id>/documents/<document_id>/chunks", methods=["DELETE"]
-)
+@router.delete("datasets/<dataset_id>/documents/<document_id>/chunks")
 @token_required
 def rm_chunk(tenant_id, dataset_id, document_id):
     """
@@ -1129,9 +1128,7 @@ def rm_chunk(tenant_id, dataset_id, document_id):
     return get_result(message=f"deleted {chunk_number} chunks")
 
 
-@manager.route(  # noqa: F821
-    "/datasets/<dataset_id>/documents/<document_id>/chunks/<chunk_id>", methods=["PUT"]
-)
+@router.put("/datasets/<dataset_id>/documents/<document_id>/chunks/<chunk_id>")
 @token_required
 def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
     """
@@ -1239,7 +1236,7 @@ def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
     return get_result()
 
 
-@manager.route("/retrieval", methods=["POST"])  # noqa: F821
+@router.post("/retrieval")
 @token_required
 def retrieval_test(tenant_id):
     """

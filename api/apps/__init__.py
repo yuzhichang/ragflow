@@ -71,40 +71,6 @@ def search_pages_path(pages_dir):
     return app_path_list
 
 
-def register_page(page_path):
-    path = f"{page_path}"
-
-    page_name = page_path.stem.rstrip("_app")
-    module_name = ".".join(
-        page_path.parts[page_path.parts.index("api"): -1] + (page_name,)
-    )
-
-    spec = spec_from_file_location(module_name, page_path)
-    page = module_from_spec(spec)
-    page.app = app
-    page.manager = Blueprint(page_name, module_name)
-    sys.modules[module_name] = page
-    spec.loader.exec_module(page)
-    page_name = getattr(page, "page_name", page_name)
-    sdk_path = "\\sdk\\" if sys.platform.startswith("win") else "/sdk/"
-    url_prefix = (
-        f"/api/{API_VERSION}" if sdk_path in path else f"/{API_VERSION}/{page_name}"
-    )
-
-    app.register_blueprint(page.manager, url_prefix=url_prefix)
-    return url_prefix
-
-
-pages_dir = [
-    Path(__file__).parent,
-    Path(__file__).parent.parent / "api" / "apps",
-    Path(__file__).parent.parent / "api" / "apps" / "sdk",
-]
-
-client_urls_prefix = [
-    register_page(path) for dir in pages_dir for path in search_pages_path(dir)
-]
-
 
 @login_manager.request_loader
 def load_user(web_request):

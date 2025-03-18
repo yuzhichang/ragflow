@@ -32,9 +32,12 @@ from api.utils.api_utils import (
     valid,
     get_parser_config, valid_parser_config, dataset_readonly_fields,
 )
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/api/{API_VERSION}")
 
 
-@manager.route("/datasets", methods=["POST"])  # noqa: F821
+@router.post("/datasets")
 @token_required
 def create(tenant_id):
     """
@@ -197,7 +200,7 @@ def create(tenant_id):
     return get_result(data=renamed_data)
 
 
-@manager.route("/datasets", methods=["DELETE"])  # noqa: F821
+@router.delete("/datasets")
 @token_required
 def delete(tenant_id):
     """
@@ -279,7 +282,7 @@ def delete(tenant_id):
     return get_result(code=settings.RetCode.SUCCESS)
 
 
-@manager.route("/datasets/<dataset_id>", methods=["PUT"])  # noqa: F821  
+@router.put("/datasets/<dataset_id>")
 @token_required
 def update(tenant_id, dataset_id):
     """
@@ -454,7 +457,7 @@ def update(tenant_id, dataset_id):
     return get_result(code=settings.RetCode.SUCCESS)
 
 
-@manager.route("/datasets", methods=["GET"])  # noqa: F821
+@router.get("/datasets")
 @token_required
 def list_datasets(tenant_id):
     """

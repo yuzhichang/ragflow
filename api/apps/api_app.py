@@ -45,9 +45,12 @@ from rag.utils.storage_factory import STORAGE_IMPL
 from api.db.services.canvas_service import UserCanvasService
 from agent.canvas import Canvas
 from functools import partial
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/{API_VERSION}/api")
 
 
-@manager.route('/new_token', methods=['POST'])  # noqa: F821
+@router.post('/new_token')
 @login_required
 def new_token():
     req = request.json
@@ -77,7 +80,7 @@ def new_token():
         return server_error_response(e)
 
 
-@manager.route('/token_list', methods=['GET'])  # noqa: F821
+@router.get('/token_list')
 @login_required
 def token_list():
     try:
@@ -92,7 +95,7 @@ def token_list():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
+@router.post('/rm')
 @validate_request("tokens", "tenant_id")
 @login_required
 def rm():
@@ -106,7 +109,7 @@ def rm():
         return server_error_response(e)
 
 
-@manager.route('/stats', methods=['GET'])  # noqa: F821
+@router.get('/stats')
 @login_required
 def stats():
     try:
@@ -137,7 +140,7 @@ def stats():
         return server_error_response(e)
 
 
-@manager.route('/new_conversation', methods=['GET'])  # noqa: F821
+@router.get('/new_conversation')
 def set_conversation():
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
@@ -177,7 +180,7 @@ def set_conversation():
         return server_error_response(e)
 
 
-@manager.route('/completion', methods=['POST'])  # noqa: F821
+@router.post('/completion')
 @validate_request("conversation_id", "messages")
 def completion():
     token = request.headers.get('Authorization').split()[1]
@@ -343,7 +346,7 @@ def completion():
         return server_error_response(e)
 
 
-@manager.route('/conversation/<conversation_id>', methods=['GET'])  # noqa: F821
+@router.get('/conversation/<conversation_id>')
 # @login_required
 def get(conversation_id):
     token = request.headers.get('Authorization').split()[1]
@@ -374,7 +377,7 @@ def get(conversation_id):
         return server_error_response(e)
 
 
-@manager.route('/document/upload', methods=['POST'])  # noqa: F821
+@router.post('/document/upload')
 @validate_request("kb_name")
 def upload():
     token = request.headers.get('Authorization').split()[1]
@@ -486,7 +489,7 @@ def upload():
     return get_json_result(data=doc_result.to_json())
 
 
-@manager.route('/document/upload_and_parse', methods=['POST'])  # noqa: F821
+@router.post('/document/upload_and_parse')
 @validate_request("conversation_id")
 def upload_parse():
     token = request.headers.get('Authorization').split()[1]
@@ -509,7 +512,7 @@ def upload_parse():
     return get_json_result(data=doc_ids)
 
 
-@manager.route('/list_chunks', methods=['POST'])  # noqa: F821
+@router.post('/list_chunks')
 # @login_required
 def list_chunks():
     token = request.headers.get('Authorization').split()[1]
@@ -549,7 +552,7 @@ def list_chunks():
     return get_json_result(data=res)
 
 
-@manager.route('/list_kb_docs', methods=['POST'])  # noqa: F821
+@router.post('/list_kb_docs')
 # @login_required
 def list_kb_docs():
     token = request.headers.get('Authorization').split()[1]

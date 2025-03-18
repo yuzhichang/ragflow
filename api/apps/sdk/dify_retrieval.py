@@ -21,9 +21,12 @@ from api.db.services.llm_service import LLMBundle
 from api import settings
 from api.utils.api_utils import validate_request, build_error_result, apikey_required
 from rag.app.tag import label_question
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/api/{API_VERSION}")
 
 
-@manager.route('/dify/retrieval', methods=['POST'])  # noqa: F821
+@router.post('/dify/retrieval')
 @apikey_required
 @validate_request("knowledge_id", "query")
 def retrieval(tenant_id):

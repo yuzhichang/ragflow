@@ -25,9 +25,12 @@ from api.db.services.user_service import TenantService
 from api.utils import get_uuid
 from api.utils.api_utils import get_error_data_result, token_required
 from api.utils.api_utils import get_result
+from api.constants import API_VERSION
+from fastapi import APIRouter
+router = APIRouter(prefix=f"/api/{API_VERSION}")
 
 
-@manager.route('/chats', methods=['POST'])  # noqa: F821
+@router.post('/chats')
 @token_required
 def create(tenant_id):
     req = request.json
@@ -161,7 +164,7 @@ def create(tenant_id):
     return get_result(data=res)
 
 
-@manager.route('/chats/<chat_id>', methods=['PUT'])  # noqa: F821
+@router.put('/chats/<chat_id>')
 @token_required
 def update(tenant_id, chat_id):
     if not DialogService.query(tenant_id=tenant_id, id=chat_id, status=StatusEnum.VALID.value):
@@ -259,7 +262,7 @@ def update(tenant_id, chat_id):
     return get_result()
 
 
-@manager.route('/chats', methods=['DELETE'])  # noqa: F821
+@router.delete('/chats')
 @token_required
 def delete(tenant_id):
     req = request.json
@@ -282,7 +285,7 @@ def delete(tenant_id):
     return get_result()
 
 
-@manager.route('/chats', methods=['GET'])  # noqa: F821
+@router.get('/chats')
 @token_required
 def list_chat(tenant_id):
     id = request.args.get("id")
