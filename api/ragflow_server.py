@@ -18,9 +18,7 @@
 # from beartype.claw import beartype_all  # <-- you didn't sign up for this
 # beartype_all(conf=BeartypeConf(violation_type=UserWarning))    # <-- emit warnings from all code
 
-from api.utils.log_utils import initRootLogger
-initRootLogger("ragflow_server")
-
+import faulthandler
 import logging
 import os
 import signal
@@ -32,6 +30,7 @@ import threading
 import importlib
 import uvicorn
 from fastapi import FastAPI
+
 from api import settings
 from api.apps import app
 from api.db.services.document_service import DocumentService
@@ -43,6 +42,7 @@ from api.versions import get_ragflow_version
 from api.utils import show_configs
 from rag.settings import print_rag_settings
 from rag.utils.redis_conn import RedisDistributedLock
+from api.utils.log_utils import initRootLogger
 
 stop_event = threading.Event()
 
@@ -92,6 +92,8 @@ def get_cpu_limit():
         return os.cpu_count()
 
 if __name__ == '__main__':
+    faulthandler.enable()
+    initRootLogger("ragflow_server")
     logging.info(r"""
         ____   ___    ______ ______ __               
        / __ \ /   |  / ____// ____// /____  _      __
