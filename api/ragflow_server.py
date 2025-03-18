@@ -69,7 +69,7 @@ def init_app_routes(app: FastAPI, routes_dirs: list[str]):
     for routes_dir in routes_dirs:
         for filename in os.listdir(routes_dir):
             if filename.endswith(".py") and filename != "__init__.py":
-                module_name = filename[:-3]  # 去掉.py
+                module_name = filename[:-3]
                 module = importlib.import_module(f"{routes_dir}.{module_name}")
                 if hasattr(module, "router"):
                     app.include_router(module.router)
