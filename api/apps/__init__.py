@@ -33,11 +33,6 @@ from flask_login import LoginManager
 from api import settings
 from api.utils.api_utils import server_error_response
 
-__all__ = ["app"]
-
-Request.json = property(lambda self: self.get_json(force=True, silent=True))
-
-app = Flask(__name__)
 
 CORS(app, supports_credentials=True, max_age=2592000)
 app.url_map.strict_slashes = False

@@ -46,14 +46,13 @@ from api.db.services.canvas_service import UserCanvasService
 from agent.canvas import Canvas
 from functools import partial
 from api.constants import API_VERSION
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 router = APIRouter(prefix=f"/{API_VERSION}/api")
 
 
 @router.post('/new_token')
 @login_required
-def new_token():
-    req = request.json
+def new_token(req: dict):
     try:
         tenants = UserTenantService.query(user_id=current_user.id)
         if not tenants:
@@ -82,7 +81,7 @@ def new_token():
 
 @router.get('/token_list')
 @login_required
-def token_list():
+def token_list(request: Request):
     try:
         tenants = UserTenantService.query(user_id=current_user.id)
         if not tenants:
@@ -98,8 +97,7 @@ def token_list():
 @router.post('/rm')
 @validate_request("tokens", "tenant_id")
 @login_required
-def rm():
-    req = request.json
+def rm(req: dict):
     try:
         for token in req["tokens"]:
             APITokenService.filter_delete(
@@ -111,22 +109,23 @@ def rm():
 
 @router.get('/stats')
 @login_required
-def stats():
+def stats(request: Request):
     try:
         tenants = UserTenantService.query(user_id=current_user.id)
         if not tenants:
             return get_data_error_result(message="Tenant not found!")
+        args = dict(request.query_params)
         objs = API4ConversationService.stats(
             tenants[0].tenant_id,
-            request.args.get(
+            args.get(
                 "from_date",
                 (datetime.now() -
                  timedelta(
                      days=7)).strftime("%Y-%m-%d 00:00:00")),
-            request.args.get(
+            args.get(
                 "to_date",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            "agent" if "canvas_id" in request.args else None)
+            "agent" if "canvas_id" in args else None)
         res = {
             "pv": [(o["dt"], o["pv"]) for o in objs],
             "uv": [(o["dt"], o["uv"]) for o in objs],
@@ -141,13 +140,14 @@ def stats():
 
 
 @router.get('/new_conversation')
-def set_conversation():
+def set_conversation(request: Request):
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
         return get_json_result(
             data=False, message='Authentication error: API key is invalid!"', code=settings.RetCode.AUTHENTICATION_ERROR)
     try:
+        args = dict(request.query_params)
         if objs[0].source == "agent":
             e, cvs = UserCanvasService.get_by_id(objs[0].dialog_id)
             if not e:
@@ -158,7 +158,7 @@ def set_conversation():
             conv = {
                 "id": get_uuid(),
                 "dialog_id": cvs.id,
-                "user_id": request.args.get("user_id", ""),
+                "user_id": args.get("user_id", ""),
                 "message": [{"role": "assistant", "content": canvas.get_prologue()}],
                 "source": "agent"
             }
@@ -171,7 +171,7 @@ def set_conversation():
             conv = {
                 "id": get_uuid(),
                 "dialog_id": dia.id,
-                "user_id": request.args.get("user_id", ""),
+                "user_id": args.get("user_id", ""),
                 "message": [{"role": "assistant", "content": dia.prompt_config["prologue"]}]
             }
             API4ConversationService.save(**conv)
@@ -182,13 +182,13 @@ def set_conversation():
 
 @router.post('/completion')
 @validate_request("conversation_id", "messages")
-def completion():
+def completion(request: Request):
+    req = request.json()
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
         return get_json_result(
             data=False, message='Authentication error: API key is invalid!"', code=settings.RetCode.AUTHENTICATION_ERROR)
-    req = request.json
     e, conv = API4ConversationService.get_by_id(req["conversation_id"])
     if not e:
         return get_data_error_result(message="Conversation not found!")
@@ -348,7 +348,7 @@ def completion():
 
 @router.get('/conversation/<conversation_id>')
 # @login_required
-def get(conversation_id):
+def get(conversation_id, request: Request):
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
@@ -379,14 +379,15 @@ def get(conversation_id):
 
 @router.post('/document/upload')
 @validate_request("kb_name")
-def upload():
+def upload(request: Request):
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
         return get_json_result(
             data=False, message='Authentication error: API key is invalid!"', code=settings.RetCode.AUTHENTICATION_ERROR)
 
-    kb_name = request.form.get("kb_name").strip()
+    form = request.form()
+    kb_name = form.get("kb_name").strip()
     tenant_id = objs[0].tenant_id
 
     try:
@@ -398,11 +399,11 @@ def upload():
     except Exception as e:
         return server_error_response(e)
 
-    if 'file' not in request.files:
+    file = form.get('file')
+    if not file:
         return get_json_result(
             data=False, message='No file part!', code=settings.RetCode.ARGUMENT_ERROR)
 
-    file = request.files['file']
     if file.filename == '':
         return get_json_result(
             data=False, message='No file selected!', code=settings.RetCode.ARGUMENT_ERROR)
@@ -445,10 +446,11 @@ def upload():
             "thumbnail": thumbnail(filename, blob)
         }
 
-        form_data = request.form
-        if "parser_id" in form_data.keys():
-            if request.form.get("parser_id").strip() in list(vars(ParserType).values())[1:-3]:
-                doc["parser_id"] = request.form.get("parser_id").strip()
+        parser_id = form.get("parser_id")
+        if parser_id:
+            parser_id = parser_id.strip()
+            if parser_id in list(vars(ParserType).values())[1:-3]:
+                doc["parser_id"] = parser_id
         if doc["type"] == FileType.VISUAL:
             doc["parser_id"] = ParserType.PICTURE.value
         if doc["type"] == FileType.AURAL:
@@ -463,59 +465,56 @@ def upload():
     except Exception as e:
         return server_error_response(e)
 
-    if "run" in form_data.keys():
-        if request.form.get("run").strip() == "1":
-            try:
-                info = {"run": 1, "progress": 0}
-                info["progress_msg"] = ""
-                info["chunk_num"] = 0
-                info["token_num"] = 0
-                DocumentService.update_by_id(doc["id"], info)
-                # if str(req["run"]) == TaskStatus.CANCEL.value:
-                tenant_id = DocumentService.get_tenant_id(doc["id"])
-                if not tenant_id:
-                    return get_data_error_result(message="Tenant not found!")
-
-                # e, doc = DocumentService.get_by_id(doc["id"])
-                TaskService.filter_delete([Task.doc_id == doc["id"]])
-                e, doc = DocumentService.get_by_id(doc["id"])
-                doc = doc.to_dict()
-                doc["tenant_id"] = tenant_id
-                bucket, name = File2DocumentService.get_storage_address(doc_id=doc["id"])
-                queue_tasks(doc, bucket, name, 0)
-            except Exception as e:
-                return server_error_response(e)
+    run = form.get("run")
+    if run and run.strip() == "1":
+        try:
+            info = {"run": 1, "progress": 0}
+            info["progress_msg"] = ""
+            info["chunk_num"] = 0
+            info["token_num"] = 0
+            DocumentService.update_by_id(doc["id"], info)
+            tenant_id = DocumentService.get_tenant_id(doc["id"])
+            if not tenant_id:
+                return get_data_error_result(message="Tenant not found!")
+            TaskService.filter_delete([Task.doc_id == doc["id"]])
+            e, doc = DocumentService.get_by_id(doc["id"])
+            doc = doc.to_dict()
+            doc["tenant_id"] = tenant_id
+            bucket, name = File2DocumentService.get_storage_address(doc_id=doc["id"])
+            queue_tasks(doc, bucket, name, 0)
+        except Exception as e:
+            return server_error_response(e)
 
     return get_json_result(data=doc_result.to_json())
 
 
 @router.post('/document/upload_and_parse')
 @validate_request("conversation_id")
-def upload_parse():
+def upload_parse(request: Request):
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
         return get_json_result(
             data=False, message='Authentication error: API key is invalid!"', code=settings.RetCode.AUTHENTICATION_ERROR)
 
-    if 'file' not in request.files:
+    form = request.form()
+    file_objs = form.getlist('file')
+    if not file_objs:
         return get_json_result(
             data=False, message='No file part!', code=settings.RetCode.ARGUMENT_ERROR)
-
-    file_objs = request.files.getlist('file')
     for file_obj in file_objs:
         if file_obj.filename == '':
             return get_json_result(
                 data=False, message='No file selected!', code=settings.RetCode.ARGUMENT_ERROR)
 
-    doc_ids = doc_upload_and_parse(request.form.get("conversation_id"), file_objs, objs[0].tenant_id)
+    doc_ids = doc_upload_and_parse(form.get("conversation_id"), file_objs, objs[0].tenant_id)
     return get_json_result(data=doc_ids)
 
 
 @router.post('/list_chunks')
 # @login_required
-def list_chunks():
-    token = request.headers.get('Authorization').split()[1]
+def list_chunks(request: Request):
+    token = request.headers().get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
         return get_json_result(
@@ -555,7 +554,7 @@ def list_chunks():
 @router.post('/list_kb_docs')
 # @login_required
 def list_kb_docs():
-    token = request.headers.get('Authorization').split()[1]
+    token = request.headers*().get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
         return get_json_result(
