@@ -26,7 +26,7 @@ from rag.nlp import bullets_category, remove_contents_table, \
 from rag.nlp import rag_tokenizer, Node
 from deepdoc.parser import PdfParser, DocxParser, HtmlParser
 from rag.app.naive import by_plaintext, PARSERS
-
+from common import settings
 
 
 
@@ -138,11 +138,14 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
     parser_config = kwargs.get(
         "parser_config", {
             "chunk_token_num": 512, "delimiter": "\n!?。；！？", "layout_recognize": "DeepDOC"})
-    doc = {
-        "docnm_kwd": filename,
-        "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename))
-    }
-    doc["title_sm_tks"] = rag_tokenizer.fine_grained_tokenize(doc["title_tks"])
+    if settings.DOC_ENGINE_INFINITY:
+        doc = {"docnm": filename}
+    else:
+        doc = {
+            "docnm_kwd": filename,
+            "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename))
+        }
+        doc["title_sm_tks"] = rag_tokenizer.fine_grained_tokenize(doc["title_tks"])
     pdf_parser = None
     sections = []
     # is it English

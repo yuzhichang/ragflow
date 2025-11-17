@@ -24,6 +24,9 @@ from rag.nlp import rag_tokenizer, tokenize
 from deepdoc.parser import PdfParser, ExcelParser, HtmlParser
 from deepdoc.parser.figure_parser import vision_figure_parser_docx_wrapper
 from rag.app.naive import by_plaintext, PARSERS
+from common import settings
+
+
 
 class Pdf(PdfParser):
     def __call__(self, filename, binary=None, from_page=0,
@@ -148,11 +151,14 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
         raise NotImplementedError(
             "file type not supported yet(doc, docx, pdf, txt supported)")
 
-    doc = {
-        "docnm_kwd": filename,
-        "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename))
-    }
-    doc["title_sm_tks"] = rag_tokenizer.fine_grained_tokenize(doc["title_tks"])
+    if settings.DOC_ENGINE_INFINITY:
+        doc = {"docnm": filename}
+    else:
+        doc = {
+            "docnm_kwd": filename,
+            "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename))
+        }
+        doc["title_sm_tks"] = rag_tokenizer.fine_grained_tokenize(doc["title_tks"])
     tokenize(doc, "\n".join(sections), eng)
     return [doc]
 

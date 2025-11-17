@@ -25,6 +25,8 @@ from api.db.services.llm_service import LLMBundle
 from deepdoc.vision import OCR
 from rag.nlp import rag_tokenizer, tokenize
 from common.string_utils import clean_markdown_block
+from common import settings
+
 
 ocr = OCR()
 
@@ -33,10 +35,14 @@ VIDEO_EXTS = [".mp4", ".mov", ".avi", ".flv", ".mpeg", ".mpg", ".webm", ".wmv", 
 
 
 def chunk(filename, binary, tenant_id, lang, callback=None, **kwargs):
-    doc = {
-        "docnm_kwd": filename,
-        "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename)),
-    }
+    if settings.DOC_ENGINE_INFINITY:
+        doc = {"docnm": filename}
+    else:
+        doc = {
+            "docnm_kwd": filename,
+            "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename)),
+        }
+        doc["title_sm_tks"] = rag_tokenizer.fine_grained_tokenize(doc["title_tks"])
     eng = lang.lower() == "english"
 
     if any(filename.lower().endswith(ext) for ext in VIDEO_EXTS):
