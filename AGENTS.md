@@ -70,18 +70,29 @@ To run the full stack using Docker:
 ```bash
 cd docker
 docker compose -f docker-compose.yml up -d
-```
 
 ## 4. Testing Instructions
 
 ### Backend Tests
+- **Testing RAGFlow deployed on kubernetes**:
+  To test RAGFlow deployed on kubernetes, first set the environment variable `HOST_ADDRESS=http://ragflow.local`.
+- **Install test dependenciess**:
+  ```bash
+  uv sync --python 3.12 --only-group test --no-default-groups --frozen
+  uv pip install sdk/python --group test
+  ```
 - **Run All Tests**:
   ```bash
-  uv run pytest
+  source .venv/bin/activate
+  python run_tests.py
+  pytest -s --tb=short test/testcases/test_sdk_api
+  pytest -s --tb=short test/testcases/test_http_api
+  pytest -s --tb=short sdk/python/test/test_frontend_api/get_email.py sdk/python/test/test_frontend_api/test_dataset.py
   ```
 - **Run Specific Test**:
   ```bash
-  uv run pytest test/test_api.py
+  source .venv/bin/activate
+  pytest -s --tb=short test/testcases/test_sdk_api/test_chunk_management_within_dataset/test_retrieval_chunks.py -k test_page[payload3-0-]
   ```
 
 ### Frontend Tests
@@ -102,6 +113,8 @@ docker compose -f docker-compose.yml up -d
   cd web
   npm run lint
   ```
+- **kubectl Timeout**: For kubectl operations that may hang (e.g., delete, apply, wait), ALWAYS set `--timeout=30s` to avoid indefinite waiting. If timed out, investigate the cause instead of waiting.
+- **Pulumi Timeout**: For Pulumi operations that may hang (e.g., up, destroy), ALWAYS use `timeout 30s` to avoid indefinite waiting. If timed out, investigate the cause instead of waiting.
 - **Pre-commit**: Ensure pre-commit hooks are installed.
   ```bash
   pre-commit install

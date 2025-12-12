@@ -589,7 +589,7 @@ class TestDatasetCreate:
         parser_config_o = DataSet.ParserConfig(client, {})
         payload = {"name": "parser_config_empty", "parser_config": parser_config_o}
         dataset = client.create_dataset(**payload)
-        assert str(dataset.parser_config) == str(excepted_value), str(dataset)
+        assert dataset.parser_config.to_json() == excepted_value.to_json(), str(dataset)
 
     @pytest.mark.p2
     def test_parser_config_unset(self, client):

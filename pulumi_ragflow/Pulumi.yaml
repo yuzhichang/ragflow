@@ -1,0 +1,4 @@
+name: pulumi_ragflow
+runtime:
+  name: go
+description: Pulumi component for RAGFlow in Go on Kubernetes

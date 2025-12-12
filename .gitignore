@@ -198,3 +198,18 @@ backup
 
 
 .hypothesis
+
+# Go specific
+*.test
+*.out
+go.work
+
+# Pulumi state files
+.pulumi/
+
+# Additional IDE files
+*.swp
+*.swo
+
+# Additional environment files
+.env.local

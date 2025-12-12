@@ -8,7 +8,7 @@ mysql:
   name: 'rag_flow'
   user: 'root'
   password: 'infini_rag_flow'
-  host: 'localhost'
+  host: 'mysql'
   port: 5455
   max_connections: 900
   stale_timeout: 300
@@ -16,19 +16,19 @@ mysql:
 minio:
   user: 'rag_flow'
   password: 'infini_rag_flow'
-  host: 'localhost:9000'
+  host: 'minio:9000'
   bucket: ''
   prefix_path: ''
 es:
-  hosts: 'http://localhost:1200'
+  hosts: 'http://es01:1200'
   username: 'elastic'
   password: 'infini_rag_flow'
 os:
-  hosts: 'http://localhost:1201'
+  hosts: 'http://opensearch:1201'
   username: 'admin'
   password: 'infini_rag_flow_OS_01'
 infinity:
-  uri: 'localhost:23817'
+  uri: 'infinity:23817'
   db_name: 'default_db'
 oceanbase:
   scheme: 'oceanbase' # set 'mysql' to create connection using mysql config
@@ -36,13 +36,13 @@ oceanbase:
     db_name: 'test'
     user: 'root@ragflow'
     password: 'infini_rag_flow'
-    host: 'localhost'
+    host: 'oceanbase'
     port: 2881
 redis:
   db: 1
   username: ''
   password: 'infini_rag_flow'
-  host: 'localhost:6379'
+  host: 'redis:6379'
 task_executor:
   message_queue_type: 'redis'
 user_default_llm:
