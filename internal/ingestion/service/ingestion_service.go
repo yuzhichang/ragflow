@@ -941,6 +941,13 @@ func (e *Ingestor) settleMessage(ctx context.Context, taskCtx *taskpkg.TaskConte
 		if dbTerminal, ok := e.safeGetTerminal(ctx, taskCtx.IngestionTask.ID); ok {
 			terminal = dbTerminal
 		}
+		// Converge document.run onto the doc's task set once a terminal state is
+		// durably persisted, so the derived mirror does not drift into an orphan
+		// RUNNING (a doc whose task was STOPPED/FAILED but whose run label was
+		// never reset). Guarded on a document-bound ingestion task.
+		if terminal && taskCtx.IngestionTask != nil && taskCtx.IngestionTask.DocumentID != "" {
+			e.syncDocumentRun(ctx, taskCtx.IngestionTask.DocumentID)
+		}
 		e.ackOrNack(taskCtx, terminal)
 	}()
 	terminal = body(taskCtx.Ctx)
@@ -1083,6 +1090,80 @@ func (e *Ingestor) markTimeoutProgress(task *entity.IngestionTask) {
 		existingMsg = *doc.ProgressMsg
 	}
 	_ = svc.UpdateRunProgress(e.ctx, task.DocumentID, -1.0, string(entity.TaskStatusFail), existingMsg+timeoutMsg)
+}
+
+// docRunFromTasks maps the doc's latest ingestion task to the document-level
+// run label. tasks is a single-element slice holding the newest task (as
+// returned by IngestionTaskDAO.GetByDocumentID, ordered by create_time DESC);
+// tasks[0] is the current parse round and its status is authoritative. A
+// document can be parsed multiple times over its lifetime, but document.run
+// reflects the latest parse round, so historical tasks are ignored. An empty
+// task set means UNSTART.
+func docRunFromTasks(tasks []*entity.IngestionTask) string {
+	if len(tasks) == 0 {
+		return string(entity.TaskStatusUnstart)
+	}
+	latest := tasks[0]
+	switch latest.Status {
+	case common.CREATED, common.RUNNING, common.STOPPING:
+		return string(entity.TaskStatusRunning)
+	case common.FAILED:
+		return string(entity.TaskStatusFail)
+	case common.STOPPED:
+		return string(entity.TaskStatusCancel)
+	case common.COMPLETED:
+		return string(entity.TaskStatusDone)
+	default:
+		return string(entity.TaskStatusUnstart)
+	}
+}
+
+// syncDocumentRun converges document.run onto the doc's latest ingestion task.
+// It is called after a task reaches a terminal state so the derived mirror
+// (document.run) does not drift from the authoritative task lifecycle — the
+// root cause of "orphan RUNNING" documents whose task was STOPPED/FAILED but
+// whose run label was never reset. document.run reflects the latest parse
+// round, so the newest task (create_time DESC) is authoritative; historical
+// tasks from older re-parses are ignored. The existing progress is preserved;
+// only the run label (and process duration) is updated.
+func (e *Ingestor) syncDocumentRun(ctx context.Context, docID string) {
+	// Best-effort convergence: a failure (or nil-DB panic in test/standalone
+	// environments) must never abort the worker or the task settlement.
+	defer func() {
+		if r := recover(); r != nil {
+			common.Error(fmt.Sprintf("syncDocumentRun: recovered panic for document %s: %v", docID, r), fmt.Errorf("%v", r))
+		}
+	}()
+	if docID == "" {
+		return
+	}
+	svc := documentpkg.NewDocumentService()
+	doc, err := svc.GetDocumentByID(ctx, docID)
+	if err != nil {
+		common.Error(fmt.Sprintf("syncDocumentRun: load document %s: %v", docID, err), err)
+		return
+	}
+	if doc == nil {
+		return
+	}
+	latest, err := e.ingestionTaskSvc.GetTaskByDocument(ctx, docID)
+	if err != nil {
+		common.Error(fmt.Sprintf("syncDocumentRun: get latest task for document %s: %v", docID, err), err)
+		return
+	}
+	// No task row means the doc was never parsed (or its task was cleaned up).
+	var run string
+	if latest == nil {
+		run = string(entity.TaskStatusUnstart)
+	} else {
+		run = docRunFromTasks([]*entity.IngestionTask{latest})
+	}
+	if doc.Run != nil && *doc.Run == run {
+		return // already converged
+	}
+	if err := svc.UpdateRunState(ctx, docID, doc.Progress, run); err != nil {
+		common.Error(fmt.Sprintf("syncDocumentRun: persist run %s for document %s: %v", run, docID, err), err)
+	}
 }
 
 // claimTask registers a worker claim on a task ID. Returns false if another

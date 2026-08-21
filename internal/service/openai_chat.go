@@ -322,6 +322,12 @@ func (s *OpenAIChatService) OpenAIChatCompletions(c *gin.Context, userID, chatID
 	if docIDsStr != "" {
 		chatKwargs["doc_ids"] = docIDsStr
 	}
+	// smart-reasoning mode switch, carried via extra_body.agent_mode.
+	if eb, ok := req.ExtraBody.(map[string]interface{}); ok {
+		if mode, hasMode := eb["agent_mode"].(string); hasMode && mode != "" {
+			chatKwargs["agent_mode"] = mode
+		}
+	}
 
 	asyncResults, asyncErr := s.pipeline.AsyncChat(ctx, userID, dialog, filteredMessages, openaiReq.Stream, chatKwargs)
 	if asyncErr != nil {
@@ -351,13 +357,13 @@ func (s *OpenAIChatService) OpenAIChatCompletions(c *gin.Context, userID, chatID
 			for result := range asyncResults {
 				lastResult = result
 
-				if result.StartToThink || result.EndToThink {
-					// Think markers only toggle routing state; no SSE event
-					// emitted. Matches Python's _stream_chat_completion_sse
-					// which ignores start_to_think/end_to_think flags and
-					// never emits "<think>" or "</think>" as content.
-					continue
-				}
+				// Think markers only toggle routing state — Python never emits
+				// "<think>"/"</think>" as content — but the result carrying a
+				// marker can also carry the first delta of the text it delimits
+				// (the first content delta after a think block IS the EndToThink
+				// result). The event must therefore fall through to the emission
+				// below instead of being dropped: dropping it loses that text,
+				// which is what left an answer opening mid-sentence.
 
 				if result.Final {
 					finalContent := strings.TrimSpace(result.Answer)

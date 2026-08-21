@@ -36,7 +36,11 @@ func recordUsageFromResponse(ctx context.Context, cm *ChatModel) {
 	if cm.LastUsage == nil {
 		return
 	}
-	tokenizer.RecordRunTokenUsage(ctx, cm.LastUsage.PromptTokens, cm.LastUsage.CompletionTokens, cm.LastUsage.TotalTokens)
+	model := ""
+	if cm.ModelName != nil {
+		model = *cm.ModelName
+	}
+	tokenizer.RecordRunTokenUsageFor(ctx, model, cm.LastUsage.PromptTokens, cm.LastUsage.CompletionTokens, cm.LastUsage.TotalTokens)
 }
 
 const (

@@ -8,9 +8,14 @@ export function getWebSearchProvider(promptConfig?: PromptConfig) {
   const provider = promptConfig?.web_search_provider;
 
   if (
-    provider === WebSearchProvider.Tavily ||
+    provider === WebSearchProvider.Brave ||
+    provider === WebSearchProvider.Exa ||
+    provider === WebSearchProvider.Firecrawl ||
+    provider === WebSearchProvider.Linkup ||
+    provider === WebSearchProvider.Parallel ||
     provider === WebSearchProvider.Querit ||
     provider === WebSearchProvider.Serply ||
+    provider === WebSearchProvider.Tavily ||
     provider === WebSearchProvider.YouCom
   ) {
     return provider;
@@ -27,27 +32,43 @@ export function getWebSearchProvider(promptConfig?: PromptConfig) {
   return undefined;
 }
 
-export function getWebSearchApiKey(promptConfig?: PromptConfig) {
-  const provider = getWebSearchProvider(promptConfig);
-  let apiKey: unknown;
+// The prompt_config field each provider reads its key from. Kept as the single
+// source of truth: the form uses it for the required marker, the schema uses it
+// for validation, and the reader below uses it to fetch the value — three
+// callers that used to each spell the mapping out again.
+const webSearchApiKeyFields: Record<WebSearchProvider, string> = {
+  [WebSearchProvider.Brave]: 'brave_api_key',
+  [WebSearchProvider.Exa]: 'exa_api_key',
+  [WebSearchProvider.Firecrawl]: 'firecrawl_api_key',
+  [WebSearchProvider.Linkup]: 'linkup_api_key',
+  [WebSearchProvider.Parallel]: 'parallel_api_key',
+  [WebSearchProvider.Querit]: 'querit_api_key',
+  [WebSearchProvider.Serply]: 'serply_api_key',
+  [WebSearchProvider.Tavily]: 'tavily_api_key',
+  [WebSearchProvider.YouCom]: 'youcom_api_key',
+};
 
-  switch (provider) {
-    case WebSearchProvider.Tavily:
-      apiKey = promptConfig?.tavily_api_key;
-      break;
-    case WebSearchProvider.Querit:
-      apiKey = promptConfig?.querit_api_key;
-      break;
-    case WebSearchProvider.Serply:
-      apiKey = promptConfig?.serply_api_key;
-      break;
-    case WebSearchProvider.YouCom:
-      apiKey = promptConfig?.youcom_api_key;
-      break;
-    default:
-      return undefined;
+export function getWebSearchApiKeyField(provider?: WebSearchProvider) {
+  return provider ? webSearchApiKeyFields[provider] : undefined;
+}
+
+// Whether the selected provider must have a key before it can be used. A
+// keyless provider answers on its own endpoint/tier and stays usable blank.
+export function isWebSearchApiKeyRequired(provider?: WebSearchProvider) {
+  return (
+    provider !== undefined && !KEYLESS_WEB_SEARCH_PROVIDERS.includes(provider)
+  );
+}
+
+export function getWebSearchApiKey(promptConfig?: PromptConfig) {
+  const keyField = getWebSearchApiKeyField(getWebSearchProvider(promptConfig));
+  if (!keyField) {
+    return undefined;
   }
 
+  const apiKey = (promptConfig as unknown as Record<string, unknown>)?.[
+    keyField
+  ];
   return typeof apiKey === 'string' ? apiKey.trim() : undefined;
 }
 

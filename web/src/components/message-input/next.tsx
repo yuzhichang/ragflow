@@ -49,6 +49,8 @@ export type NextMessageInputOnPressEnterParameter = {
   enableInternet?: boolean;
   storeHistoryMessages?: boolean;
   omitSessionId?: boolean;
+  /** When set, sends `agent_mode` to the backend (e.g. 'smart-reasoning'). */
+  agentMode?: string;
 };
 
 interface NextMessageInputProps {
@@ -64,6 +66,7 @@ interface NextMessageInputProps {
   onPressEnter({
     enableThinking,
     enableInternet,
+    agentMode,
   }: NextMessageInputOnPressEnterParameter): void;
   onInputChange: React.ChangeEventHandler<HTMLTextAreaElement>;
   createConversationBeforeUploadDocument?(message: string): Promise<any>;
@@ -174,6 +177,21 @@ export function NextMessageInput({
       description: t('chat.thinkingLevelLowDescription'),
     },
     { label: t('chat.thinkingLevelNone'), value: '0' },
+    {
+      label: t('chat.thinkingLevelAgentic'),
+      value: 'agentic',
+      description: t('chat.thinkingLevelAgenticDescription'),
+    },
+    {
+      label: t('chat.thinkingLevelGrepAgent'),
+      value: 'agentic-grep',
+      description: t('chat.thinkingLevelGrepAgentDescription'),
+    },
+    {
+      label: t('chat.thinkingLevelGrepBm25Agent'),
+      value: 'agentic-grep-bm25',
+      description: t('chat.thinkingLevelGrepBm25AgentDescription'),
+    },
   ];
 
   const handleThinkingChange = useCallback((value: string) => {
@@ -189,6 +207,16 @@ export function NextMessageInput({
     onPressEnter({
       enableThinking,
       enableInternet: showInternet ? enableInternet : false,
+      // The selected level maps 1:1 to the agent_mode template id on the
+      // backend (conf/agentic_rag.yaml).
+      agentMode:
+        enableThinking === 'agentic'
+          ? 'smart-reasoning'
+          : enableThinking === 'agentic-grep'
+            ? 'smart-grep'
+            : enableThinking === 'agentic-grep-bm25'
+              ? 'smart-grep-bm25'
+              : undefined,
     });
   }, [onPressEnter, enableThinking, enableInternet, showInternet]);
 

@@ -93,6 +93,7 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
   });
 
   async function onSubmit(values: FormSchemaType) {
+    console.log('[DIAG] onSubmit FIRED, llm_id=', values?.llm_id);
     const nextValues: Record<string, any> = removeUselessFieldsFromValues(
       values,
       'llm_setting.',
@@ -135,6 +136,11 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
     });
   }
 
+  function onInvalid(errors: any) {
+    console.error('[DIAG] submit INVALID, errors=', JSON.stringify(errors, null, 2));
+    console.error('[DIAG] submit INVALID, getValues=', JSON.stringify(form.getValues(), null, 2));
+  }
+
   useEffect(() => {
     const llmSettingEnabledValues = setLLMSettingEnabledValues(
       data.llm_setting,
@@ -164,6 +170,13 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
   }, [data, form]);
 
   useRevalidateStaleDatasetIds(form, datasetsFetched);
+
+  // [DIAG] Track form validity/errors in real time
+  const diagValid = form.formState.isValid;
+  const diagErrors = form.formState.errors;
+  useEffect(() => {
+    console.log('[DIAG] formState changed: isValid=', diagValid, 'errors=', JSON.stringify(diagErrors));
+  }, [diagValid, diagErrors]);
 
   return (
     <>
@@ -234,7 +247,10 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
                   >
                     {t('chat.cancel')}
                   </Button>
-                  <SavingButton loading={loading}></SavingButton>
+                  <SavingButton
+                    loading={loading}
+                    onClick={() => console.log('[DIAG] Save button CLICKED')}
+                  ></SavingButton>
                 </div>
               </form>
             </Form>

@@ -33,7 +33,12 @@ import (
 )
 
 var (
-	nonStreamCallTimeout = 300 * time.Second
+	// nonStreamCallTimeout is the per-call budget shared by every driver's non-stream call
+	// (chat completions, embeddings, rerank). Raised from 5 to 10 minutes on 2026-09-17 for
+	// the slow-plan experiment: StepFun's endpoint regularly needed more than 300s, and a
+	// budget that expires mid-call is what turned whole questions into send-phase failures.
+	// It now matches streamCallTimeout.
+	nonStreamCallTimeout = 10 * time.Minute
 	streamCallTimeout    = 10 * time.Minute
 	longOpCallTimeout    = 10 * time.Minute
 )
@@ -85,7 +90,7 @@ func (x *XAIModel) ChatWithMessages(ctx context.Context, modelName string, messa
 		return nil, err
 	}
 
-	return HandleNonStreamingResponse(body, modelUsage, chatModelConfig, OpenAIParserConfig)
+	return HandleNonStreamingResponse(ctx, body, modelUsage, chatModelConfig, OpenAIParserConfig)
 }
 
 // ChatStreamlyWithSender sends messages and streams the response

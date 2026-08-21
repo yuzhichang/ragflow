@@ -43,6 +43,14 @@
 # to be set:
 #
 #   bash build.sh --test-native          # or: cd internal/deepdoc/native && bash run.sh
+#
+# Embedding tokenizer assets: the Go token counters in internal/tokenizer load a
+# tokenizer file per family (XLM-R SentencePiece, BERT WordPiece, two byte-level BPE
+# families) from `huggingface.co/<repo>/<file>` at the top of ragflow_deps/ - the path
+# the loaders search and the one ragflow_deps/Dockerfile ships. This script fetches
+# them too, so one invocation gives a Go checkout everything it counts with. Without
+# them every model that declares a tokenizer silently counts with the calibrated
+# cl100k estimate instead (see internal/tokenizer/embedding_token_limits.md).
 
 import argparse
 import os
@@ -67,6 +75,36 @@ ORT_VERSION = "1.23.2"
 # skips to keep the download lean.
 DEEPDOC_REPO = "InfiniFlow/deepdoc"
 DEEPDOC_MODEL_FILES = ["det.ort", "layout.ort", "tsr.ort", "rec.ort", "ocr.res"]
+
+# Embedding tokenizer assets for the Go counters (internal/tokenizer). Each entry is
+# (repo, file, kind):
+#
+#   "runtime" - the counters load it in production, so the runtime images must ship it
+#               (the copy loop in Dockerfile / Dockerfile_base) and the loader must pin
+#               its SHA-1;
+#   "oracle"  - only scripts/gen_tokenizer_oracle.py needs it, to regenerate the test
+#               fixtures, so it is deliberately NOT shipped to the image.
+#
+# ragflow_deps/test_tokenizer_assets.py holds those three places together, because a
+# drift here is invisible at runtime: the counter simply becomes unavailable and ingest
+# counts with the calibrated fallback.
+#
+# Fetched per file, not by snapshot: these repos also carry multi-GB weights we do not
+# want. A missing asset is NOT fatal (unlike the DeepDoc weights above, without which
+# the server cannot run at all).
+TOKENIZER_ASSETS = [
+    # XLM-R SentencePiece (Unigram) - the BAAI bge / multilingual-e5 / m3e /
+    # gte-multilingual / jina-v3 family shares this vocabulary.
+    ("BAAI/bge-m3", "sentencepiece.bpe.model", "runtime"),
+    # BERT WordPiece vocab for the bge-*-en / e5-* / gte-base family.
+    ("BAAI/bge-large-en-v1.5", "vocab.txt", "runtime"),
+    # Byte-level BPE families (Qwen3-Embedding, Mistral/Llama embeddings).
+    ("Qwen/Qwen3-Embedding-0.6B", "tokenizer.json", "runtime"),
+    ("intfloat/e5-mistral-7b-instruct", "tokenizer.json", "runtime"),
+    # Cross-check oracles only: the HF tokenizer.json files the same families convert to.
+    ("BAAI/bge-m3", "tokenizer.json", "oracle"),
+    ("BAAI/bge-large-en-v1.5", "tokenizer.json", "oracle"),
+]
 
 
 def prune_stale_onnxruntime(static_lib_dir, version):
@@ -259,6 +297,59 @@ def download_go_models(use_china_mirrors=False):
     print("    No MODEL_DIR env needed: the Go backend auto-discovers this directory.")
 
 
+def download_tokenizer_assets(use_china_mirrors=False):
+    """Download the embedding tokenizer assets the Go counters load.
+
+    Written to `ragflow_deps/huggingface.co/<repo>/<file>`: the path internal/tokenizer
+    searches and the one ragflow_deps/Dockerfile builds its image from. Fetched per file
+    (these repos also carry multi-GB weights we do not want), routed via hf-mirror.com
+    when --china-mirrors is set.
+
+    A missing asset is not fatal - internal/tokenizer falls back to the calibrated
+    cl100k count plus the shrink-and-retry path - but it is loud, because that fallback
+    costs precision in the direction that makes a provider reject a request.
+    """
+    if use_china_mirrors:
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+    # Imported lazily so the module stays importable (and its unit tests stay
+    # huggingface-free) without the huggingface_hub dependency installed.
+    from huggingface_hub import hf_hub_download
+
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "huggingface.co")
+    missing = []
+    for repo_id, filename, _kind in TOKENIZER_ASSETS:
+        target_dir = os.path.join(base, repo_id)
+        if os.path.isfile(os.path.join(target_dir, filename)):
+            print(f"  ✓ {repo_id}/{filename} already present")
+            continue
+        os.makedirs(target_dir, exist_ok=True)
+        print(f"Downloading tokenizer asset {repo_id}/{filename}...")
+        try:
+            hf_hub_download(repo_id=repo_id, filename=filename, local_dir=target_dir)
+        except Exception as e:  # noqa: BLE001 - collected and surfaced below
+            missing.append((repo_id, filename, e))
+
+    if missing:
+        for repo_id, filename, e in missing:
+            print(f"  WARNING: could not fetch {repo_id}/{filename}: {e}", file=sys.stderr)
+        print(
+            "\n"
+            "The embedding tokenizer counters in internal/tokenizer load these files from\n"
+            f"  {base}\n"
+            "Without one, the models that declare its counter fall back to the calibrated\n"
+            "cl100k estimate: safe, but less precise - it under-counts some tokenizers, and\n"
+            "an under-count is a request the provider rejects. To recover:\n"
+            "  - re-run this script (a transient HF/network error usually clears);\n"
+            "  - behind the GFW, re-run with --china-mirrors (routes via hf-mirror.com);\n"
+            "  - or point MODEL_ASSETS_DIR at a directory holding the same layout.\n",
+            file=sys.stderr,
+        )
+        return False
+
+    print("  ✓ embedding tokenizer assets ready")
+    return True
+
+
 if __name__ == "__main__":
     # Anchor CWD to this file's directory so all relative outputs
     # (huggingface.co/, nltk_data/, *.deb, *.jar, *.tar.gz, etc.) land
@@ -343,3 +434,7 @@ if __name__ == "__main__":
     # Download the Go DeepDoc `.ort` weights so this script is a one-stop for Go
     # dev: native libs (above) + model files (below) from a single invocation.
     download_go_models(args.china_mirrors)
+
+    # Same one-stop idea for the token counters: their tokenizer files, in the layout
+    # the loaders search and ragflow_deps/Dockerfile ships.
+    download_tokenizer_assets(args.china_mirrors)
