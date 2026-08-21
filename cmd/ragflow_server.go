@@ -29,6 +29,7 @@ import (
 	"ragflow/internal/agent/canvas"
 	"ragflow/internal/agent/retrievalbridge"
 	agenttool "ragflow/internal/agent/tool"
+	"ragflow/internal/agentic_rag"
 	"ragflow/internal/channels"
 	"ragflow/internal/handler"
 	"ragflow/internal/ingestion/knowledge_compile"
@@ -267,7 +268,11 @@ func main() {
 		logLevel = "debug"
 	}
 
-	if err = common.InitLogger(logLevel, common.FileOutput{Filename: logFileName, Path: "logs"}, serverName); err != nil {
+	// Temporary pre-config logger: STDOUT ONLY (empty FileOutput). The port
+	// is not known yet, so a file here would be an orphaned log (e.g.
+	// logs/api_server.log next to the real logs/api_server_9384.log); the
+	// real file sink is attached by the post-config re-initialization below.
+	if err = common.InitLogger(logLevel, common.FileOutput{}, serverName); err != nil {
 		panic("failed to initialize logger: " + err.Error())
 	}
 
@@ -285,9 +290,15 @@ func main() {
 	globalConfig := server.GetConfig()
 
 	// override default port if provided
+	// NOTE: this switch must stay side-effect-free on the LOG (no
+	// registerNativeDeepDoc here): it runs while only the temporary
+	// stdout-only logger exists, so anything it logs is lost from the file.
+	// Side effects that log (DeepDoc registration) move below, after the
+	// real file-backed logger is up.
+	needNativeDeepDoc := false
 	switch *arguments.mode {
 	case "api":
-		registerNativeDeepDoc()
+		needNativeDeepDoc = true
 		apiServerConfig := globalConfig.GetAPIServerConfig()
 		port := apiServerConfig.HTTPPort
 		if arguments.port != nil {
@@ -308,7 +319,7 @@ func main() {
 			serverName = fmt.Sprintf("admin_server_%d", port)
 		}
 	case "ingestor":
-		registerNativeDeepDoc()
+		needNativeDeepDoc = true
 		if serverName == "" {
 			uuid := utility.GenerateUUID()
 			serverName = fmt.Sprintf("ingestor_server_%s", uuid)
@@ -356,6 +367,14 @@ func main() {
 	common.SyncLog()
 	if err = common.InitLogger(logLevel, fileOut, serverName); err != nil {
 		common.Error("Failed to reinitialize logger with configured level", err)
+	}
+
+	// Wire the in-process DeepDoc backend only after the REAL file-backed
+	// logger exists: its registration lines (and the Fatal abort on a missing
+	// backend) must land in the run's log file, not in the pre-config
+	// stdout-only window.
+	if needNativeDeepDoc {
+		registerNativeDeepDoc()
 	}
 
 	// Print all configuration settings
@@ -773,6 +792,15 @@ func startServer(ctx context.Context) {
 		modelProviderService,
 		retrievalEnhancer,
 	))
+	agenttool.SetGrepService(agentic_rag.NewGrepAdapter(docEngine))
+	// The bm25 leg must tokenize queries with the same tokenizer family the
+	// ingestion pipeline used (see Bm25Adapter.SetQueryBuilder): raw query
+	// words cannot match their stemmed/subword index tokens.
+	bm25Adapter := agentic_rag.NewBm25Adapter(docEngine)
+	if qb := nlp.GetQueryBuilder(); qb != nil {
+		bm25Adapter.SetQueryBuilder(qb)
+	}
+	agenttool.SetBm25Service(bm25Adapter)
 	agenttool.SetMemoryRetrievalService(retrievalbridge.NewMemoryAdapter(memoryService))
 	common.Info("agent: retrieval service adapter installed")
 

@@ -177,8 +177,83 @@ func (e *Engine) InsertChunks(ctx context.Context, chunks []map[string]interface
 		}
 	}
 
-	// Build bulk request body with index operations (upsert behavior: insert if not exists, update if exists)
+	// Bulk requests are executed in bounded batches so a single large document
+	// (thousands of chunks) never sends a payload above the Elasticsearch HTTP
+	// body limit (default http.max_content_length = 100MB), which surfaces as a
+	// 413 Request Entity Too Large. We flush a batch by chunk count AND byte
+	// size to stay well within the limit.
+	const (
+		bulkBatchChunks = 500
+		bulkBatchBytes  = 20 * 1024 * 1024 // 20MB, comfortably under the 100MB default
+	)
+
+	flush := func(buf *bytes.Buffer) error {
+		if buf.Len() == 0 {
+			return nil
+		}
+		req := esapi.BulkRequest{
+			Body:    bytes.NewReader(buf.Bytes()),
+			Refresh: "wait_for",
+		}
+		res, err := req.Do(ctx, e.client)
+		if err != nil {
+			common.Error("Failed to execute bulk request", err)
+			return fmt.Errorf("failed to execute bulk request: %w", err)
+		}
+		defer res.Body.Close()
+
+		if res.IsError() {
+			bodyBytes, _ := io.ReadAll(res.Body)
+			common.Sugar.Errorw("Elasticsearch bulk request returned error", "status", res.Status(), "body", string(bodyBytes))
+			return fmt.Errorf("elasticsearch bulk request returned error: %s, body: %s", res.Status(), string(bodyBytes))
+		}
+
+		// Parse bulk response
+		var bulkResponse map[string]interface{}
+		if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
+			common.Error("Failed to parse bulk response", err)
+			return fmt.Errorf("failed to parse bulk response: %w", err)
+		}
+
+		// Check for errors in bulk response. ES reports a 200 at the
+		// top level even when individual bulk items fail, so we must
+		// inspect the items and surface the reasons instead of returning
+		// success while the chunks were silently dropped.
+		if hasErrs, ok := bulkResponse["errors"].(bool); ok && hasErrs {
+			var reasons []string
+			if items, ok := bulkResponse["items"].([]interface{}); ok {
+				for _, it := range items {
+					im, ok := it.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					for _, op := range im {
+						om, ok := op.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if errObj, ok := om["error"].(map[string]interface{}); ok {
+							if reason, ok := errObj["reason"].(string); ok && reason != "" {
+								reasons = append(reasons, reason)
+							}
+						}
+					}
+				}
+			}
+			if len(reasons) > 5 {
+				reasons = reasons[:5]
+			}
+			common.Error("Elasticsearch bulk request had item errors",
+				fmt.Errorf("index %s: %d failed items; first reasons: %v", baseName, len(reasons), reasons))
+			return fmt.Errorf("elasticsearch bulk request had %d item errors (index %s); first reasons: %v",
+				len(reasons), baseName, reasons)
+		}
+		return nil
+	}
+
+	// Build and execute bulk request bodies in bounded batches.
 	var buf bytes.Buffer
+	batchChunkCount := 0
 	for _, doc := range chunks {
 		if isMemoryIndex {
 			// Memory messages arrive with logical fields; map them to
@@ -215,66 +290,20 @@ func (e *Engine) InsertChunks(ctx context.Context, chunks []map[string]interface
 		if err := jsonIterator.NewEncoder(&buf).Encode(docCopy); err != nil {
 			return nil, fmt.Errorf("failed to encode document: %w", err)
 		}
-	}
 
-	// Execute bulk request with refresh="wait_for"
-	req := esapi.BulkRequest{
-		Body:    bytes.NewReader(buf.Bytes()),
-		Refresh: "wait_for",
-	}
-
-	res, err := req.Do(ctx, e.client)
-	if err != nil {
-		common.Error("Failed to execute bulk request", err)
-		return nil, fmt.Errorf("failed to execute bulk request: %w", err)
-	}
-	defer res.Body.Close()
-
-	if res.IsError() {
-		bodyBytes, _ := io.ReadAll(res.Body)
-		common.Sugar.Errorw("Elasticsearch bulk request returned error", "status", res.Status(), "body", string(bodyBytes))
-		return nil, fmt.Errorf("elasticsearch bulk request returned error: %s, body: %s", res.Status(), string(bodyBytes))
-	}
-
-	// Parse bulk response
-	var bulkResponse map[string]interface{}
-	if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err != nil {
-		common.Error("Failed to parse bulk response", err)
-		return nil, fmt.Errorf("failed to parse bulk response: %w", err)
-	}
-
-	// Check for errors in bulk response. ES reports a 200 at the
-	// top level even when individual bulk items fail, so we must
-	// inspect the items and surface the reasons instead of returning
-	// success while the chunks were silently dropped.
-	if errors, ok := bulkResponse["errors"].(bool); ok && errors {
-		var reasons []string
-		if items, ok := bulkResponse["items"].([]interface{}); ok {
-			for _, it := range items {
-				im, ok := it.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				for _, op := range im {
-					om, ok := op.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					if errObj, ok := om["error"].(map[string]interface{}); ok {
-						if reason, ok := errObj["reason"].(string); ok && reason != "" {
-							reasons = append(reasons, reason)
-						}
-					}
-				}
+		batchChunkCount++
+		if batchChunkCount >= bulkBatchChunks || buf.Len() >= bulkBatchBytes {
+			// Flush the current batch before adding the next chunk.
+			if err := flush(&buf); err != nil {
+				return nil, err
 			}
+			buf.Reset()
+			batchChunkCount = 0
 		}
-		if len(reasons) > 5 {
-			reasons = reasons[:5]
-		}
-		common.Error("Elasticsearch bulk request had item errors",
-			fmt.Errorf("index %s: %d failed items; first reasons: %v", baseName, len(reasons), reasons))
-		return nil, fmt.Errorf("elasticsearch bulk request had %d item errors (index %s); first reasons: %v",
-			len(reasons), baseName, reasons)
+	}
+	// Flush the final partial batch.
+	if err := flush(&buf); err != nil {
+		return nil, err
 	}
 
 	common.Info("ElasticsearchConnection.InsertChunks result", zap.String("index_name", baseName), zap.Int("count", len(chunks)))
@@ -1143,8 +1172,10 @@ func (e *Engine) Search(ctx context.Context, req *types.SearchRequest) (*types.S
 	// Build query body with text match and/or knn match
 	queryBody := make(map[string]interface{})
 
+	hasVectorMatch := matchDense != nil && len(matchDense.EmbeddingData) > 0
+
 	if matchText != nil {
-		textQuery := buildQueryStringQuery(matchText, vectorSimilarityWeight, isSkillIndex, isMemoryIndex)
+		textQuery := buildQueryStringQuery(matchText, isSkillIndex, isMemoryIndex)
 		if boolQuery != nil {
 			if boolMap, ok := boolQuery["bool"].(map[string]interface{}); ok {
 				if must, ok := boolMap["must"].([]interface{}); ok {
@@ -1153,14 +1184,19 @@ func (e *Engine) Search(ctx context.Context, req *types.SearchRequest) (*types.S
 				} else {
 					boolMap["must"] = []interface{}{textQuery}
 				}
-				boolMap["boost"] = 1.0 - vectorSimilarityWeight
+				// Weighted-sum fusion scales the text leg by (1 - w) against the
+				// knn leg's w; a text-only query has no such pairing, so the
+				// boolean filter wrapper must not apply the constant boost —
+				// otherwise every BM25 score is silently multiplied by 0.5.
+				if hasVectorMatch {
+					boolMap["boost"] = 1.0 - vectorSimilarityWeight
+				}
 			}
 		} else {
 			boolQuery = textQuery
 		}
 	}
 
-	hasVectorMatch := matchDense != nil && len(matchDense.EmbeddingData) > 0
 	if hasVectorMatch {
 		if isMemoryIndex {
 			if err := e.ensureMemoryMessageSearchVectorMappings(ctx, req.IndexNames, matchDense.VectorColumnName, len(matchDense.EmbeddingData)); err != nil {
@@ -1384,6 +1420,198 @@ func (e *Engine) Search(ctx context.Context, req *types.SearchRequest) (*types.S
 
 		allResults = calculateScores(allResults, scoreColumn, pagerankField)
 		allResults = sortByScore(allResults, limit)
+	}
+
+	return &types.SearchResult{
+		Chunks: allResults,
+		Total:  totalHits,
+	}, nil
+}
+
+// SearchByRegexp executes a regex-match-only search over chunk content. It
+// reuses the same scope-filter builder and response converter as Search but
+// emits a Lucene `regexp` query on the chunk content field instead of text /
+// dense match expressions. This backs the agent's grep_chunks tool.
+//
+// The caller is responsible for translating a user regex into Lucene syntax;
+// patterns using unsupported constructs should be detected and handled by the
+// caller (fallback to broad recall + in-memory filtering).
+// esIndexNamesForTenant maps an engine-agnostic tenant id to this engine's
+// physical index names. ES stores one index per tenant (ragflow_<tenant>), and
+// a tenant id may carry comma-separated tenants (one index each). This is the
+// doc-engine-specific storage mapping — callers never compute index names.
+func esIndexNamesForTenant(tenantID string) []string {
+	var names []string
+	for part := range strings.SplitSeq(tenantID, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			names = append(names, "ragflow_"+part)
+		}
+	}
+	return names
+}
+
+func (e *Engine) SearchByRegexp(ctx context.Context, req *types.RegexpSearchRequest) (*types.SearchResult, error) {
+	// Map the engine-agnostic tenant to this engine's physical index(es). ES
+	// stores one index per tenant (ragflow_<tenant>); the tenant id may carry
+	// comma-separated tenants, which map to one index each.
+	indexNames := esIndexNamesForTenant(req.TenantID)
+	if len(indexNames) == 0 {
+		return nil, fmt.Errorf("tenant id cannot be empty")
+	}
+	if strings.TrimSpace(req.Pattern) == "" {
+		return nil, fmt.Errorf("regexp pattern cannot be empty")
+	}
+
+	offset := max(req.Offset, 0)
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+
+	// Build the scope filter (kb_id terms + available_int + explicit filters).
+	boolQuery := buildBoolQueryFromCondition(req.Filter, req.KbIDs, false, false)
+
+	// Attach the regexp query as a must clause on the chunk content field.
+	// Two critical ES keyword-regexp behaviours:
+	//  1. ES regexp matches the WHOLE field value, not a substring. To emulate
+	//     "contains" (what grep_chunks and the old in-memory RE2 did), wrap the
+	//     pattern as ".*(pattern).*" — a bare "何进" would only match a chunk
+	//     whose content is exactly "何进" (yielding 0 hits).
+	//  2. case_insensitive is intentionally NOT set: on a keyword field ES's
+	//     case-insensitive regexp cannot match CJK text (empirically 0 for
+	//     patterns like "马元义"). CJK keywords have no case; English
+	//     case-sensitivity is acceptable.
+	regexpPattern := ".*(" + req.Pattern + ").*"
+	regexpClause := map[string]interface{}{
+		"regexp": map[string]interface{}{
+			"content_with_weight": map[string]interface{}{
+				"value": regexpPattern,
+			},
+		},
+	}
+
+	if boolQuery == nil {
+		boolQuery = map[string]interface{}{}
+	}
+	if boolMap, ok := boolQuery["bool"].(map[string]interface{}); ok {
+		if must, ok := boolMap["must"].([]interface{}); ok {
+			boolMap["must"] = append(must, regexpClause)
+		} else {
+			boolMap["must"] = []interface{}{regexpClause}
+		}
+	} else {
+		boolQuery = map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": []interface{}{regexpClause},
+			},
+		}
+	}
+
+	// Offset/Limit are applied to each search target (IndexNames entry)
+	// independently — the request is engine-agnostic and makes no assumption
+	// about how many underlying indexes a target spans. The ES engine queries
+	// each index with the same from/size and merges the hits.
+	queryBody := map[string]interface{}{
+		"query": boolQuery,
+		"size":  limit,
+		"from":  offset,
+	}
+
+	// When an explicit sort is requested (e.g. a document's reading order), push
+	// it down so ES applies offset/limit over the deterministically-ordered
+	// result set. This is what lets list_chunks page through a document in
+	// reading order without over-fetching.
+	if req.Sort != nil && len(req.Sort.Fields) > 0 {
+		if sortClause := parseOrderByExpr(req.Sort); len(sortClause) > 0 {
+			queryBody["sort"] = sortClause
+		}
+	}
+
+	// Narrow the returned _source to the requested fields when given. The regexp
+	// matches content_with_weight, so callers must keep it in SelectFields or the
+	// hits will carry no content.
+	if len(req.SelectFields) > 0 {
+		queryBody["_source"] = req.SelectFields
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(queryBody); err != nil {
+		return nil, fmt.Errorf("error encoding regexp query: %w", err)
+	}
+
+	payload := append([]byte(nil), buf.Bytes()...)
+	var (
+		totalHits  int64
+		allResults []map[string]interface{}
+		firstErr   error
+	)
+	for _, indexName := range indexNames {
+		res, err := e.client.Search(
+			e.client.Search.WithContext(ctx),
+			e.client.Search.WithIndex(indexName),
+			e.client.Search.WithBody(bytes.NewReader(payload)),
+			e.client.Search.WithTrackTotalHits(true),
+		)
+		if err != nil {
+			common.Warn("Elasticsearch regexp query failed", zap.String("index", indexName), zap.Error(err))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		if res.IsError() {
+			bodyBytes, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			common.Warn("Elasticsearch regexp error response", zap.String("index", indexName), zap.String("body", string(bodyBytes)))
+			// A 4xx here is typically a Lucene-incompatible pattern (e.g. \b,
+			// lookahead) being rejected. Surface it so the caller's RE2 in-memory
+			// fallback can take over instead of silently returning empty.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("elasticsearch regexp error on index %q: %s", indexName, strings.TrimSpace(string(bodyBytes)))
+			}
+			continue
+		}
+
+		var esResp SearchResponse
+		decodeErr := json.NewDecoder(res.Body).Decode(&esResp)
+		res.Body.Close()
+		if decodeErr != nil {
+			common.Warn("Elasticsearch regexp failed to parse response", zap.String("index", indexName), zap.Error(decodeErr))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("elasticsearch regexp parse error on index %q: %w", indexName, decodeErr)
+			}
+			continue
+		}
+
+		searchChunks := convertESResponse(&esResp, "")
+		totalHits += esResp.Hits.Total.Value
+		allResults = append(allResults, searchChunks...)
+	}
+
+	// If every requested index failed (no results at all), propagate the error
+	// so the caller can fall back (e.g. GrepAdapter's in-memory RE2 filter).
+	// Partial success (some indexes returned results) is returned as-is.
+	if len(allResults) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+
+	// Single index: ES already applied from/size exactly, so the collected rows
+	// are the requested page — only cap to limit (defensive). Multi index: every
+	// index fetched up to offset+limit from 0, so sort the merged set (per the
+	// requested fields, or by score) and apply the offset once, globally.
+	// Each index already applied from=offset/size=limit, so the merged hits are
+	// the requested page per target. With an explicit sort we re-order the merged
+	// set by the requested fields so cross-index output is deterministic; without
+	// one we cap to limit (the relevance order ES returned is preserved). No
+	// offset is skipped here — it was already applied per index.
+	if req.Sort != nil && len(req.Sort.Fields) > 0 {
+		allResults = sortByFields(allResults, req.Sort)
+	} else {
+		allResults = sortByScore(allResults, limit)
+	}
+	if len(allResults) > limit {
+		allResults = allResults[:limit]
 	}
 
 	return &types.SearchResult{
@@ -1866,6 +2094,13 @@ func buildBoolQueryFromCondition(filter map[string]interface{}, kbIDs []string, 
 					map[string]interface{}{"terms": map[string]interface{}{"_id": listVal}},
 				)
 			} else if strListVal, ok := v.([]string); ok && len(strListVal) > 0 {
+				// A typed []string MUST be handled here: the generic loop
+				// below skips the "id" key, so without this branch a caller
+				// passing map[string]interface{}{"id": []string{...}} builds a
+				// query with NO id filter and the scoped read silently
+				// degenerates into "fetch up to Limit chunks of the document"
+				// (observed via list_chunks: an 11-chunk window returned 3.8MB
+				// because the whole 4171-chunk document was fetched instead).
 				shouldClauses = append(shouldClauses,
 					map[string]interface{}{"terms": map[string]interface{}{"id": strListVal}},
 					map[string]interface{}{"terms": map[string]interface{}{"_id": strListVal}},
@@ -1947,7 +2182,16 @@ func buildBoolQueryFromCondition(filter map[string]interface{}, kbIDs []string, 
 // buildQueryStringQuery builds a query_string query from MatchTextExpr
 // When isSkillIndex is true, uses skill-specific fields (name_tks, tags_tks, etc.)
 // Otherwise uses document fields (title_tks, content_ltks, etc.)
-func buildQueryStringQuery(matchText *types.MatchTextExpr, vectorSimilarityWeight float64, isSkillIndex, isMemoryIndex bool) map[string]interface{} {
+//
+// The MatchingText is lowercased: the *_tks/*_ltks fields it targets are
+// tokenized with the whitespace analyzer and RAGFlow's ingest pipeline stores
+// pre-lowercased tokens there, but the whitespace search analyzer does NOT
+// lowercase the query. Capitalized terms (any proper noun: "Ross Feldner",
+// "New Age Graphics") therefore silently match nothing, and a keyword query
+// consisting only of proper nouns returns zero hits — observed live when a
+// perfect pivot query ("Isabel Wood co-lead Ross Feldner ...") dead-ended a
+// benchmark question that was answerable from the corpus (q156).
+func buildQueryStringQuery(matchText *types.MatchTextExpr, isSkillIndex, isMemoryIndex bool) map[string]interface{} {
 	if matchText == nil {
 		return nil
 	}
@@ -1987,7 +2231,7 @@ func buildQueryStringQuery(matchText *types.MatchTextExpr, vectorSimilarityWeigh
 		"query_string": map[string]interface{}{
 			"fields":               fields,
 			"type":                 "best_fields",
-			"query":                matchText.MatchingText,
+			"query":                strings.ToLower(matchText.MatchingText),
 			"minimum_should_match": minimumShouldMatch,
 			"boost":                boost,
 		},
@@ -3104,6 +3348,61 @@ func toFloat64(v interface{}) (float64, bool) {
 		return float64(val), true
 	}
 	return 0, false
+}
+
+// sortByFields orders chunks by the given OrderByExpr fields ascending. It is
+// used after merging multi-index regexp results so the offset/limit window is
+// applied to a globally-sorted set (ES only sorts within each index). Numeric
+// fields sort numerically, string fields lexicographically.
+func sortByFields(chunks []map[string]interface{}, expr *types.OrderByExpr) []map[string]interface{} {
+	if expr == nil || len(expr.Fields) == 0 {
+		return chunks
+	}
+	sort.SliceStable(chunks, func(i, j int) bool {
+		for _, field := range expr.Fields {
+			vi, oki := chunks[i][field.Field]
+			vj, okj := chunks[j][field.Field]
+			if !oki || !okj {
+				// Missing field sorts before a present one.
+				if !oki && !okj {
+					continue
+				}
+				return !oki
+			}
+			// Compare the two values and derive a stable equality key. The raw
+			// interface{} equality test below would panic on uncomparable types
+			// ([]interface{}, map from ES source), so the equality check always
+			// runs on string forms instead.
+			var less bool
+			var keyI, keyJ string
+			if fi, ei := toFloat64(vi); ei {
+				if fj, ej := toFloat64(vj); ej {
+					less = fi < fj
+				} else {
+					less = false // numeric before non-numeric
+				}
+				keyI, keyJ = fmt.Sprintf("%v", vi), fmt.Sprintf("%v", vj)
+			} else {
+				si, siOk := vi.(string)
+				sj, sjOk := vj.(string)
+				if siOk && sjOk {
+					less = si < sj
+					keyI, keyJ = si, sj
+				} else {
+					keyI, keyJ = fmt.Sprintf("%v", vi), fmt.Sprintf("%v", vj)
+					less = keyI < keyJ
+				}
+			}
+			if keyI != keyJ {
+				if field.Type == types.SortDesc {
+					return !less
+				}
+				return less
+			}
+		}
+		return false
+	})
+	return chunks
 }
 
 // sortByScore sorts chunks by _score descending and limits

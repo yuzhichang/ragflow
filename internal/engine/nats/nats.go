@@ -31,6 +31,20 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// isStreamExistsErr reports whether err means the stream already exists, using
+// the typed JetStream APIError (err_code 10058) rather than error-string
+// matching. The APIError code is the canonical, stable signal from the server.
+func isStreamExistsErr(err error) bool {
+	if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		return true
+	}
+	var apiErr *jetstream.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode == jetstream.JSErrCodeStreamNameInUse
+	}
+	return false
+}
+
 type NatsEngine struct {
 	host      string
 	port      int
@@ -80,19 +94,35 @@ func (n *NatsEngine) Init() error {
 		Retention: jetstream.WorkQueuePolicy,
 		Storage:   jetstream.FileStorage,
 		Discard:   jetstream.DiscardNew,
-		MaxMsgs:   1024 * 128,
-		MaxBytes:  1024 * 1024 * 64,
-		// Server-side dedup window. Inert for task publishes: PublishTask
-		// intentionally sends no MsgID (see below — dedup would swallow
-		// retry republishes of a reused task_id). It only takes effect for
-		// a publisher that opts into MsgIDs.
-		Duplicates: 10 * time.Minute,
+		MaxMsgs:   1024 * 1024,
+		MaxBytes:  1024 * 1024 * 1024,
 	}
 
 	n.stream, err = ensureStreamConfig(ctx, n.jetStream, streamCfg)
 	if err != nil {
-		n.nc.Close()
-		return fmt.Errorf("fail to create stream at %s: %w", natsURL, err)
+		if !isStreamExistsErr(err) {
+			n.nc.Close()
+			return fmt.Errorf("fail to create stream at %s: %w", natsURL, err)
+		}
+
+		common.Info("NATS stream already exists, use existing stream")
+		n.stream, err = n.jetStream.Stream(ctx, "RAGFLOW_TASKS")
+		if err != nil {
+			n.nc.Close()
+			return fmt.Errorf("fail to get existing stream at %s: %w", natsURL, err)
+		}
+		// Reconcile the running stream with the configured limits so an existing
+		// stream created under older settings (e.g. DiscardOld + small MaxBytes)
+		// picks up DiscardNew and the larger MaxMsgs/MaxBytes. CreateStream never
+		// touches an already-existing stream, so UpdateStream is required here.
+		n.stream, err = n.jetStream.UpdateStream(ctx, streamCfg)
+		if err != nil {
+			n.nc.Close()
+			return fmt.Errorf("fail to update existing stream at %s: %w", natsURL, err)
+		}
+		common.Info("NATS stream updated with current config (discard=new, larger limits)")
+	} else {
+		common.Info(fmt.Sprintf("NATS stream create successfully at %s", natsURL))
 	}
 	common.Info(fmt.Sprintf("NATS stream RAGFLOW_TASKS ready at %s", natsURL))
 

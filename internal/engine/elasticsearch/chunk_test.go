@@ -435,6 +435,15 @@ func TestBuildBoolQueryFromConditionIDFilter(t *testing.T) {
 	check("int_value", map[string]interface{}{
 		"id": 42,
 	}, []string{"id", "_id"})
+
+	// A typed []string must be handled too: callers built from typed helpers
+	// (e.g. list_chunks' ChunkScope) pass []string, and the generic loop below
+	// skips the "id" key — without this branch the query carries NO id filter
+	// and a scoped read silently fetches the whole document (an 11-chunk
+	// window returned 3.8MB instead of ~17KB).
+	check("string_slice_value", map[string]interface{}{
+		"id": []string{"a", "b", "c"},
+	}, []string{"id", "_id"})
 }
 
 // paginationGRID mirrors the (page_size, top) grid from

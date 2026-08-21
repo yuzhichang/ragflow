@@ -2,8 +2,10 @@ import { WebSearchProvider } from '@/constants/chat';
 import type { PromptConfig } from '@/interfaces/database/chat';
 import {
   getWebSearchApiKey,
+  getWebSearchApiKeyField,
   getWebSearchProvider,
   hasWebSearchProvider,
+  isWebSearchApiKeyRequired,
 } from './web-search-api-key';
 
 describe('getWebSearchProvider', () => {
@@ -141,5 +143,132 @@ describe('You.com key selection', () => {
 
     expect(getWebSearchProvider(promptConfig)).toBe(WebSearchProvider.YouCom);
     expect(getWebSearchApiKey(promptConfig)).toBe('ydc-test');
+  });
+});
+
+// Brave, Exa, Firecrawl, Linkup and Parallel all authenticate with a key and
+// have no keyless path, so none of them may show up as "usable" without one.
+// Exa has a free tier of 1,000 requests/month, but it is not keyless.
+describe('keyed providers added in 2026-09', () => {
+  const cases = [
+    {
+      provider: WebSearchProvider.Brave,
+      keyName: 'brave_api_key',
+      key: 'brave-test',
+    },
+    {
+      provider: WebSearchProvider.Exa,
+      keyName: 'exa_api_key',
+      key: 'exa-test',
+    },
+    {
+      provider: WebSearchProvider.Firecrawl,
+      keyName: 'firecrawl_api_key',
+      key: 'firecrawl-test',
+    },
+    {
+      provider: WebSearchProvider.Linkup,
+      keyName: 'linkup_api_key',
+      key: 'linkup-test',
+    },
+    {
+      provider: WebSearchProvider.Parallel,
+      keyName: 'parallel_api_key',
+      key: 'parallel-test',
+    },
+  ] as const;
+
+  it.each(cases)(
+    'reads $provider from $keyName',
+    ({ provider, keyName, key }) => {
+      const promptConfig = {
+        web_search_provider: provider,
+        [keyName]: `  ${key}  `,
+        tavily_api_key: 'tvly-test',
+      } as unknown as PromptConfig;
+
+      expect(getWebSearchProvider(promptConfig)).toBe(provider);
+      expect(getWebSearchApiKey(promptConfig)).toBe(key);
+      expect(hasWebSearchProvider(promptConfig)).toBe(true);
+    },
+  );
+
+  it.each(cases)('is unusable when $provider has no key', ({ provider }) => {
+    const promptConfig = {
+      web_search_provider: provider,
+      tavily_api_key: 'tvly-test',
+    } as PromptConfig;
+
+    expect(getWebSearchApiKey(promptConfig)).toBeUndefined();
+    expect(hasWebSearchProvider(promptConfig)).toBe(false);
+  });
+});
+
+// The required marker and the save-time validation both read the same two
+// helpers, so the field name and the required flag have to agree for every
+// provider — a mismatch would mark a field required and then validate a
+// different one.
+describe('provider key field mapping', () => {
+  it('maps every provider to its own prompt_config key', () => {
+    expect(getWebSearchApiKeyField(WebSearchProvider.Brave)).toBe(
+      'brave_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.Exa)).toBe('exa_api_key');
+    expect(getWebSearchApiKeyField(WebSearchProvider.Firecrawl)).toBe(
+      'firecrawl_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.Linkup)).toBe(
+      'linkup_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.Parallel)).toBe(
+      'parallel_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.Querit)).toBe(
+      'querit_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.Serply)).toBe(
+      'serply_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.Tavily)).toBe(
+      'tavily_api_key',
+    );
+    expect(getWebSearchApiKeyField(WebSearchProvider.YouCom)).toBe(
+      'youcom_api_key',
+    );
+  });
+
+  it('has no key field when no provider is selected', () => {
+    expect(getWebSearchApiKeyField(undefined)).toBeUndefined();
+    expect(
+      getWebSearchApiKeyField('' as unknown as WebSearchProvider),
+    ).toBeUndefined();
+  });
+
+  it('requires a key for every provider except the keyless ones', () => {
+    expect(isWebSearchApiKeyRequired(WebSearchProvider.Brave)).toBe(true);
+    expect(isWebSearchApiKeyRequired(WebSearchProvider.Exa)).toBe(true);
+    expect(isWebSearchApiKeyRequired(WebSearchProvider.Tavily)).toBe(true);
+    expect(isWebSearchApiKeyRequired(WebSearchProvider.YouCom)).toBe(false);
+    expect(isWebSearchApiKeyRequired(undefined)).toBe(false);
+  });
+});
+
+// Exa is NOT keyless despite its free tier: 1,000 requests/month comes with no
+// credit card, but every request still carries a key, so a blank field must read
+// as "not configured" exactly like the other keyed providers.
+describe('Exa key requirement', () => {
+  it('is unusable with no key configured', () => {
+    expect(
+      hasWebSearchProvider({
+        web_search_provider: WebSearchProvider.Exa,
+      } as PromptConfig),
+    ).toBe(false);
+
+    expect(
+      hasWebSearchProvider({
+        web_search_provider: WebSearchProvider.Exa,
+        exa_api_key: '  ',
+      } as PromptConfig),
+    ).toBe(false);
   });
 });

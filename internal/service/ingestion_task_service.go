@@ -323,6 +323,14 @@ func (s *IngestionTaskService) GetTask(ctx context.Context, taskID string) (*ent
 	return task, nil
 }
 
+// GetTaskByDocument returns the document's latest ingestion task. A document
+// may be parsed multiple times over its lifetime; the newest task (by
+// create_time) is the current parse round, so doc-level run state derives from
+// it alone.
+func (s *IngestionTaskService) GetTaskByDocument(ctx context.Context, documentID string) (*entity.IngestionTask, error) {
+	return s.ingestionTaskDAO.GetByDocumentID(ctx, dao.DB, documentID)
+}
+
 func validateTransition(from, to string) error {
 	switch from {
 	case common.CREATED:

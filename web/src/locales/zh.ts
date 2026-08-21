@@ -1025,6 +1025,13 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
       thinkingLevelHighDescription: '深度推理',
       thinkingLevelUltra: 'Ultra',
       thinkingLevelUltraDescription: '尽力思考',
+      thinkingLevelAgentic: 'Agentic',
+      thinkingLevelAgenticDescription: '基于知识库的 ReAct 智能体',
+      thinkingLevelGrepAgent: 'Grep 检索智能体',
+      thinkingLevelGrepAgentDescription: '仅使用关键词/正则检索的 ReAct 智能体',
+      thinkingLevelGrepBm25Agent: 'Grep+BM25 检索智能体',
+      thinkingLevelGrepBm25AgentDescription:
+        '仅词法检索（精确正则 + BM25 关键词排序）的 ReAct 智能体',
       thinkingTip:
         '仅控制官方模型提供商中的 Qwen、Kimi 和 GLM 模型思考模式。系统默认会关闭 Qwen 思考，以避免任务长时间运行。',
       quote: '显示引文',
@@ -1094,19 +1101,35 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
       reasoning: '推理',
       reasoningTip:
         '在问答过程中是否启用推理工作流，类似 Deepseek-R1 等模型所采用的方式。启用后，该功能允许模型访问外部知识，并借助思维链推理等技术逐步解决复杂问题。通过将问题分解为可处理的步骤，这种方法增强了模型提供准确回答的能力，从而在需要逻辑推理和多步思考的任务上表现更优。',
-      tavilyApiKeyTip:
-        '如果 API 密钥设置正确，它将利用 Tavily 进行网络搜索作为知识库的补充。',
-      tavilyApiKeyMessage: '请输入你的 Tavily API Key',
       webSearch: '网络搜索',
       webSearchProvider: '网络搜索服务',
       webSearchProviderTip: '选择启用联网搜索时使用的搜索服务。',
       webSearchProviderPlaceholder: '请选择网络搜索服务',
+      webSearchApiKeyRequired:
+        '所选服务必须填写 API Key —— 否则不会发起联网搜索，聊天框里也不会出现联网开关。',
+      // 每个 provider 一组 Tip/Message，按 provider id 字典序排列。
+      braveApiKeyTip:
+        '选择 Brave Search 后，将使用其搜索结果补充知识库检索。Brave 的所有端点都需要 Key。',
+      braveApiKeyMessage: '请输入你的 Brave Search API Key',
+      exaApiKeyTip:
+        '必填。选择 Exa 后，将使用其搜索结果补充知识库检索。即使是每月 1,000 次的免费额度，也仍然需要 Key。',
+      exaApiKeyMessage: '请输入你的 Exa API Key',
+      firecrawlApiKeyTip:
+        '选择 Firecrawl 后，将使用其搜索结果补充知识库检索。只取搜索摘要，不抓取整页。',
+      firecrawlApiKeyMessage: '请输入你的 Firecrawl API Key',
+      linkupApiKeyTip: '选择 Linkup 后，将使用其搜索结果补充知识库检索。',
+      linkupApiKeyMessage: '请输入你的 Linkup API Key',
+      parallelApiKeyTip: '选择 Parallel 后，将使用其搜索摘录补充知识库检索。',
+      parallelApiKeyMessage: '请输入你的 Parallel API Key',
       queritApiKeyTip:
         '选择 Querit 后，将使用 Querit 的网络搜索结果补充知识库检索。',
       queritApiKeyMessage: '请输入你的 Querit API Key',
       serplyApiKeyTip:
         '选择 Serply 后，将使用 Serply 的网络搜索结果补充知识库检索。',
       serplyApiKeyMessage: '请输入你的 Serply API Key',
+      tavilyApiKeyTip:
+        '如果 API 密钥设置正确，它将利用 Tavily 进行网络搜索作为知识库的补充。',
+      tavilyApiKeyMessage: '请输入你的 Tavily API Key',
       youcomApiKeyTip:
         '可选。You.com 在限速端点上无需 API Key 即可使用；填写 Key 可解除限速。',
       youcomApiKeyMessage: '可选 —— 留空则使用免费额度',

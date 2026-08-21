@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"ragflow/internal/agentic_rag"
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
 	modelModule "ragflow/internal/entity/models"
@@ -1516,6 +1517,10 @@ func (s *ChatSessionService) ChatCompletions(
 		}
 	}
 
+	// Correlate every log line this request emits (agent, delivery gate,
+	// auditor, tools, retrieval) with the conversation turn's session id.
+	ctx = common.WithSessionID(ctx, sessionID)
+
 	common.Info("ChatCompletions started")
 
 	// --- 1. Normalize messages ---
@@ -1560,6 +1565,10 @@ func (s *ChatSessionService) ChatCompletions(
 				return fail(err)
 			}
 			sessionID = session.ID
+			// Fresh-session requests (e.g. the benchmark) carry no session_id,
+			// so the correlation tag has to be (re)applied with the id the
+			// server just allocated.
+			ctx = common.WithSessionID(ctx, sessionID)
 		}
 
 		if passAllHistory {
@@ -1628,7 +1637,6 @@ func (s *ChatSessionService) ChatCompletions(
 			if result.Reference != nil && len(reference) > 0 {
 				reference[len(reference)-1] = result.Reference
 			}
-
 			if legacy {
 				if result.Final {
 					if strings.Contains(result.Answer, "**ERROR**") {
@@ -1638,6 +1646,15 @@ func (s *ChatSessionService) ChatCompletions(
 						}
 						sendOrCancel(fmt.Sprintf("data:%s\n\n", sseMarshalChunk(sanitizeJSONFloats(ans).(map[string]interface{}), chatID)))
 					}
+					// Turn compaction: progressive persistence has been
+					// writing every delta into the assistant message, and for
+					// an agentic run those deltas are the WHOLE ReAct
+					// trajectory — the intermediate narration between tool
+					// calls, not just the answer. The next turn re-enters
+					// AsyncChat with this session as its history, so the
+					// stored message must end up holding the turn's final
+					// answer alone.
+					s.compactSessionAssistant(session, result.Answer, messageID)
 					finalLegacyAnswer = s.structureAnswer(session, result.Answer, messageID, sessionID, reference)
 					continue
 				}
@@ -1645,7 +1662,16 @@ func (s *ChatSessionService) ChatCompletions(
 					fullAnswer.WriteString("<think>")
 				} else if result.EndToThink {
 					fullAnswer.WriteString("</think>")
-				} else if result.Answer != "" {
+				}
+				if result.Reasoning != "" {
+					// Same as the non-legacy branch: there is no reasoning
+					// channel in this protocol, so thinking rides in `answer`
+					// between the start/end flags.
+					fullAnswer.WriteString(result.Reasoning)
+				}
+				if result.Answer != "" {
+					// Marker and text can arrive together (see the note in the
+					// non-legacy branch): never trade one for the other.
 					fullAnswer.WriteString(result.Answer)
 				}
 				if session != nil {
@@ -1662,6 +1688,14 @@ func (s *ChatSessionService) ChatCompletions(
 				sendOrCancel(fmt.Sprintf("data:%s\n\n", sseMarshalChunk(sanitizeJSONFloats(ans).(map[string]interface{}), chatID)))
 			} else {
 				if result.Final {
+					// Turn compaction, same as the legacy branch: progressive
+					// persistence wrote every delta into the assistant
+					// message, and for an agentic run those deltas are the
+					// whole ReAct trajectory — the narration between tool
+					// calls, not just the answer. The next user input
+					// re-enters AsyncChat with this session as history, so the
+					// stored message must hold the final answer alone.
+					s.compactSessionAssistant(session, result.Answer, messageID)
 					if strings.Contains(result.Answer, "**ERROR**") {
 						ans := s.structureAnswer(session, result.Answer, messageID, sessionID, reference)
 						if chatID != "" {
@@ -1678,6 +1712,34 @@ func (s *ChatSessionService) ChatCompletions(
 						if result.CreatedAt != 0 {
 							ans["created_at"] = result.CreatedAt
 						}
+						// Retrieval accounting, same rule as the non-stream path.
+						if len(result.ToolCallCounts) > 0 {
+							ans["tool_call_counts"] = result.ToolCallCounts
+						}
+						if len(result.ToolCallErrors) > 0 {
+							ans["tool_call_errors"] = result.ToolCallErrors
+						}
+						if len(result.ToolErrorSamples) > 0 {
+							ans["tool_error_samples"] = result.ToolErrorSamples
+						}
+						if len(result.RetrievedDocIDs) > 0 {
+							ans["retrieved_docids"] = result.RetrievedDocIDs
+						}
+						if result.GateAudit != nil {
+							ans["gate_audit"] = result.GateAudit
+						}
+						if result.DeepReadChunks > 0 {
+							ans["deep_read_chunks"] = result.DeepReadChunks
+						}
+						if result.ShallowReadChunks > 0 {
+							ans["shallow_read_chunks"] = result.ShallowReadChunks
+						}
+						if result.Usage != nil {
+							ans["usage"] = result.Usage
+						}
+						if result.ElapsedSeconds > 0 {
+							ans["elapsed_seconds"] = result.ElapsedSeconds
+						}
 						ans["final"] = true
 						if chatID != "" {
 							ans["chat_id"] = chatID
@@ -1689,16 +1751,40 @@ func (s *ChatSessionService) ChatCompletions(
 				deltaAnswer := ""
 				if result.StartToThink {
 					fullAnswer.WriteString("<think>")
+					deltaAnswer = "<think>"
 				} else if result.EndToThink {
 					fullAnswer.WriteString("</think>")
-				} else if result.Answer != "" {
+					deltaAnswer = "</think>"
+				}
+				if result.Reasoning != "" {
+					// The native protocol has NO reasoning channel: the UI
+					// rebuilds the whole assistant message from `answer`
+					// alone, wrapping the stretch between start_to_think and
+					// end_to_think in <think>. Reasoning must therefore
+					// travel in `answer` too — dropping it here is what left
+					// the think panel empty while the run was in progress.
+					fullAnswer.WriteString(result.Reasoning)
+					deltaAnswer += result.Reasoning
+				}
+				if result.Answer != "" {
+					// A marker and the text it delimits can ride on the SAME
+					// result: the first content delta after a think block is
+					// the EndToThink result. Treating the marker as an
+					// alternative to the text drops that delta, which is how an
+					// answer came out starting mid-sentence.
 					fullAnswer.WriteString(result.Answer)
-					deltaAnswer = result.Answer
+					deltaAnswer += result.Answer
 				}
 				if session != nil {
 					s.appendAssistantToSession(session, fullAnswer.String(), messageID)
 				}
 				ans := s.structureAnswer(session, deltaAnswer, messageID, sessionID, reference)
+				// Citations ship ONLY on the final event: the intermediate
+				// deltas have nothing to cite yet, and an empty
+				// `reference: {chunks: []}` on every chunk just buries the
+				// real payload (and once the agentic reference exists it
+				// would leak onto thinking deltas).
+				delete(ans, "reference")
 				ans["start_to_think"] = result.StartToThink
 				ans["end_to_think"] = result.EndToThink
 				if chatID != "" {
@@ -1761,6 +1847,14 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	var audioBinary interface{}
 	var prompt string
 	var createdAt float64
+	var toolCallCounts map[string]int
+	var toolCallErrors map[string]int
+	var toolErrorSamples map[string]string
+	var retrievedDocIDs []string
+	var gateAudit *agentic_rag.GateAuditRecord
+	var deepReadChunks, shallowReadChunks int
+	var usage *TurnUsage
+	var elapsedSeconds float64
 	for result := range resultChan {
 		if result.Final {
 			// The final event carries the complete (decorated) answer;
@@ -1772,6 +1866,15 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 			audioBinary = result.AudioBinary
 			prompt = result.Prompt
 			createdAt = result.CreatedAt
+			toolCallCounts = result.ToolCallCounts
+			toolCallErrors = result.ToolCallErrors
+			toolErrorSamples = result.ToolErrorSamples
+			retrievedDocIDs = result.RetrievedDocIDs
+			gateAudit = result.GateAudit
+			deepReadChunks = result.DeepReadChunks
+			shallowReadChunks = result.ShallowReadChunks
+			usage = result.Usage
+			elapsedSeconds = result.ElapsedSeconds
 		} else if result.Answer != "" {
 			answer.WriteString(result.Answer)
 		}
@@ -1790,6 +1893,35 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	}
 	if createdAt != 0 {
 		ans["created_at"] = createdAt
+	}
+	// Retrieval accounting for benchmark clients (agentic runs only). Omitted
+	// when empty so a classic pipeline response keeps its historical shape.
+	if len(toolCallCounts) > 0 {
+		ans["tool_call_counts"] = toolCallCounts
+	}
+	if len(toolCallErrors) > 0 {
+		ans["tool_call_errors"] = toolCallErrors
+	}
+	if len(toolErrorSamples) > 0 {
+		ans["tool_error_samples"] = toolErrorSamples
+	}
+	if len(retrievedDocIDs) > 0 {
+		ans["retrieved_docids"] = retrievedDocIDs
+	}
+	if gateAudit != nil {
+		ans["gate_audit"] = gateAudit
+	}
+	if deepReadChunks > 0 {
+		ans["deep_read_chunks"] = deepReadChunks
+	}
+	if shallowReadChunks > 0 {
+		ans["shallow_read_chunks"] = shallowReadChunks
+	}
+	if usage != nil {
+		ans["usage"] = usage
+	}
+	if elapsedSeconds > 0 {
+		ans["elapsed_seconds"] = elapsedSeconds
 	}
 	return ans
 }
@@ -1999,6 +2131,27 @@ func (s *ChatSessionService) appendAssistantToSession(session *entity.ChatSessio
 	session.Message, _ = json.Marshal(messages)
 }
 
+// compactSessionAssistant rewrites the session's stored assistant message to
+// the turn's FINAL answer, which is what the next turn must see.
+//
+// Streaming persistence (appendAssistantToSession on every delta) deliberately
+// keeps partial text in the session so a client that refreshes mid-stream still
+// sees what was produced — but for an agentic run those deltas are the ReAct
+// trajectory: the thinking and narration the agent emitted between tool calls,
+// tens of thousands of tokens of it. The next user input re-enters
+// AsyncChat with this session as its history, so leaving the trajectory there
+// means every turn pays for, and is steered by, every earlier turn's dead ends.
+//
+// A turn therefore ends compacted to question + final answer. A blank final
+// (an error result, or a run that produced nothing) leaves the streamed text
+// standing rather than blanking the message the user can already see.
+func (s *ChatSessionService) compactSessionAssistant(session *entity.ChatSession, final, messageID string) {
+	if session == nil || strings.TrimSpace(final) == "" {
+		return
+	}
+	s.appendAssistantToSession(session, final, messageID)
+}
+
 // getSessionMessagesAsSlice returns the session's messages as a slice of maps.
 func (s *ChatSessionService) getSessionMessagesAsSlice(session *entity.ChatSession) []map[string]interface{} {
 	if session == nil {
@@ -2086,8 +2239,12 @@ func (s *ChatSessionService) checkTenantLLMAPIKey(ctx context.Context, tenantID,
 
 // sseAnswerChunk has deterministic JSON field order matching Python's structure_answer output.
 type sseAnswerChunk struct {
-	Answer       string                 `json:"answer"`
-	Reference    map[string]interface{} `json:"reference"`
+	Answer string `json:"answer"`
+	// Reference is omitted from the JSON when the producer did not set one:
+	// intermediate streaming deltas have nothing to cite yet, and only the
+	// final event carries the citation payload (set explicitly by the
+	// pipeline's Final branch). sseMarshalChunk leaves it nil in that case.
+	Reference    map[string]interface{} `json:"reference,omitempty"`
 	AudioBinary  interface{}            `json:"audio_binary"`
 	Prompt       string                 `json:"prompt"`
 	CreatedAt    float64                `json:"created_at"`
@@ -2185,9 +2342,17 @@ func sanitizeJSONFloats(v interface{}) interface{} {
 // sseMarshalChunk converts an answer map to the ordered sseAnswerChunk struct
 // and marshals it with Python-compatible JSON formatting (spaces, field order).
 func sseMarshalChunk(ans map[string]interface{}, chatID string) string {
-	ref, _ := ans["reference"].(map[string]interface{})
-	if ref == nil {
-		ref = map[string]interface{}{"chunks": []interface{}{}}
+	// Reference is emitted only when the producer set one: the agentic delta
+	// branch deletes the key so intermediate chunks stay reference-free, and
+	// silently re-adding an empty `{"chunks": []}` here would undo that —
+	// every thinking chunk would carry a citation payload it cannot back.
+	ref := map[string]interface{}{"chunks": []interface{}{}}
+	if raw, hasRef := ans["reference"]; hasRef {
+		if m, ok := raw.(map[string]interface{}); ok && m != nil {
+			ref = m
+		}
+	} else {
+		ref = nil // key absent → omit from the JSON entirely (omitempty)
 	}
 	answer, _ := ans["answer"].(string)
 	prompt, _ := ans["prompt"].(string)

@@ -3641,7 +3641,19 @@ func (m *ModelProviderService) ResolveModelConfig(ctx context.Context, tenantID 
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, "", nil, 0, err
 	}
-	return m.GetModelConfigFromProviderInstance(ctx, tenantID, modelType, modelRef)
+	// Not a tenant model id, so it must be a composite "model@instance@provider"
+	// name — or a bare name, which the Builtin / TEI short-circuits accept.
+	driver, modelName, apiConfig, maxTokens, err := m.GetModelConfigFromProviderInstance(ctx, tenantID, modelType, modelRef)
+	if err != nil && !strings.Contains(modelRef, "@") {
+		// A bare ref that is BOTH unknown as a tenant model id AND rejected as
+		// a composite name is almost always a DANGLING REFERENCE — a knowledge
+		// base or chat pointing at a tenant_model row that was deleted. Say so
+		// explicitly: the underlying "provider name missing in model name:
+		// <uuid>" reads like a naming-format mistake and sends the operator to
+		// look at the model's name instead of at the row that no longer exists.
+		return nil, "", nil, 0, fmt.Errorf("model %q is neither a tenant model id (no tenant_model row) nor a valid composite name — the reference is dangling: %w", modelRef, err)
+	}
+	return driver, modelName, apiConfig, maxTokens, err
 }
 
 // ResolveModelContextLength returns the chat model's effective context window
@@ -4282,4 +4294,65 @@ func (m *ModelProviderService) GetChatModelConfig(ctx context.Context, tenantID 
 		modelType = entity.ModelTypeImage2Text
 	}
 	return m.ResolveModelConfig(ctx, tenantID, modelType, llmID)
+}
+
+// ChatModelRef identifies one chat-capable tenant model together with its
+// human-readable coordinates (provider instance), so callers can log and
+// reason about failover chains. Ref is the tenant_model.id that
+// ResolveModelConfig / GetChatModelConfig accepts verbatim.
+type ChatModelRef struct {
+	Ref          string
+	ModelName    string
+	InstanceName string
+	ProviderName string
+}
+
+// ListTenantChatModelRefs enumerates every ACTIVE chat-capable model the
+// tenant owns across all provider instances. Resolution of each ref is the
+// caller's business — a single broken entry here is not an error for the
+// whole enumeration.
+func (m *ModelProviderService) ListTenantChatModelRefs(ctx context.Context, tenantID string) ([]ChatModelRef, error) {
+	providers, err := m.modelProviderDAO.GetByTenantID(ctx, dao.DB, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if len(providers) == 0 {
+		return nil, nil
+	}
+	providerIDs := make([]string, 0, len(providers))
+	providerInfoByID := make(map[string]*entity.TenantModelProvider, len(providers))
+	for _, p := range providers {
+		providerIDs = append(providerIDs, p.ID)
+		providerInfoByID[p.ID] = p
+	}
+	instances, err := m.modelInstanceDAO.GetByProviderIDs(ctx, dao.DB, providerIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(instances) == 0 {
+		return nil, nil
+	}
+	instanceIDs := make([]string, 0, len(instances))
+	instanceInfoByID := make(map[string]*entity.TenantModelInstance, len(instances))
+	for _, inst := range instances {
+		instanceIDs = append(instanceIDs, inst.ID)
+		instanceInfoByID[inst.ID] = inst
+	}
+	models, err := m.modelDAO.GetActiveModelsByProviderAndInstanceIDsAndType(
+		ctx, dao.DB, providerIDs, instanceIDs, int(entity.ModelTypeChat))
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]ChatModelRef, 0, len(models))
+	for _, rec := range models {
+		ref := ChatModelRef{Ref: rec.ID, ModelName: rec.ModelName}
+		if inst := instanceInfoByID[rec.InstanceID]; inst != nil {
+			ref.InstanceName = inst.InstanceName
+		}
+		if prov := providerInfoByID[rec.ProviderID]; prov != nil {
+			ref.ProviderName = prov.ProviderName
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
 }

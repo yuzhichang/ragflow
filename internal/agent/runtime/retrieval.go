@@ -54,10 +54,12 @@ type RetrievalChunk struct {
 
 // RetrievalRequest is the input to RetrievalService.Search.
 type RetrievalRequest struct {
-	Query                    string
-	DatasetIDs               []string
-	MemoryIDs                []string
-	TopN                     int
+	Query      string
+	DatasetIDs []string
+	MemoryIDs  []string
+	TopN       int
+	// RerankCandidatesCount caps the candidate set pulled for reranking. Zero
+	// means "use the backend default".
 	RerankCandidatesCount    int
 	TopK                     int
 	KeywordsSimilarityWeight *float64
@@ -72,6 +74,11 @@ type RetrievalRequest struct {
 	DocScope []string
 	// TenantID is the calling tenant (== user_id in RAGFlow's data model).
 	TenantID string
+	// UserID optionally filters memory messages by the user_id they were
+	// recorded with (the Retrieval node's "User ID" field, e.g. resolved
+	// from sys.user_id). Empty = no user filter. Only meaningful for
+	// retrieval_from=memory.
+	UserID string
 	// OnlyOriginalText, when true, restricts retrieval to ordinary document
 	// text chunks (available_int=1 and no compile_kwd), excluding
 	// knowledge-compiled products.
@@ -109,8 +116,11 @@ type GrepRequest struct {
 	Pattern    string   // The regex to match against chunk content (case-insensitive).
 	DatasetIDs []string // Knowledge base IDs to restrict to.
 	DocScope   []string // Document IDs to restrict to (empty = no doc filter).
-	Limit      int      // Max number of chunks to return.
-	Offset     int      // Number of chunks to skip (0-based), for pagination.
+	// ChunkScope restricts to specific chunk ids (term filter) when non-empty;
+	// used by meta lookups like ResolveChunkOrder, not by grep itself.
+	ChunkScope []string
+	Limit      int // Max number of chunks to return.
+	Offset     int // Number of chunks to skip (0-based), for pagination.
 	// Sort is an ordered list of field names to order results by ascending
 	// (e.g. a document's reading order: chunk_order_int, page_num_int, top_int).
 	Sort []string // Ordered ascending sort fields.
@@ -136,6 +146,30 @@ var ErrKGRetrievalServiceMissing = errors.New(
 // ErrGrepServiceMissing is returned when no GrepService has been registered.
 var ErrGrepServiceMissing = errors.New(
 	"grep service not registered — call runtime.SetGrepService(...) at boot",
+)
+
+// Bm25Service is the lexical full-text (BM25) search surface used by
+// search_bm25_chunks. Like GrepService it is separate from RetrievalService
+// because BM25 ranking over tokenized chunk fields is a distinct retrieval mode
+// with no vector component.
+type Bm25Service interface {
+	SearchBm25(ctx context.Context, req Bm25Request) ([]RetrievalChunk, error)
+}
+
+// Bm25Request is the input to Bm25Service.SearchBm25.
+type Bm25Request struct {
+	// Queries are 1-5 keyword/phrase queries; each is scored independently and
+	// results are merged and deduplicated by chunk id.
+	Queries    []string
+	DatasetIDs []string // Knowledge base IDs to restrict to.
+	DocScope   []string // Document IDs to restrict to (empty = no doc filter).
+	TopN       int      // Max chunks per query before merging.
+	TenantID   string   // Calling tenant (== user_id in RAGFlow's data model).
+}
+
+// ErrBm25ServiceMissing is returned when no Bm25Service has been registered.
+var ErrBm25ServiceMissing = errors.New(
+	"bm25 service not registered — call runtime.SetBm25Service(...) at boot",
 )
 
 // ErrRegexpNotSupported is returned when the underlying doc engine does not
@@ -228,6 +262,27 @@ func GetGrepService() GrepService {
 	return grepServiceImpl
 }
 
+var (
+	bm25ServiceMu   sync.RWMutex
+	bm25ServiceImpl Bm25Service = stubBm25Service{}
+)
+
+func SetBm25Service(svc Bm25Service) {
+	bm25ServiceMu.Lock()
+	defer bm25ServiceMu.Unlock()
+	if svc == nil {
+		bm25ServiceImpl = stubBm25Service{}
+		return
+	}
+	bm25ServiceImpl = svc
+}
+
+func GetBm25Service() Bm25Service {
+	bm25ServiceMu.RLock()
+	defer bm25ServiceMu.RUnlock()
+	return bm25ServiceImpl
+}
+
 type stubRetrievalService struct{}
 
 func (stubRetrievalService) Search(_ context.Context, _ *gorm.DB, _ RetrievalRequest) ([]RetrievalChunk, error) {
@@ -250,6 +305,12 @@ type stubGrepService struct{}
 
 func (stubGrepService) Grep(_ context.Context, _ GrepRequest) ([]RetrievalChunk, error) {
 	return nil, ErrGrepServiceMissing
+}
+
+type stubBm25Service struct{}
+
+func (stubBm25Service) SearchBm25(_ context.Context, _ Bm25Request) ([]RetrievalChunk, error) {
+	return nil, ErrBm25ServiceMissing
 }
 
 // simpleRetrievalService is a deterministic test implementation that returns

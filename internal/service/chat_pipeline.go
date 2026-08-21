@@ -22,13 +22,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"ragflow/internal/agentic_rag"
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
+	"ragflow/internal/engine/types"
 	"ragflow/internal/entity"
 	modelModule "ragflow/internal/entity/models"
 	"ragflow/internal/service/file"
 	"ragflow/internal/service/graph"
 	"ragflow/internal/service/nlp"
+	"ragflow/internal/tokenizer"
 	"regexp"
 	"sort"
 	"strings"
@@ -36,6 +39,7 @@ import (
 
 	"ragflow/internal/dao"
 
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
@@ -93,8 +97,62 @@ type AsyncChatResult struct {
 	Final        bool                   `json:"final"`
 	StartToThink bool                   `json:"start_to_think,omitempty"`
 	EndToThink   bool                   `json:"end_to_think,omitempty"`
+	// ToolCallCounts carries how many times each tool ran during this turn,
+	// keyed by tool name (e.g. {"search_chunks": 7, "list_chunks": 4}).
+	// Only agentic runs populate it, and only on the final result — the
+	// numbers are only complete once the ReAct loop (and its delivery gate)
+	// is done. Benchmarks report it as average search calls per question.
+	ToolCallCounts map[string]int `json:"tool_call_counts,omitempty"`
+	// ToolCallErrors tallies how many of those calls returned a failure
+	// notice (<tool_error> / severity="error") — a backend outage or
+	// repeated invalid arguments shows up here instead of hiding inside the
+	// call counts. Same population rule as ToolCallCounts.
+	ToolCallErrors map[string]int `json:"tool_call_errors,omitempty"`
+	// ToolErrorSamples carries one representative failure message per tool
+	// (first occurrence, truncated) so a benchmark row is diagnosable
+	// without opening the server logs. Same population rule.
+	ToolErrorSamples map[string]string `json:"tool_error_samples,omitempty"`
+	// RetrievedDocIDs is every document identifier (doc_id and doc_name) the
+	// turn's retrieval tools surfaced, deduplicated and sorted. It is the
+	// union of everything the agent pulled, which is larger than the set it
+	// finally cited — benchmarks score retrieval recall against the union.
+	// Same population rule as ToolCallCounts.
+	RetrievedDocIDs []string `json:"retrieved_docids,omitempty"`
+	// GateAudit carries the delivery gate's per-round suspect accounting of
+	// the answer auditor (agentic runs only) — how many suspects each audit
+	// pass flagged and whether the last one concluded PASS. Benchmarks report
+	// it next to tool_call_counts to show per-question audit effort.
+	GateAudit *agentic_rag.GateAuditRecord `json:"gate_audit,omitempty"`
+	// DeepReadChunks / ShallowReadChunks count the chunks the turn's
+	// retrieval tools put in front of the model, split by read depth: deep =
+	// full chunk content (list_chunks, search_chunks), shallow =
+	// <match_snippet> windows (grep_chunks, search_bm25_chunks). They show
+	// where a run's context weight came from — document reading vs triage
+	// traffic — which raw tool call counts cannot distinguish. Same
+	// population rule as ToolCallCounts.
+	DeepReadChunks    int `json:"deep_read_chunks,omitempty"`
+	ShallowReadChunks int `json:"shallow_read_chunks,omitempty"`
+	// Usage is the turn's token accounting (agentic runs only). A benchmark
+	// reports cost per question, and only the pipeline sees every LLM call the
+	// ReAct loop and its delivery gate made — the response's own token counts
+	// cover the final answer alone.
+	Usage *TurnUsage `json:"usage,omitempty"`
+	// ElapsedSeconds is the server-side wall-clock duration of the whole turn,
+	// including the delivery gate. Client-side timing additionally covers
+	// transport and queueing, which a benchmark wants to see separately.
+	ElapsedSeconds float64 `json:"elapsed_seconds,omitempty"`
 	// Internal-only: accumulated answer for building the decorated final result.
 	accumulatedAnswer string
+}
+
+// TurnUsage is the aggregated token cost of every LLM call one agentic turn
+// made: the loop's research steps, the delivery gate's audits, and the
+// synthesis fallback alike.
+type TurnUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	LLMCalls         int `json:"llm_calls"`
 }
 
 // AsyncChat is the Go equivalent of Python's async_chat() in
@@ -177,7 +235,10 @@ func (s *ChatPipelineService) AsyncChat(
 		return nil, fmt.Errorf("the last content of this conversation is not from user")
 	}
 
-	// No KBs & no web search → fast-path to LLM-only chat.
+	// Resolve what this conversation can reach BEFORE dispatching: both the
+	// classic pipeline and the agentic ReAct path are gated on them, and the
+	// agentic path needs the resolution to know whether it may offer the
+	// web_search tool.
 	hasKBs := false
 	for _, raw := range chat.KBIDs {
 		if id, ok := raw.(string); ok && id != "" {
@@ -194,6 +255,16 @@ func (s *ChatPipelineService) AsyncChat(
 			zap.Bool("enabled", useWebSearch))
 	}
 
+	// agent_mode carries the requested agent template id (e.g.
+	// "smart-reasoning", "smart-grep" from conf/agentic_rag.yaml). Any
+	// non-empty value routes to the agentic ReAct path; the id itself is
+	// resolved per-run inside agenticRag so new templates work without code
+	// changes or restarts.
+	if mode, _ := kwargs["agent_mode"].(string); mode != "" {
+		return s.agenticRag(ctx, userID, chat, messages, stream, kwargs, useWebSearch)
+	}
+
+	// No KBs & no web search → fast-path to LLM-only chat.
 	if !hasKBs && !useWebSearch {
 		return s.AsyncChatSolo(ctx, userID, chat, messages, stream, kwargs)
 	}
@@ -1749,6 +1820,28 @@ func normalizeInternetFlag(v interface{}) *bool {
 	return nil
 }
 
+// agenticWebSearch adapts the pipeline's web search provider to the agentic
+// ReAct toolkit. The provider returns its hits in the chunk shape retrieval
+// uses; the agent needs only the fields a model can quote and cite.
+func (s *ChatPipelineService) agenticWebSearch(provider *webSearchProviderConfig) agentic_rag.WebSearchFunc {
+	return func(ctx context.Context, query string) ([]agentic_rag.WebResult, error) {
+		res, err := s.retrieveWebSearch(ctx, provider, query)
+		if err != nil {
+			return nil, err
+		}
+		chunks, _ := res["chunks"].([]map[string]interface{})
+		out := make([]agentic_rag.WebResult, 0, len(chunks))
+		for _, c := range chunks {
+			out = append(out, agentic_rag.WebResult{
+				Title:   stringValue(c["docnm_kwd"]),
+				URL:     stringValue(c["url"]),
+				Content: stringValue(c["content_with_weight"]),
+			})
+		}
+		return out, nil
+	}
+}
+
 // shouldUseWebSearch returns true if web search should be enabled.
 // Mirrors Python's _should_use_web_search (dialog_service.py:122-126):
 // A web search provider must be configured on chat.PromptConfig AND the internet
@@ -2071,6 +2164,492 @@ func factoryFromLLMID(llmID string) string {
 		return "openai"
 	}
 	return provider
+}
+
+// agenticRag drives the agentic (ReAct) conversation mode via eino ADK's
+// adk.ChatModelAgent. It mirrors AsyncChat's channel contract: yields
+// AsyncChatResult deltas (answer / reasoning / final) over a buffered channel
+// consumed by the same callers (ChatCompletions / OpenAIChatCompletions).
+
+// smartReasoningTimeout is the total wall-clock budget for one agentic agent
+// run, shared by the model and every tool — tools carry no per-call limits of
+// their own. The two HTTP entrypoints pass Request.Context(), which carries no
+// deadline (http.Server.WriteTimeout does not become a handler context
+// deadline), so without an explicit budget here a client that keeps the
+// connection open could let the agent burn CPU indefinitely.
+//
+// The budget must cover the main research loop AND the whole delivery gate:
+// auditing a deliverable costs one auditor sub-agent run per pass (deep
+// list_chunks reads plus the echoed verdict), and each repair turn repeats the
+// retrieval cycle. Ten minutes sufficed while the loop ended early; once the
+// templates mandate constraint-first retrieval and multi-pass auditing, the
+// main loop alone can consume half of it and the gate then dies mid-flight —
+// every in-flight tool call fails with "context deadline exceeded" at the
+// deadline (observed on q268, where two Elasticsearch queries died at exactly
+// T+10m while the cluster was green, and the gate shipped pure narration
+// because there was no budget left to repair or even to synthesize).
+var smartReasoningTimeout = 20 * time.Minute
+
+func (s *ChatPipelineService) agenticRag(
+	ctx context.Context,
+	userID string,
+	chat *entity.Chat,
+	messages []map[string]interface{},
+	stream bool,
+	kwargs map[string]interface{},
+	useWebSearch bool,
+) (<-chan AsyncChatResult, error) {
+	out := make(chan AsyncChatResult, 16)
+	// agent_mode selects the template id for this run (validated non-empty by
+	// AsyncChat before dispatch). Resolved per-run so conf/agentic_rag.yaml
+	// edits take effect without restart.
+	mode, _ := kwargs["agent_mode"].(string)
+
+	go func() {
+		defer close(out)
+
+		// Resolve the chat model as an eino BaseChatModel.
+		driver, modelName, apiConfig, _, err := s.ModelProviderSvc.GetChatModelConfig(ctx, chat.TenantID, chat.LLMID)
+		if err != nil {
+			common.ErrorCtx(ctx, "smart_reasoning: resolve chat model", err)
+			out <- AsyncChatResult{Answer: fmt.Sprintf("**ERROR**: %s", err.Error()), Final: true}
+			return
+		}
+		primary := modelModule.NewChatModel(driver, &modelName, apiConfig)
+
+		// Failover chain: the dialog's model is the primary; every OTHER
+		// chat-capable model instance this tenant owns becomes a fallback.
+		// When the primary dies (provider plan wall, outage, rate limit), the
+		// run fails over instead of burning — the tenant's whole model roster
+		// must fail before the turn errors out. Every member is logged with
+		// its model name + instance so quota consumption across instances is
+		// attributable afterwards.
+		modelChain := []*modelModule.ChatModel{primary}
+		chainLabels := []string{fmt.Sprintf("%s @ dialog-bound", modelName)}
+		primaryDesc := modelName
+		var fallbackDescs []string
+		refs, refErr := s.ModelProviderSvc.ListTenantChatModelRefs(ctx, chat.TenantID)
+		if refErr == nil {
+			for _, ref := range refs {
+				desc := fmt.Sprintf("%s@%s(%s)", ref.ModelName, ref.InstanceName, ref.ProviderName)
+				if ref.Ref == chat.LLMID {
+					primaryDesc = desc + " [primary]"
+					chainLabels[0] = desc
+					continue
+				}
+				fDriver, fName, fCfg, _, fErr := s.ModelProviderSvc.GetChatModelConfig(ctx, chat.TenantID, ref.Ref)
+				if fErr != nil {
+					fallbackDescs = append(fallbackDescs, desc+" [unresolvable, skipped]")
+					continue // a single broken fallback is non-fatal
+				}
+				modelChain = append(modelChain, modelModule.NewChatModel(fDriver, &fName, fCfg))
+				chainLabels = append(chainLabels, desc)
+				fallbackDescs = append(fallbackDescs, desc)
+			}
+		}
+		common.InfoCtx(ctx, "smart_reasoning: failover chain built",
+			zap.String("primary", primaryDesc),
+			zap.Strings("fallbacks", fallbackDescs),
+			zap.Int("models", len(modelChain)))
+
+		// Apply the dialog's LLM setting with per-request overrides (temperature,
+		// top_p, max_tokens, thinking, stop, etc.) exactly like the regular
+		// AsyncChat path does — otherwise those parameters silently no-op when
+		// agent_mode=smart-reasoning.
+		chatCfg := BuildChatConfig(chat, kwargs)
+		einoModel, eErr := modelModule.NewFailoverEinoChatModelWithLabels(modelChain, chainLabels, chatCfg)
+		if eErr != nil {
+			common.ErrorCtx(ctx, "smart_reasoning: build failover model", eErr)
+			out <- AsyncChatResult{Answer: fmt.Sprintf("**ERROR**: %s", eErr.Error()), Final: true}
+			return
+		}
+
+		// cm wraps the WHOLE chain, not just the dialog's model, and is a second
+		// instance over it rather than a second reference to einoModel: a
+		// failover instance caches the error of its last full-chain failure and
+		// short-circuits every later call with it for 30s (see EinoChatModel's
+		// sweep). Sharing the agent's instance therefore hands the last-resort
+		// synthesis a STALE error from whatever malformed call tripped the
+		// cooldown — the repair turn that was rejected for an out-of-order tool
+		// result left `finalizeAnswer` reporting "tool result's tool id ... not
+		// found" for a request that contained no tool messages at all. A
+		// separate instance keeps the synthesis both unpoisoned and failover
+		// capable.
+		cm, cErr := modelModule.NewFailoverEinoChatModelWithLabels(modelChain, chainLabels, chatCfg)
+		if cErr != nil {
+			common.WarnCtx(ctx, "smart_reasoning: build synthesis model", zap.Error(cErr))
+			cm = einoModel // degrade to the shared instance rather than fail
+		}
+
+		// Convert messages to eino schema messages (system is already stripped
+		// by the caller; the agent injects its own instruction).
+		msgs := convertMessagesToEino(messages)
+
+		// Resolve the dataset scope from the chat's KBs. These are passed into
+		// the agent's Input and injected into its retrieval tools, so
+		// grep_chunks / search_chunks search the right datasets.
+		datasetIDs := make([]string, 0, len(chat.KBIDs))
+		for _, raw := range chat.KBIDs {
+			if id, ok := raw.(string); ok && id != "" {
+				datasetIDs = append(datasetIDs, id)
+			}
+		}
+		// The tenant scope is the chat's OWNING tenant (chat.TenantID), not the
+		// requesting user. In shared-tenant conversations a member user's ID
+		// differs from the KB owner's tenant, and index names are built from the
+		// tenant id — passing userID would make grep/search_chunks query the
+		// wrong index and return stable empty results.
+
+		// Web search is a capability of the conversation, not of the agent
+		// template: when the chat has a provider configured and this request
+		// enabled internet, the ReAct loop gets a web_search tool alongside its
+		// corpus tools. Otherwise the agent never sees one — an absent capability
+		// must not be advertised in the prompt.
+		var webSearch agentic_rag.WebSearchFunc
+		if useWebSearch {
+			if provider := resolveWebSearchProvider(chat.PromptConfig); provider != nil {
+				webSearch = s.agenticWebSearch(provider)
+			}
+		}
+		common.InfoCtx(ctx, "smart_reasoning: web search",
+			zap.Bool("enabled", webSearch != nil))
+
+		// Give the whole agent run (model + every tool) a fixed total budget,
+		// because the HTTP entrypoints provide a deadline-less Request.Context().
+		// Tool-level limits (e.g. run_javascript's internal timeout) still apply
+		// on top of this shared budget.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, smartReasoningTimeout)
+		defer cancel()
+
+		maxIterations := 0
+		if v, ok := kwargs["max_iterations"]; ok {
+			switch n := v.(type) {
+			case int:
+				maxIterations = n
+			case float64:
+				maxIterations = int(n)
+			}
+		}
+
+		// thinking tracks whether we are inside the <think> block so the
+		// StartToThink marker is emitted once (not on every reasoning delta) and
+		// EndToThink fires on the first non-thinking delta after it.
+		thinking := false
+		// final holds the agent's accumulated final answer so the terminating
+		// AsyncChatResult carries the real content instead of an empty string.
+		var final string
+		// Install a per-question token usage sink on the context so every LLM
+		// call inside the ReAct loop accumulates into it (recordUsageFromResponse
+		// calls tokenizer.RecordRunTokenUsage). After the run we read the total
+		// and log a per-question summary for benchmark aggregation.
+		runCtx := tokenizer.WithRunUsage(ctx)
+		// Carry the conversation's web search provider on the run context: the
+		// agentic package reads it back when it builds the explorer and the
+		// answer auditor, so a web_search tool appears in both only for
+		// conversations that actually have one.
+		runCtx = agentic_rag.WithWebSearch(runCtx, webSearch)
+		// toolCounts tallies how many times each tool was invoked during this
+		// agent turn (e.g. {grep_chunks: 3, list_chunks: 5}); tools never called
+		// are omitted from the per-question log.
+		toolCounts := make(map[string]int)
+		toolErrors := make(map[string]int)
+		toolErrorSamples := make(map[string]string)
+		toolDurations := agentic_rag.NewDurationAccumulator()
+		// Every document the turn's retrieval tools surfaced, not only those
+		// the deliverable ends up citing: a benchmark's retrieval-recall score
+		// is measured against the union, and the citation payload only carries
+		// the subset the answer quotes.
+		retrievedDocs := agentic_rag.NewDocIDLedger()
+		// Chunk-read accounting: how many chunks the retrieval tools put in
+		// front of the model, split by read depth (full content vs snippet).
+		chunkReads := agentic_rag.NewChunkReadLedger()
+		// Per-round suspect accounting of the delivery gate's answer auditor:
+		// filled by the gate itself, reported on the final result only.
+		gateAudit := &agentic_rag.GateAuditRecord{}
+		// Same quote gate as the classic pipeline's citation prompt: request
+		// kwargs win, the prompt config can only further restrict. It gates
+		// the [ID:N] citation markers + reference payload below, not the run.
+		quote := true
+		if v, ok := kwargs["quote"].(bool); ok {
+			quote = v
+		}
+		if q, ok := chat.PromptConfig["quote"].(bool); ok {
+			quote = quote && q
+		}
+		runStart := time.Now()
+		final, err = agentic_rag.Run(runCtx, agentic_rag.Input{
+			Model:             einoModel,
+			SynthModel:        cm,
+			Messages:          msgs,
+			TemplateID:        mode,
+			TenantID:          chat.TenantID,
+			DatasetIDs:        datasetIDs,
+			MaxIterations:     maxIterations,
+			Stream:            stream,
+			ToolCallCounts:    toolCounts,
+			ToolCallErrors:    toolErrors,
+			ToolErrorSamples:  toolErrorSamples,
+			ToolCallDurations: toolDurations,
+			RetrievedDocIDs:   retrievedDocs,
+			ChunkReads:        chunkReads,
+			GateAudit:         gateAudit,
+			OnDelta: func(contentDelta, thinkingDelta string) {
+				startToThink, endToThink := false, false
+				if thinkingDelta != "" {
+					if !thinking {
+						startToThink = true
+						thinking = true
+					}
+				} else if thinking {
+					endToThink = true
+					thinking = false
+				}
+				// Markers travel on their own chunks. The frontend appends
+				// '<think>' / '</think>' AFTER the chunk's answer text
+				// (mergeAnswerChunk), so a marker riding on a content chunk
+				// would strand that text on the wrong side of the think
+				// section — the first thinking segment outside <think>, and
+				// the answer's first line glued onto '</think>' (which breaks
+				// markdown: `## Candidate Matrix` stops being a heading when
+				// it does not start at line begin).
+				if startToThink {
+					out <- AsyncChatResult{
+						Final:        false,
+						StartToThink: true,
+					}
+				}
+				if contentDelta != "" || thinkingDelta != "" {
+					out <- AsyncChatResult{
+						Answer:    contentDelta,
+						Reasoning: thinkingDelta,
+						Final:     false,
+					}
+				}
+				if endToThink {
+					out <- AsyncChatResult{
+						Final:      false,
+						EndToThink: true,
+					}
+				}
+			},
+		})
+		elapsed := time.Since(runStart)
+		// The same aggregate also travels back to the caller (see the final
+		// result below) — a benchmark archives per-question cost, and the log
+		// rotates away while the run artefacts stay.
+		var turnUsage *TurnUsage
+		// Log the per-question aggregate: total tokens consumed by every LLM
+		// call in this agent turn, the per-tool invocation counts, and the
+		// wall-clock duration. question is the last user message (truncated);
+		// chat_id scopes it to the benchmark.
+		if sink := tokenizer.GetRunUsage(runCtx); sink != nil {
+			pt, ct, tt, calls := sink.Snapshot()
+			turnUsage = &TurnUsage{
+				PromptTokens:     pt,
+				CompletionTokens: ct,
+				TotalTokens:      tt,
+				LLMCalls:         calls,
+			}
+			fields := []zap.Field{
+				zap.String("chat_id", chat.ID),
+				zap.String("template_id", mode),
+				zap.String("question", truncateForLog(lastUserQuestion(messages), 200)),
+				zap.Int("calls", calls),
+				zap.Int("prompt_tokens", pt),
+				zap.Int("completion_tokens", ct),
+				zap.Int("total_tokens", tt),
+				zap.Float64("elapsed_seconds", elapsed.Seconds()),
+				zap.Bool("error", err != nil),
+			}
+			// Emit the tool counts as individual keyed fields so zero-count tools
+			// are naturally omitted and JSON log consumers can aggregate them.
+			for name, count := range toolCounts {
+				fields = append(fields, zap.Int("tool_"+name, count))
+			}
+			// Emit the per-tool total wall-clock duration (milliseconds) so
+			// consumers can derive average latency per call (tool_<name>_ms /
+			// tool_<name>). Only tools actually invoked are emitted.
+			for name, d := range toolDurations.Snapshot() {
+				fields = append(fields, zap.Float64("tool_"+name+"_ms", float64(d.Milliseconds())))
+			}
+			common.InfoCtx(ctx, "smart_reasoning: question usage", fields...)
+		}
+		if err != nil {
+			common.ErrorCtx(ctx, "smart_reasoning: run", err)
+			if final == "" {
+				final = fmt.Sprintf("**ERROR**: %s", err.Error())
+			}
+		}
+		// If the agent ended while still in the <think> block, close it with its
+		// own non-final marker first. The terminating result must stay free of
+		// think markers: the streaming consumer skips any result that carries
+		// EndToThink before it checks Final, which would drop the final
+		// OpenAIEventFinal event and its reference payload.
+		if thinking {
+			out <- AsyncChatResult{
+				Reference:  map[string]interface{}{},
+				Final:      false,
+				EndToThink: true,
+			}
+			thinking = false
+		}
+		common.InfoCtx(ctx, "smart_reasoning: shipping final result",
+			zap.Int("final_bytes", len(final)),
+			zap.Bool("run_err", err != nil))
+		// Reference payload + citation markers: the deliverable cites its
+		// provenance explicitly (`chunk_id: <id>` on every matrix/chain line,
+		// auditor-verified), so the naive pipeline's citation mechanism ports
+		// here WITHOUT its two probabilistic pillars — the citationPrompt nag
+		// (MiniMax ignores prompt-level mandates) and the embedding-similarity
+		// InsertCitations guess. Instead: extract the cited ids, fetch those
+		// chunks, number them in first-appearance order, and rewrite the text
+		// with [ID:N] markers — the exact contract the UI already renders for
+		// naive answers ([ID:N] -> reference.chunks[N], N 0-based).
+		reference := map[string]interface{}{}
+		if quote {
+			reference, final = s.buildAgenticReference(ctx, chat.TenantID, final)
+		}
+		// Ship the turn's retrieval accounting alongside the deliverable: both
+		// tallies are complete only now that the loop and the delivery gate
+		// have finished, so they ride on the final result (and nowhere else,
+		// to keep the intermediate deltas small).
+		deepRead, shallowRead := chunkReads.Snapshot()
+		out <- AsyncChatResult{
+			Answer:            final,
+			Reference:         reference,
+			Final:             true,
+			ToolCallCounts:    toolCounts,
+			ToolCallErrors:    toolErrors,
+			ToolErrorSamples:  toolErrorSamples,
+			RetrievedDocIDs:   retrievedDocs.Snapshot(),
+			GateAudit:         gateAudit,
+			Usage:             turnUsage,
+			ElapsedSeconds:    elapsed.Seconds(),
+			DeepReadChunks:    deepRead,
+			ShallowReadChunks: shallowRead,
+		}
+	}()
+
+	return out, nil
+}
+
+// convertMessagesToEino converts pre-filtered user/assistant messages into
+// eino schema messages. Only string content is supported; multimodal parts are
+// not carried into the ReAct loop.
+func convertMessagesToEino(messages []map[string]interface{}) []*schema.Message {
+	out := make([]*schema.Message, 0, len(messages))
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+		switch role {
+		case "user":
+			out = append(out, schema.UserMessage(content))
+		case "assistant":
+			out = append(out, schema.AssistantMessage(content, nil))
+		default:
+			// system messages are stripped upstream; skip anything else.
+			continue
+		}
+	}
+	return out
+}
+
+// buildAgenticReference turns the deliverable's own chunk_id citations into
+// the reference payload the naive pipeline ships (decorateAnswer's refs), and
+// rewrites the deliverable with [ID:N] markers. Returns the payload and the
+// marked-up final. With no resolvable citations both come back unchanged: an
+// empty reference keeps the SSE shape the UI expects, and unmarked chunk_id
+// text is the honest state of an answer whose sources could not be loaded.
+func (s *ChatPipelineService) buildAgenticReference(ctx context.Context, tenantID, final string) (map[string]interface{}, string) {
+	cited := agentic_rag.ExtractCitedChunkIDs(final)
+	if len(cited) == 0 {
+		return map[string]interface{}{}, final
+	}
+	rows := fetchChunksByIDs(ctx, tenantID, cited)
+	if len(rows) == 0 {
+		return map[string]interface{}{}, final
+	}
+	// Keep only ids that actually resolved, preserving first-appearance
+	// order: the marker number IS the chunk's position in the payload array.
+	byID := make(map[string]map[string]interface{}, len(rows))
+	for _, r := range rows {
+		if id, ok := r["id"].(string); ok {
+			byID[id] = r
+		}
+	}
+	resolved := make([]string, 0, len(cited))
+	for _, id := range cited {
+		if _, ok := byID[id]; ok {
+			resolved = append(resolved, id)
+		}
+	}
+	if len(resolved) == 0 {
+		return map[string]interface{}{}, final
+	}
+	ordered := make([]map[string]interface{}, 0, len(resolved))
+	for _, id := range resolved {
+		ordered = append(ordered, byID[id])
+	}
+	marked := agentic_rag.InsertCitationMarkers(final, resolved)
+	common.InfoCtx(ctx, "agentic citations built",
+		zap.Int("cited", len(cited)),
+		zap.Int("resolved", len(resolved)),
+		zap.Int("final_bytes", len(marked)))
+	return map[string]interface{}{
+		"chunks":   chunksFormat(ordered),
+		"doc_aggs": agenticDocAggs(ordered),
+	}, marked
+}
+
+// fetchChunksByIDs loads the cited chunks from the tenant's index, keeping the
+// engine row shape (chunk_id / content_with_weight / docnm_kwd / doc_id /
+// kb_id / img_id / positions) so chunksFormat can normalize it. The index is
+// the chat's OWNING tenant's — the same scoping the agent's retrieval tools
+// use (see the datasetIDs comment above).
+func fetchChunksByIDs(ctx context.Context, tenantID string, ids []string) []map[string]interface{} {
+	de := engine.Get()
+	if de == nil || len(ids) == 0 {
+		return nil
+	}
+	req := &types.SearchRequest{
+		IndexNames:   []string{fmt.Sprintf("ragflow_%s", tenantID)},
+		Filter:       map[string]interface{}{"id": ids},
+		SelectFields: []string{"content_with_weight", "docnm_kwd", "doc_id", "kb_id", "img_id", "positions"},
+		Limit:        len(ids),
+	}
+	res, err := de.Search(ctx, req)
+	if err != nil {
+		common.WarnCtx(ctx, "agentic citation chunk fetch failed", zap.Error(err))
+		return nil
+	}
+	return res.Chunks
+}
+
+// agenticDocAggs aggregates the fetched chunks per document — the doc_aggs
+// shape the UI's citation popover resolves documents from (doc_id + doc_name,
+// plus a chunk count for parity with the naive payload).
+func agenticDocAggs(chunks []map[string]interface{}) []interface{} {
+	order := make([]string, 0, len(chunks))
+	agg := make(map[string]map[string]interface{}, len(chunks))
+	for _, ck := range chunks {
+		docID, _ := ck["doc_id"].(string)
+		if docID == "" {
+			continue
+		}
+		if _, ok := agg[docID]; !ok {
+			name, _ := ck["docnm_kwd"].(string)
+			agg[docID] = map[string]interface{}{"doc_id": docID, "doc_name": name, "count": 0}
+			order = append(order, docID)
+		}
+		n, _ := agg[docID]["count"].(int)
+		agg[docID]["count"] = n + 1
+	}
+	out := make([]interface{}, 0, len(order))
+	for _, id := range order {
+		out = append(out, agg[id])
+	}
+	return out
 }
 
 // The handler in openai_chat.go has already rejected requests

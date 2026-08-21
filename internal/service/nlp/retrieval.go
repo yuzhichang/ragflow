@@ -83,7 +83,7 @@ type RetrievalResult struct {
 // - Build chunks
 // - Build document aggregation if specified
 func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest) (*RetrievalResult, error) {
-	common.Info("Retrieval START", zap.String("question", req.Question), zap.Int("page", req.Page), zap.Int("pageSize", req.PageSize))
+	common.InfoCtx(ctx, "Retrieval START", zap.String("question", req.Question), zap.Int("page", req.Page), zap.Int("pageSize", req.PageSize))
 	if req.Question == "" {
 		return &RetrievalResult{Chunks: []map[string]interface{}{}, DocAggs: []map[string]interface{}{}, Total: 0}, nil
 	}
@@ -126,7 +126,7 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 	if req.RerankModel != nil && req.Page != 1 {
 		return nil, fmt.Errorf("Pagination is not supported when rerank_mdl is specified. Please set page=1 to retrieve the top %d results.", pageSize)
 	}
-	common.Debug("Retrieval rerank candidate params", zap.Int("page", req.Page), zap.Int("pageSize", pageSize), zap.Int("rerankCandidatesCount", rerankCandidatesCount))
+	common.DebugCtx(ctx, "Retrieval rerank candidate params", zap.Int("page", req.Page), zap.Int("pageSize", pageSize), zap.Int("rerankCandidatesCount", rerankCandidatesCount))
 
 	// Execute search via Search()
 	searchReq := &RetrievalSearchRequest{
@@ -209,7 +209,7 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 		}
 		pageIdx = validIdx[begin:end]
 	}
-	common.Info("Pagination result info", zap.Int("totalValid", len(validIdx)), zap.Int("begin", begin),
+	common.InfoCtx(ctx, "Pagination result info", zap.Int("totalValid", len(validIdx)), zap.Int("begin", begin),
 		zap.Int("end", end), zap.Int("chunkCount", len(pageIdx)), zap.Float64("postThreshold", postThreshold))
 
 	total := int64(len(validIdx))
@@ -484,6 +484,7 @@ func (s *RetrievalService) scoreSearchResult(ctx context.Context, req *Retrieval
 	}
 	knnScores := s.docEngine.GetScores(knnResult)
 	sim, tsim, vsim := RerankWithKNN(
+		ctx,
 		searchResult.Chunks,
 		searchResult.IDs,
 		searchResult.Field,
@@ -538,10 +539,23 @@ func buildRetrievalFusionExpr(docEngineType string, topn int, vectorSimilarityWe
 		return buildInfinityFusionExpr(topn, vectorSimilarityWeight)
 	}
 
+	// The caller weight MUST reach the engine: the previous hardcoded
+	// "0.05,0.95" silently discarded it, so every hybrid search on the ES
+	// backend ran at 95% vector / 5% keyword regardless of what the tool or
+	// the model asked for - and chunk.go derives the BM25 boost from this
+	// same value, so the lexical leg was effectively switched off.
+	vectorWeight := 0.3
+	if vectorSimilarityWeight != nil {
+		vectorWeight = *vectorSimilarityWeight
+	}
+	termWeight := math.Round((1.0-vectorWeight)*10000) / 10000
+
 	return &types.FusionExpr{
-		Method:       "weighted_sum",
-		TopN:         topn,
-		FusionParams: map[string]interface{}{"weights": "0.05,0.95"},
+		Method: "weighted_sum",
+		TopN:   topn,
+		FusionParams: map[string]interface{}{
+			"weights": fmt.Sprintf("%g,%g", termWeight, vectorWeight),
+		},
 	}
 }
 

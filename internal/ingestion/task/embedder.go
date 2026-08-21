@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"ragflow/internal/dao"
 	"ragflow/internal/entity/models"
@@ -50,15 +51,60 @@ func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.E
 		return nil, fmt.Errorf("embedder: embedding model driver is nil for model %v", e.model.ModelName)
 	}
 	config := &models.EmbeddingConfig{Dimension: 0}
-	embeds, err := e.model.ModelDriver.Embed(ctx, e.model.ModelName, models.EmbedRequest{Texts: texts}, e.model.APIConfig, config, nil)
+	req := models.EmbedRequest{Texts: texts}
+
+	// Retry on rate-limit (HTTP 429 / TPM exceeded) with bounded exponential
+	// backoff. With multiple ingestor workers embedding concurrently, the shared
+	// upstream TPM quota is frequently exceeded transiently; a short retry turns
+	// a hard failure into a successful parse instead of marking the doc FAILED.
+	const maxAttempts = 5
+	var (
+		embeds []models.EmbeddingData
+		err    error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		embeds, err = e.model.ModelDriver.Embed(ctx, e.model.ModelName, req, e.model.APIConfig, config, nil)
+		if err == nil {
+			break
+		}
+		if !isRateLimitErr(err) {
+			return nil, err
+		}
+		if attempt == maxAttempts {
+			return nil, err
+		}
+		// Exponential backoff: 2s, 4s, 8s, 16s. Honor ctx cancellation.
+		wait := time.Duration(1<<uint(attempt)) * time.Second
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
+
 	vecs := make([]componentpkg.EmbeddingResult, len(embeds))
 	for i, v := range embeds {
 		vecs[i] = componentpkg.EmbeddingResult{Vector: v.Embedding, TokenCount: v.TokenCount}
 	}
 	return vecs, nil
+}
+
+// isRateLimitErr reports whether err is an HTTP 429 / rate-limit / quota error
+// (e.g. SiliconFlow "TPM limit reached"). It matches on the status code and the
+// common rate-limit wording, which is stable across providers.
+func isRateLimitErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate limiting") ||
+		strings.Contains(msg, "tpm limit")
 }
 
 // newEmbedderResolver builds the production embedder resolver used by the
