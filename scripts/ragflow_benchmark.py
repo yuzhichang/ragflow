@@ -39,13 +39,18 @@ Config keys (optional unless marked required):
   leaderboard      {llm, retriever, link, evaluation_date, search_tools,
                    calibration_bin_size} - identity fields for the submission
                    JSON plus which tools count as a search call.
-  question_ids     {include: [..], random: N, exclude: [..]}
+  question_ids     {include: [..], include_file: "ids.txt", random: N,
+                   exclude: [..]}
                    include and random are alternative strategies - if both are
                    set include wins, if neither is effective every question is
                    selected. exclude is dropped from the result of either
                    strategy (the random sample is drawn after exclusion).
                    random is seeded with the current epoch second, so every run
                    draws a fresh sample; use include for reproducibility.
+                   include_file points at a file next to the config holding the
+                   batch (ids separated by commas/whitespace/newlines, `#`
+                   comments allowed) - the recommended carrier for a re-run
+                   batch. Precedence: --ids > include_file > include.
   concurrency      optional - how many questions to answer (and judge) in
                    parallel; the CLI --concurrency flag overrides it. 1 (the
                    default) keeps strictly serial execution with the
@@ -70,6 +75,54 @@ Two artefacts are written at the end of a run:
                        per_query_metrics) plus per_query_usage /
                        per_query_judgements extensions carrying each
                        question's tokens, time and full judge verdict.
+
+Re-running a batch efficiently (resume):
+  A batch that failed, aborted or was interrupted (provider quota wall, machine
+  restart, Ctrl-C) is re-run by repeating the SAME command. Everything needed to
+  continue lives in the config and in the run directory - there is no separate
+  resume script and no flag to remember.
+
+  1. Carry the batch in the config, not on the command line. `question_ids`
+     takes either `include` (inline ids) or `include_file` (a path relative to
+     the config; ids separated by commas, whitespace or newlines, `#` comments).
+     A GENERATED batch - e.g. every id a previous run judged wrong - belongs in
+     a file: reviewable, diffable, regenerable.
+         "question_ids": {"include_file": "browsecompplus_retry_ids.txt"}
+     Precedence: --ids beats include_file beats include.
+
+  2. Drop <timestamp> from output.output_dir. A timestamped path starts a NEW
+     run on every invocation; a fixed one is the batch's permanent home, and
+     each invocation continues it:
+         "output": {"output_dir": "outputs/browsecomp_retry_batch"}
+     (--run DIR aims a single invocation at another directory; --overwrite discards
+     its JSONL and starts clean.)
+
+  3. Skipping finished work IS the resume - no state file, no bookkeeping:
+       answers: a question counts as finished only when its row carries an answer
+                and NO ragflow_error, so rows killed mid-flight (the **ERROR**
+                text a quota wall leaves) are retried. `[resume] ... N answered
+                (skipped), M failed/aborted will be retried` prints the split.
+       judge:   verdicts live in leaderboard.json's per_query_judgements and are
+                persisted one row at a time, so judging resumes at the first row
+                without one; a verdict that is ITSELF a backend error is re-judged
+                rather than counted.
+     Above concurrency 1 answer rows land out of order; resume is id-based, so
+     that changes nothing.
+
+  4. Cheap enough to automate. Re-running the same command while the plan is
+     still exhausted costs one aborted batch: the quota breaker stops it within
+     minutes and every finished row/verdict stays on disk. That is what makes an
+     hourly scheduler a safe way to ride out a quota wall - the config is the
+     only thing to point it at:
+         python3 scripts/ragflow_benchmark.py --config <conf>
+     Guard the scheduler with `pgrep -f ragflow_benchmark` so a still-running
+     batch is never doubled up (the systemd unit in this repo does exactly that).
+
+  5. Judge an existing batch without re-answering: --skip-answers.
+
+  6. Watch a resumed batch: the per-question `[answers] seq/total` counts the
+     PENDING rows (not the batch position), and `[judge]` prints one verdict per
+     row plus the skipped count for rows already judged.
 
 Deliberately NOT configurable (constants at the top of this file):
   timeout_seconds / retry -> DEFAULT_TIMEOUT_SECONDS / DEFAULT_MAX_RETRIES
@@ -1786,6 +1839,8 @@ def main() -> int:
             "  qa_benchmark.py --config browsecomp_conf.json --ids 11,33 --dry-run\n"
             "  qa_benchmark.py --config frames_conf.json --ids 27,71\n"
             "  qa_benchmark.py --run outputs/qa_benchmark_20260902_120000 --skip-answers\n"
+            "  # re-run a batch: repeat the same command (see the module docstring)\n"
+            "  qa_benchmark.py --config browsecompplus_retry_conf.json\n"
         ),
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to the benchmark config JSON")
