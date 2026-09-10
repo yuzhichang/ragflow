@@ -1,27 +1,15 @@
 #!/usr/bin/env python3
-"""Unified, dataset-agnostic QA benchmark runner for RAGFlow.
+"""Dataset-agnostic QA benchmark runner for RAGFlow.
 
-Replaces the day-to-day use of browseComp_benchmark.py and frame_benchmark.py.
-Both of those scripts stay untouched; this one is where new behaviour lands.
-
-Unified:
+How a run works:
   * One question loader - .jsonl, JSON list, or JSON {id: {...}} mapping.
-  * Serial answer and judge phases with resume.
-  * One judge scorer: the 0/2/4 rule book wins, tolerant fallbacks after.
-    (browseComp rejected any score above 1.0; frame divided 1..100 by 100.)
+  * An answer phase (a RAGFlow chat answers each question) followed by a judge
+    phase (a SEPARATE judge chat scores each answer), both resumable and both
+    parallelisable via concurrency.
+  * One judge scorer: the 0/2/4 rule book first, tolerant fallbacks after.
   * One result artefact: leaderboard.json (the BrowseComp-Plus submission JSON
     plus per-question judgement/usage extensions) carries everything a run
     produces; answers.jsonl stays a pure record of what the agent returned.
-
-Dropped (only ever existed in frame_benchmark.py):
-  * the retry / repair subcommands,
-  * --bad-cases files, error-category filters and the _annotations tables,
-  * per-dataset helpers (_load_bad_case_questions, _filter_by_category,
-    _deduplicate_jsonl, _replace_jsonl_rows).
-Dropped (superseded by leaderboard.json):
-  * judged_answers.jsonl and report.json - the judge verdicts now live in the
-    leaderboard's per_query_judgements extension, and the diagnostic totals in
-    its _diagnostics block.
 
 Config keys (optional unless marked required):
   dataset          required - {name, description, questions_path, corpus_path?}
@@ -115,12 +103,40 @@ Re-running a batch efficiently (resume):
      hourly scheduler a safe way to ride out a quota wall - the config is the
      only thing to point it at:
          python3 scripts/ragflow_benchmark.py --config <conf>
-     Guard the scheduler with `pgrep -f ragflow_benchmark` so a still-running
-     batch is never doubled up (the systemd unit in this repo does exactly that).
 
-  5. Judge an existing batch without re-answering: --skip-answers.
+  5. Scheduling it - systemd user timer (no root, survives the terminal):
 
-  6. Watch a resumed batch: the per-question `[answers] seq/total` counts the
+     The unit pair is installed per user; name it after the batch:
+         ~/.config/systemd/user/<batch>.service   Type=oneshot; WorkingDirectory=the
+                                                  repo; ExecStart=<pgrep guard> && the
+                                                  python command above; stdout/stderr
+                                                  appended to the batch log
+         ~/.config/systemd/user/<batch>.timer     OnCalendar=hourly
+     Install, inspect and remove:
+         systemctl --user daemon-reload
+         systemctl --user enable --now <batch>.timer        # start the schedule
+         systemctl --user list-timers <batch>.timer         # next/last run
+         systemctl --user status <batch>.service            # outcome of the last tick
+         journalctl --user -u <batch>.service -n 50         # unit-level log
+         systemctl --user stop <batch>.timer                # pause (keeps it installed)
+         systemctl --user disable --now <batch>.timer       # remove from the schedule
+         tail -f outputs/<batch>.log                        # the batch's own log
+     Concrete example installed for the browsecomp retry batch:
+         browsecomp-retry-resume.timer -> browsecomp-retry-resume.service
+         -> scripts/ragflow_benchmark.py --config scripts/browsecompplus_retry_conf.json
+         log: outputs/browsecomp_retry_batch_run.log
+
+     cron equivalent (hosts without systemd):
+         0 * * * * cd /path/to/ragflow && pgrep -f ragflow_benchmark >/dev/null || setsid nohup /home/zhichyu/.venv/bin/python3 -u scripts/ragflow_benchmark.py --config scripts/browsecompplus_retry_conf.json >> outputs/browsecomp_retry_batch_run.log 2>&1 &
+
+     Both forms rely on the same guard: `pgrep -f ragflow_benchmark` refuses to
+     start a second run, and the run's own skip logic ignores finished rows and
+     verdicts. Delete or disable the schedule once the batch has no remaining
+     questions (the `[resume]` line then reports 0 pending).
+
+  6. Judge an existing batch without re-answering: --skip-answers.
+
+  7. Watch a resumed batch: the per-question `[answers] seq/total` counts the
      PENDING rows (not the batch position), and `[judge]` prints one verdict per
      row plus the skipped count for rows already judged.
 
@@ -874,8 +890,8 @@ def build_leaderboard(
     texttron/BrowseComp-Plus, including its denominators:
       * Accuracy divides by ALL questions of the run. A question the agent
         failed on (error, empty answer, unparseable judgement) counts as
-        incorrect, which is why this number is lower than report.json's
-        `overall_accuracy` (that one excludes the failed rows).
+        incorrect - the figure is the run's end-to-end success rate, not the
+        success rate among questions that produced a usable answer.
       * Recall averages only over questions that have evidence documents.
       * Calibration error needs at least 100 scored confidences, otherwise the
         reference script reports 0.0.
@@ -929,8 +945,8 @@ def build_leaderboard(
         )
 
         # Extension, not part of the submission schema: the full judge verdict
-        # per question (replaces the former judged_answers.jsonl). Rows the
-        # judge never reached are omitted - _diagnostics.judged counts them.
+        # per question. Rows the judge never reached are omitted -
+        # _diagnostics.judged counts them.
         if any(row.get(k) is not None for k in ("judge_correct", "judge_error")):
             per_query_judgements.append(
                 {
@@ -1030,8 +1046,8 @@ def build_leaderboard(
             "run_stats_missing": stats_missing,
             "note": " ".join(
                 [
-                    "Accuracy counts every question of the run; failed or unjudged rows are",
-                    "incorrect, so it is lower than report.json's overall_accuracy.",
+                    "Accuracy counts every question of the run; failed and unjudged rows",
+                    "count as incorrect.",
                 ]
                 + (
                     [
@@ -1895,7 +1911,7 @@ def main() -> int:
         print(f"[resume] {answers_path.name}: {len(existing)} row(s) - {answered} answered (skipped), {len(existing) - answered} failed/aborted will be retried; {judged} verdict(s) already stored")
 
     # Parallelism: the CLI flag wins, then the config's top-level
-    # "concurrency", then 1 (strictly serial - the historical behavior).
+    # "concurrency", then 1 (strictly serial).
     try:
         concurrency = int(args.concurrency if args.concurrency is not None else cfg.get("concurrency") or 1)
     except (TypeError, ValueError):
