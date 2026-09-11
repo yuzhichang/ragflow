@@ -108,9 +108,9 @@ Re-running a batch efficiently (resume):
 
      The unit pair is installed per user; name it after the batch:
          ~/.config/systemd/user/<batch>.service   Type=oneshot; WorkingDirectory=the
-                                                  repo; ExecStart=<pgrep guard> && the
-                                                  python command above; stdout/stderr
-                                                  appended to the batch log
+                                                  repo; ExecStart=<bracketed pgrep
+                                                  guard> && the python command above;
+                                                  stdout/stderr appended to the batch log
          ~/.config/systemd/user/<batch>.timer     OnCalendar=hourly
      Install, inspect and remove:
          systemctl --user daemon-reload
@@ -127,11 +127,20 @@ Re-running a batch efficiently (resume):
          log: outputs/browsecomp_retry_batch_run.log
 
      cron equivalent (hosts without systemd):
-         0 * * * * cd /path/to/ragflow && pgrep -f ragflow_benchmark >/dev/null || setsid nohup /home/zhichyu/.venv/bin/python3 -u scripts/ragflow_benchmark.py --config scripts/browsecompplus_retry_conf.json >> outputs/browsecomp_retry_batch_run.log 2>&1 &
+         0 * * * * cd /path/to/ragflow && pgrep -f "[r]agflow_benchmark.py" >/dev/null || setsid nohup /home/zhichyu/.venv/bin/python3 -u scripts/ragflow_benchmark.py --config scripts/browsecompplus_retry_conf.json >> outputs/browsecomp_retry_batch_run.log 2>&1 &
 
-     Both forms rely on the same guard: `pgrep -f ragflow_benchmark` refuses to
-     start a second run, and the run's own skip logic ignores finished rows and
-     verdicts. Delete or disable the schedule once the batch has no remaining
+     Both forms rely on the same guard: the pgrep check refuses to start a second
+     run, and the run's own skip logic ignores finished rows and verdicts. BRACKET
+     the pattern's first character (`[r]agflow_benchmark.py`, `[b]atch.json`): a
+     plain `pgrep -f ragflow_benchmark` ALSO matches the wrapper shell that is
+     running the guard itself — its command line contains the pattern, and the
+     python path — so the guard always concludes "already running", exits 0, and
+     the schedule silently never runs the batch. Measured on the systemd timer:
+     every hourly tick exited in 0.3s for a day. A run started by hand is enough
+     to prove the schedule works: check `systemctl --user status <batch>.service`
+     (or the cron mail) and confirm the batch log grew. Delete or disable the
+     schedule once the batch has no remaining
+     questions (the `[resume]` line then reports 0 pending).
      questions (the `[resume]` line then reports 0 pending).
 
   6. Judge an existing batch without re-answering: --skip-answers.
