@@ -27,7 +27,7 @@ require (
 	github.com/bytedance/sonic v1.15.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/cloudwego/eino v0.10.0-alpha.31
+	github.com/cloudwego/eino v0.10.0-alpha.32
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/dop251/goja v0.0.0-20260820211235-95a30dcd3fa5
 	github.com/eino-contrib/jsonschema v1.0.3
