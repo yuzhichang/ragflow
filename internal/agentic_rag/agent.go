@@ -778,48 +778,12 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// loop's error no longer describes the answer being returned.
 		runErr = nil
 	}
-	// Label governance (lever 1): `Final Answer` claims every discriminating
-	// constraint is corpus-verified, so it may only survive an audit that
-	// PASSED. When the gate stopped on a stall, a budget or the clock, the
-	// claim is demoted to `Guessed Answer` - the value is untouched (that is
-	// what the judge scores), only the confidence claim is corrected.
-	//
-	// A DECLARED TIE demotes too, and independently of the audit: the clause
-	// says the corpus could not settle the discriminating constraint, which is
-	// precisely what `Final Answer` claims it did. The audit may well have
-	// PASSED such a deliverable - being honest about an under-determined
-	// question is what ties are for, and the gate must not punish it - so
-	// keying the demotion off the audit verdict alone would ship the strongest
-	// label on the weakest claim.
-	ties := finalAnswerTies(final)
-	if len(ties) > 0 {
-		common.InfoCtx(ctx, "agentic_rag: delivery declares a tie",
-			zap.Strings("rivals", ties),
-			zap.Bool("audit_passed", in.GateAudit != nil && in.GateAudit.Passed))
-	}
-	demoteReason := ""
-	switch {
-	case len(ties) > 0:
-		// Every rival, not just the first: a deliverable that names three
-		// equally undiscriminated candidates is LESS certain than one that
-		// names a single rival, and the note is the only place a reader learns
-		// how wide the field really was.
-		quoted := make([]string, 0, len(ties))
-		for _, rival := range ties {
-			quoted = append(quoted, answerNoteSafe(`"`+rival+`"`))
-		}
-		demoteReason = "the run declares a tie with " + strings.Join(quoted, ", ") +
-			", so the discriminating constraint is not corpus-verified"
-	case shouldDemoteFinalAnswer(in.GateAudit):
-		demoteReason = "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"
-	}
-	if demoteReason != "" {
-		if demoted, changed := demoteFinalAnswerLabel(final, demoteReason); changed {
-			common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer",
-				zap.String("reason", demoteReason))
-			final = demoted
-		}
-	}
+	// Label governance is deliberately NOT applied here: it runs ONCE, at the
+	// end, on whatever text actually ships. Governing before the synthesis let
+	// a synthesized deliverable escape it entirely - w3 shipped `Final Answer`
+	// from the synthesizer on a run whose gate never audited at all (4 pre-audit
+	// rejections, no verdict), while the log showed a demotion on the
+	// pre-synthesis draft the synthesizer then replaced.
 
 	// Terminating action: the gate loop has spent its budget (or every
 	// continuation failed) and the answer still carries no machine-parseable
@@ -873,6 +837,23 @@ func Run(ctx context.Context, in Input) (string, error) {
 		}
 	}
 
+	// Label governance (lever 1): `Final Answer` claims every discriminating constraint
+	// is corpus-verified, so it may only survive an audit that PASSED; a declared TIE
+	// demotes too, independently of the audit, because the clause says the corpus could
+	// not settle the discriminating constraint. This runs LAST - the text it governs has
+	// to be the text that ships, and the synthesizer above renders a FRESH deliverable
+	// with its own label. The value is untouched (that is what the judge scores).
+	if ties := finalAnswerTies(final); len(ties) > 0 {
+		common.InfoCtx(ctx, "agentic_rag: delivery declares a tie",
+			zap.Strings("rivals", ties),
+			zap.Bool("audit_passed", in.GateAudit != nil && in.GateAudit.Passed))
+	}
+	if governed, reason := governAnswerLabel(final, in.GateAudit); reason != "" {
+		common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer",
+			zap.String("reason", reason))
+		final = governed
+	}
+
 	// Final label check: whatever text won (gate deliverable, synthesized or
 	// recovered message) must agree with itself — a `## Final Answer` heading
 	// above a `**Guessed Answer: X**` value line claims more than the run
@@ -909,6 +890,43 @@ func Run(ctx context.Context, in Input) (string, error) {
 // SOMETHING on record — an audit verdict (Suspects) or a deliverable it refused
 // before an audit could run (Rejections). Without the Rejections arm a run whose
 // gate short-circuited pre-audit shipped an unaudited `Final Answer`.
+// governAnswerLabel applies the ONE label rule to the text a run is about to ship,
+// returning the (possibly rewritten) text plus the reason, or ("", no reason) when
+// the label may stand.
+//
+// It is a function so the rule is applied at ONE place, on the FINAL text. It used
+// to be inlined before the last-resort synthesis, and that synthesis replaces the
+// answer with a freshly rendered deliverable carrying its own label - so a
+// synthesized `Final Answer` shipped ungoverned (w3: four pre-audit rejections and
+// no audit at all, `Final Answer` on the synthesizer's text while the log showed a
+// demotion on the draft it had just replaced).
+func governAnswerLabel(final string, audit *GateAuditRecord) (string, string) {
+	reason := ""
+	switch ties := finalAnswerTies(final); {
+	case len(ties) > 0:
+		// Every rival, not just the first: a deliverable that names three equally
+		// undiscriminated candidates is LESS certain than one that names a single
+		// rival, and the note is the only place a reader learns how wide the field
+		// really was.
+		quoted := make([]string, 0, len(ties))
+		for _, rival := range ties {
+			quoted = append(quoted, answerNoteSafe(`"`+rival+`"`))
+		}
+		reason = "the run declares a tie with " + strings.Join(quoted, ", ") +
+			", so the discriminating constraint is not corpus-verified"
+	case shouldDemoteFinalAnswer(audit):
+		reason = "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"
+	}
+	if reason == "" {
+		return final, ""
+	}
+	demoted, changed := demoteFinalAnswerLabel(final, reason)
+	if !changed {
+		return final, ""
+	}
+	return demoted, reason
+}
+
 func shouldDemoteFinalAnswer(audit *GateAuditRecord) bool {
 	if audit == nil || audit.Passed {
 		return false

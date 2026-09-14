@@ -338,3 +338,76 @@ func TestAuditRepairDirective(t *testing.T) {
 		t.Errorf("the directive must show the suspect trend it is reacting to, got:\n%s", stalled)
 	}
 }
+
+// TestGovernAnswerLabel pins the ONE label rule — and the reason it has to run on
+// the text that SHIPS: it used to be inlined before the last-resort synthesis,
+// which replaces the answer with a freshly rendered deliverable carrying its own
+// label, so a synthesized `Final Answer` shipped ungoverned (w3: four pre-audit
+// rejections, no audit at all, `Final Answer` on the synthesizer's text).
+func TestGovernAnswerLabel(t *testing.T) {
+	cases := []struct {
+		name       string
+		final      string
+		audit      *GateAuditRecord
+		wantDemote bool
+	}{
+		{
+			// "never audited" is still a reason: the gate refused this deliverable
+			// four times and stopped, so nothing verified it.
+			name:       "pre-audit rejections demote",
+			final:      "Final Answer: **X**",
+			audit:      &GateAuditRecord{Rejections: 4},
+			wantDemote: true,
+		},
+		{
+			name:       "a passing audit lets the label stand",
+			final:      "Final Answer: **X**",
+			audit:      &GateAuditRecord{Suspects: []int{0}, Passed: true},
+			wantDemote: false,
+		},
+		{
+			// The tie demotes independently of the verdict: the clause says the
+			// discriminating constraint is NOT verified, which is what the label
+			// claims it is.
+			name:       "a tie demotes even when the audit passed",
+			final:      `Final Answer: **X** (tie: "Y" - both fit)`,
+			audit:      &GateAuditRecord{Suspects: []int{0}, Passed: true},
+			wantDemote: true,
+		},
+		{
+			name:       "no audit record at all",
+			final:      "Final Answer: **X**",
+			audit:      nil,
+			wantDemote: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := governAnswerLabel(tc.final, tc.audit)
+			if demoted := strings.Contains(got, "Guessed Answer"); demoted != tc.wantDemote {
+				t.Errorf("demoted = %v, want %v (%q)", demoted, tc.wantDemote, got)
+			}
+			if (reason != "") != tc.wantDemote {
+				t.Errorf("reason = %q, want a reason only when it rewrote", reason)
+			}
+			// The value is never touched by label governance — and the appended
+			// note must leave the line parseable (the note regex stops at ')').
+			if v := finalAnswerValue(got); v != "X" {
+				t.Errorf("value = %q, want X", v)
+			}
+			if tc.wantDemote && !strings.Contains(got, "assumption:") {
+				t.Errorf("a demotion must carry its reason: %q", got)
+			}
+		})
+	}
+
+	// A tie already wearing the Guessed label has nothing to rewrite: returning a
+	// reason would log a demotion that never happened.
+	got, reason := governAnswerLabel(`Guessed Answer: **X** (tie: "Y" - both fit)`, &GateAuditRecord{Suspects: []int{0}, Passed: true})
+	if reason != "" {
+		t.Errorf("reason = %q, want none — the label was already Guessed", reason)
+	}
+	if ties := finalAnswerTies(got); len(ties) != 1 {
+		t.Errorf("the tie must survive governance untouched, got %v", ties)
+	}
+}
