@@ -1116,10 +1116,13 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				break // audited and passed as a whole — ship
 			}
 
+			// The finding, not the verdict string: the auditor echoes the whole
+			// deliverable back, so the raw verdict spends its first 300 chars on
+			// the ## Candidate Matrix and cuts the reason off entirely.
 			common.InfoCtx(ctx, "agentic_rag: delivery gate audit failed the deliverable",
 				zap.Int("pass", pass+1),
 				zap.Int("suspects", auditSuspectCount(verdict)),
-				zap.String("verdict", truncateForLog(verdict, 300)))
+				zap.String("verdict", truncateForLog(auditFindings(verdict), 300)))
 
 			suspectHist = append(suspectHist, auditSuspectCount(verdict))
 			// Stall check fires BEFORE the repair turn: once three observations

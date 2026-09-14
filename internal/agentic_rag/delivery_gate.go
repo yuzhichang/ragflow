@@ -434,26 +434,20 @@ var (
 	auditResultLineRe = regexp.MustCompile(`(?m)^\s*Audit Result:.*$`)
 )
 
-// recordAuditVerdict archives one audit's FINDINGS, in the same order as
-// Suspects, so the counts and the auditor's own words stay in step (entry i of
-// AuditVerdicts is the verdict that produced entry i of Suspects).
+// auditFindings distils one audit verdict into its findings: the non-pass
+// opinions and the overall verdict line, ` | `-joined, with the echoed
+// deliverable dropped.
 //
-// It keeps the non-pass opinions and the overall verdict line, and drops the
-// echoed deliverable: without this a failure shows a curve (5→3→1→0) but no
-// reason, and the only way to explain the run is to reverse-engineer the shipped
-// deliverable — which is how the #221 analysis twice landed on the wrong cause.
-func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
-	if audit == nil {
-		return
-	}
-	if strings.TrimSpace(verdict) == "" {
-		return
-	}
+// The auditor answers by echoing the producer's message back with one
+// `- audit: <opinion>` sub-line under every audited line, so the deliverable is
+// ~95% of the verdict string and none of it is a finding — a plain truncation of
+// the verdict records the DELIVERABLE again, with the finding past the cut. A
+// passing item is skipped too: it says nothing a reader would not assume from the
+// round's suspect count.
+func auditFindings(verdict string) string {
 	findings := make([]string, 0, 4)
 	for _, m := range auditOpinionRe.FindAllStringSubmatch(verdict, -1) {
 		opinion := strings.TrimSpace(m[1])
-		// A passing item is not a finding: it says nothing a reader would not
-		// assume from the round's suspect count.
 		if opinion == "" || strings.EqualFold(opinion, "pass") {
 			continue
 		}
@@ -463,11 +457,25 @@ func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
 		findings = append(findings, overall)
 	}
 	if len(findings) == 0 {
-		// Every opinion passed, or the shape was not recognised. The entry is
-		// kept anyway so the two slices stay index-aligned by round.
-		findings = append(findings, "audit produced no parseable opinion")
+		// Every opinion passed, or the shape was not recognised — say so rather
+		// than return an empty string a reader would take for "no issues".
+		return "audit produced no parseable opinion"
 	}
-	excerpt := strings.Join(findings, " | ")
+	return strings.Join(findings, " | ")
+}
+
+// recordAuditVerdict archives one audit's findings, in the same order as
+// Suspects, so the counts and the auditor's own words stay in step (entry i of
+// AuditVerdicts is the verdict that produced entry i of Suspects).
+//
+// Without this a failure shows a curve (5→3→1→0) but no reason, and the only way
+// to explain the run is to reverse-engineer the shipped deliverable — which is how
+// the #221 analysis twice landed on the wrong cause.
+func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
+	if audit == nil || strings.TrimSpace(verdict) == "" {
+		return
+	}
+	excerpt := auditFindings(verdict)
 	if runes := []rune(excerpt); len(runes) > auditVerdictExcerptMax {
 		excerpt = string(runes[:auditVerdictExcerptMax]) + "…"
 	}

@@ -251,3 +251,20 @@ func TestRecordAuditVerdict(t *testing.T) {
 		t.Errorf("excerpt is %d runes, want %d (bound plus the ellipsis)", n, auditVerdictExcerptMax+1)
 	}
 }
+
+// TestAuditFindings pins the distillation BOTH consumers use (the log line and
+// the archived record): the echoed deliverable never reaches either, a PASS round
+// reduces to its verdict line, and an unrecognised shape says so rather than
+// returning "" — which a reader would take for "no issues".
+func TestAuditFindings(t *testing.T) {
+	got := auditFindings("## Candidate Matrix\n- Retained: Bob\n  - audit: pass\nAudit Result: PASS")
+	if strings.Contains(got, "Bob") || strings.Contains(got, "Candidate Matrix") {
+		t.Errorf("the echoed deliverable must be dropped, got %q", got)
+	}
+	if got != "Audit Result: PASS" {
+		t.Errorf("a PASS round distils to its verdict line, got %q", got)
+	}
+	if got := auditFindings("## Candidate Matrix\n- Retained: Bob\n"); got != "audit produced no parseable opinion" {
+		t.Errorf("an unrecognised shape must say so, got %q", got)
+	}
+}
