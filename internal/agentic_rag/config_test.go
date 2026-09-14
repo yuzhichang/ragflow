@@ -190,6 +190,20 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		t.Errorf("%s: temperature = %v, want the shipped %v — the auditor's verdict is machine-parsed and decides whether the deliverable ships, so it must not sample",
 			answerAuditorTemplateID, auditor.Temperature, answerAuditorTemperature)
 	}
+	// The snippet rule must not send the auditor after typography. It used to
+	// demand the snippet be copied CHARACTER-FOR-CHARACTER with "nothing ...
+	// normalized (quotes/whitespace/punctuation as-is)", and q221's pass 3 spent a
+	// whole repair turn on a space the producer inserted after "citizens." — a
+	// turn that fixes nothing. Content defects stay defects; spacing does not.
+	if strings.Contains(auditor.Content, "CHARACTER-FOR-CHARACTER") {
+		t.Error("the auditor's snippet rule must judge CONTENT, not character-for-character typography")
+	}
+	if !strings.Contains(auditor.Content, "Whitespace and punctuation are not content") {
+		t.Error("the auditor's snippet rule must state that whitespace and punctuation are never defects")
+	}
+	if !strings.Contains(auditor.Content, "elision marker") {
+		t.Error("an explicit elision marker must be the stated way to quote non-adjacent passages")
+	}
 	for _, id := range []string{"smart-reasoning", "smart-grep", "smart-grep-bm25"} {
 		tmpl, err := resolveTemplateFor(id)
 		if err != nil {
