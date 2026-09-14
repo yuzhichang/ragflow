@@ -2287,6 +2287,21 @@ func (s *ChatPipelineService) agenticRag(
 			cm = einoModel // degrade to the shared instance rather than fail
 		}
 
+		// The auditor gets a THIRD instance over the same chain, differing only
+		// in sampling: its temperature is pinned by the auditor template
+		// (default 0), because its verdict is machine-parsed and decides
+		// whether the deliverable ships — a sampled FAIL burns a repair turn, a
+		// sampled PASS ships an unaudited answer, so the producer's
+		// temperature must not reach it. Separate for cm's reason too: a
+		// failover instance caches its last chain failure for 30s, and an audit
+		// outage must not be handed to the producer (or vice versa).
+		auditModel, auErr := modelModule.NewFailoverEinoChatModelWithLabels(
+			modelChain, chainLabels, auditChatConfig(chatCfg))
+		if auErr != nil {
+			common.WarnCtx(ctx, "smart_reasoning: build audit model", zap.Error(auErr))
+			auditModel = einoModel // degrade to the shared instance rather than fail
+		}
+
 		// Convert messages to eino schema messages (system is already stripped
 		// by the caller; the agent injects its own instruction).
 		msgs := convertMessagesToEino(messages)
@@ -2387,6 +2402,7 @@ func (s *ChatPipelineService) agenticRag(
 		final, err = agentic_rag.Run(runCtx, agentic_rag.Input{
 			Model:             einoModel,
 			SynthModel:        cm,
+			AuditModel:        auditModel,
 			Messages:          msgs,
 			TemplateID:        mode,
 			TenantID:          chat.TenantID,
@@ -4809,6 +4825,22 @@ func kbTenantIDStrings(kbs []*entity.Knowledgebase) []string {
 // BuildChatConfig converts the dialog's LLM setting (with optional
 // per-request overrides) into a typed ChatConfig for the LLM driver.
 // Dialog values are read first; request config values win when present.
+// auditChatConfig derives the auditor's model config from the chat's: a copy
+// that keeps every per-request parameter (max_tokens, thinking, stop, tools)
+// but replaces the temperature with the one the auditor template pins
+// (agentic_rag.AuditTemperature, 0 unless an operator says otherwise). The
+// caller's config is never mutated — the producer's sampling stays its own
+// choice, and the auditor's judgement must not ride on it.
+func auditChatConfig(chatCfg *modelModule.ChatConfig) *modelModule.ChatConfig {
+	temp := agentic_rag.AuditTemperature()
+	if chatCfg == nil {
+		return &modelModule.ChatConfig{Temperature: &temp}
+	}
+	auditCfg := *chatCfg
+	auditCfg.Temperature = &temp
+	return &auditCfg
+}
+
 func BuildChatConfig(dialog *entity.Chat, config map[string]interface{}) *modelModule.ChatConfig {
 	cfg := &modelModule.ChatConfig{}
 

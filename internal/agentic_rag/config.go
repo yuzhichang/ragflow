@@ -45,12 +45,17 @@ import (
 // The auditor is kept out of the agent's toolset on purpose: the agent only
 // produces the deliverable, the gate runs the audit (see runDeliveryGate).
 type Template struct {
-	ID           string   `json:"id" yaml:"id"`
-	Name         string   `json:"name" yaml:"name"`
-	Description  string   `json:"description" yaml:"description"`
-	AuditMaxPass int      `json:"audit_max_pass" yaml:"audit_max_pass"`
-	Tools        []string `json:"tools" yaml:"tools"`
-	Content      string   `json:"content" yaml:"content"`
+	ID           string `json:"id" yaml:"id"`
+	Name         string `json:"name" yaml:"name"`
+	Description  string `json:"description" yaml:"description"`
+	AuditMaxPass int    `json:"audit_max_pass" yaml:"audit_max_pass"`
+	// Temperature pins the sampling temperature of the model this agent runs
+	// on. Only the auditor reads it (see AuditTemperature): a producer's
+	// temperature is a reasoning-strategy choice, an auditor's is noise in a
+	// control signal.
+	Temperature *float64 `json:"temperature" yaml:"temperature"`
+	Tools       []string `json:"tools" yaml:"tools"`
+	Content     string   `json:"content" yaml:"content"`
 }
 
 // configFile is the on-disk shape: a plain list of templates. Which template

@@ -307,6 +307,16 @@ templates:
       (list_chunks) and returns the FINAL message in the producer's own md format with one audit opinion per
       item (`pass` / `suspect` / `schema integrity` / `field integrity`) and a final
       `Audit Result: PASS|FAIL` line as the machine-parseable overall verdict.
+    # The auditor's sampling temperature. Pinned to 0 by default: its verdict is
+    # machine-parsed AND decides whether the deliverable ships, so sampling is
+    # control-loop jitter rather than stylistic variation — a sampled FAIL burns
+    # a repair pass (and at the stall window can finalize a worse deliverable),
+    # a sampled PASS ships an unaudited one, and the auditor's own ReAct loop
+    # picks which cited chunks it deep-reads. The producer keeps the chat's
+    # temperature, where sampling buys exploration. This lowers variance, it
+    # does not make the verdict reproducible (MoE routing, batching and the
+    # auditor's cross-pass session memory remain).
+    temperature: 0
     tools:
       - think
       - todo_write

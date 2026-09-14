@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"ragflow/internal/agentic_rag"
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
 	"ragflow/internal/entity"
@@ -132,6 +133,52 @@ func TestSmartReasoning_GenerationConfigReachesEinoModel(t *testing.T) {
 	}
 	if cfg.Stop == nil || len(*cfg.Stop) != 2 {
 		t.Fatalf("Stop: want [\"\\n\", \"END\"], got %v", cfg.Stop)
+	}
+}
+
+// TestSmartReasoning_AuditorSamplingIsPinned guards the auditor's model config:
+// it is DERIVED from the chat's (max_tokens, top_p, thinking, stop and the tool
+// plumbing still reach the auditor, so its deep-reads do not run on a different
+// shape of request than the producer's) but its temperature is the auditor
+// template's, never the chat's — a sampled verdict decides whether the
+// deliverable ships (FAIL buys a repair pass, PASS ships), so it must not ride
+// on the producer's exploration setting. The producer's own config must come
+// back untouched.
+func TestSmartReasoning_AuditorSamplingIsPinned(t *testing.T) {
+	chat := dialForTest("llm-1")
+	chat.LLMSetting = entity.JSONMap{
+		"temperature": 0.7,
+		"top_p":       0.9,
+		"max_tokens":  512,
+		"thinking":    true,
+	}
+	cfg := BuildChatConfig(chat, map[string]interface{}{"temperature": 0.3})
+
+	want := agentic_rag.AuditTemperature()
+	audit := auditChatConfig(cfg)
+	if audit.Temperature == nil {
+		t.Fatal("the auditor's temperature must be pinned, got nil (it would inherit the chat's)")
+	}
+	if *audit.Temperature != want {
+		t.Errorf("auditor temperature = %v, want the template's %v", *audit.Temperature, want)
+	}
+	if *audit.Temperature == *cfg.Temperature {
+		t.Errorf("the auditor must not inherit the chat's temperature (%v)", *cfg.Temperature)
+	}
+	// Everything else is carried over, by the same values.
+	if audit.TopP != cfg.TopP || audit.MaxTokens != cfg.MaxTokens || audit.Thinking != cfg.Thinking {
+		t.Error("the auditor must keep the chat's other generation parameters")
+	}
+	// The producer's config is not mutated: cfg is read by the agent, the
+	// synthesis and now the auditor's derivation, and one of them editing it
+	// would silently change the others.
+	if cfg.Temperature == nil || *cfg.Temperature != 0.3 {
+		t.Errorf("BuildChatConfig's result was mutated: temperature = %v, want 0.3", cfg.Temperature)
+	}
+
+	// A caller with no chat config at all still gets a pinned auditor.
+	if nilAudit := auditChatConfig(nil); nilAudit.Temperature == nil || *nilAudit.Temperature != want {
+		t.Errorf("nil chat config: auditor temperature = %v, want %v", nilAudit.Temperature, want)
 	}
 }
 

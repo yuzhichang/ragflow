@@ -20,6 +20,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"ragflow/internal/entity/models"
 )
 
 // TestRun_NilModel: Run must reject a nil model up front.
@@ -27,6 +29,27 @@ func TestRun_NilModel(t *testing.T) {
 	_, err := Run(context.Background(), Input{Model: nil})
 	if err == nil {
 		t.Fatal("expected error for nil model")
+	}
+}
+
+// TestAuditModelFor pins which model the auditor runs on: its own when the
+// caller built one (pinned sampling, separate failover state), the producer's
+// when not — and nil when neither, so Run's up-front nil check owns that error.
+func TestAuditModelFor(t *testing.T) {
+	producer := &models.EinoChatModel{}
+	auditor := &models.EinoChatModel{}
+
+	if got := auditModelFor(Input{Model: producer}); got != producer {
+		t.Error("with no AuditModel the auditor must run on the producer's model")
+	}
+	if got := auditModelFor(Input{Model: producer, AuditModel: auditor}); got != auditor {
+		t.Error("with an AuditModel the auditor must run on ITS OWN instance, not the producer's")
+	}
+	if got := auditModelFor(Input{Model: producer, AuditModel: nil}); got != producer {
+		t.Error("an explicit nil AuditModel must fall back to Model")
+	}
+	if got := auditModelFor(Input{}); got != nil {
+		t.Error("with no model at all the fallback must stay nil")
 	}
 }
 

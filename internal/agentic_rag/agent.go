@@ -54,6 +54,15 @@ type Input struct {
 	// request with no tool messages in it once "failed" with
 	// "tool result's tool id ... not found". Nil falls back to Model.
 	SynthModel *models.EinoChatModel
+	// AuditModel, when non-nil, is the model the delivery gate's auditor runs
+	// on. It must be a SEPARATE instance over the same failover chain as Model
+	// — and, unlike Model, one whose sampling is pinned (see
+	// AuditTemperature) — because the auditor is not a second producer: its
+	// verdict is machine-parsed and decides whether the deliverable ships, so
+	// it must not inherit the producer's sampling noise, and a failover
+	// instance's cached last error must not flow between the two. Nil falls
+	// back to Model.
+	AuditModel *models.EinoChatModel
 	// Messages are the conversation history plus the current user message —
 	// one turn per Run. The next user input is the NEXT Run (AsyncChat is
 	// re-entered per request), so the history the caller passes in must
@@ -163,6 +172,17 @@ type GateAuditRecord struct {
 const defaultMaxIterations = 120
 
 var errNilModel = errors.New("agentic_rag: model is required")
+
+// auditModelFor is the model the auditor runs on: its own instance when the
+// caller built one (pinned sampling, separate failover state), else the
+// producer's. A named rule rather than an inline nil check, so the fallback
+// stays testable.
+func auditModelFor(in Input) *models.EinoChatModel {
+	if in.AuditModel != nil {
+		return in.AuditModel
+	}
+	return in.Model
+}
 
 // llmRetryMax bounds retry attempts per model call on top of the initial one
 // (adk semantics: MaxRetries=3 → up to 4 calls). With the backoff below the
@@ -593,7 +613,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// The audited question is pinned into the auditor's system prompt, so
 		// it is built for THIS run's question.
 		if auditMaxPass > 0 {
-			inner, aerr := NewAnswerAuditorAgent(ctx, in.Model,
+			inner, aerr := NewAnswerAuditorAgent(ctx, auditModelFor(in),
 				in.TenantID, in.DatasetIDs, lastUserQuestion(in.Messages),
 				in.ToolCallDurations, in.RetrievedDocIDs, in.ChunkReads)
 			if aerr != nil {
