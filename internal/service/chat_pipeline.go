@@ -153,6 +153,12 @@ type TurnUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 	LLMCalls         int `json:"llm_calls"`
+	// LLMTurns is the per-call split the aggregate above sums up: one entry per
+	// LLM call (ReAct iteration, repair turn, audit pass, synthesis), with its
+	// input/output tokens, the model that served it and when it started. A
+	// benchmark reads it to see WHERE a question's cost went, not just how much
+	// it was. Omitted by backends that do not report it.
+	LLMTurns []tokenizer.CallUsage `json:"llm_turns,omitempty"`
 }
 
 // AsyncChat is the Go equivalent of Python's async_chat() in
@@ -2450,6 +2456,7 @@ func (s *ChatPipelineService) agenticRag(
 				CompletionTokens: ct,
 				TotalTokens:      tt,
 				LLMCalls:         calls,
+				LLMTurns:         sink.CallSnapshot(),
 			}
 			fields := []zap.Field{
 				zap.String("chat_id", chat.ID),

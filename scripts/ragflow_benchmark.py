@@ -1119,6 +1119,24 @@ def _calibration_bin_size(lb_cfg: dict[str, Any]) -> int:
     return max(1, size)
 
 
+def _llm_turn(turn: dict[str, Any]) -> dict[str, Any]:
+    """One LLM call's cost: its input/output token split, the model that served
+    it and when it started relative to the run."""
+    prompt = _as_int(turn.get("prompt_tokens"))
+    completion = _as_int(turn.get("completion_tokens"))
+    total = _as_int(turn.get("total_tokens"))
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    return {
+        "seq": _as_int(turn.get("seq")),
+        "at_seconds": _as_float(turn.get("at_seconds")),
+        "model": str(turn.get("model") or "") or None,
+        "input_tokens": prompt,
+        "output_tokens": completion,
+        "total_tokens": total,
+    }
+
+
 def _gate_audit_rejections(row: dict[str, Any]) -> int | None:
     """How many deliverables the gate refused BEFORE an audit ran (ungrounded
     value, list-only name, value-less line, answer-less continuation). A run
@@ -1150,6 +1168,9 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         "output_tokens": completion_tokens,
         "total_tokens": total_tokens,
         "llm_calls": _as_int(usage.get("llm_calls")),
+        # Per-turn token detail, oldest first (None when the backend did not
+        # report it): the same total as above, broken down per LLM call.
+        "llm_turns": row.get("llm_turns"),
         # Server-side: the pipeline's own timing for the turn (agentic run plus
         # its delivery gate). Client-side: everything the benchmark measured,
         # i.e. the above plus transport, queueing and response decoding.
@@ -1440,6 +1461,12 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
     usage = source.get("usage")
     if isinstance(usage, dict):
         stats["usage"] = {key: _as_int(usage.get(key)) for key in ("prompt_tokens", "completion_tokens", "total_tokens", "llm_calls")}
+        # Per-LLM-call split (agentic runs on a backend that reports it): one
+        # entry per call, so a question's cost can be attributed to the turns
+        # that produced it instead of being read as one number.
+        turns = usage.get("llm_turns")
+        if isinstance(turns, list) and turns:
+            stats["llm_turns"] = [_llm_turn(turn) for turn in turns if isinstance(turn, dict)]
 
     elapsed = _as_float(source.get("elapsed_seconds"))
     if elapsed is not None:
