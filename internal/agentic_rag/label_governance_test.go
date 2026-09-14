@@ -315,6 +315,9 @@ func TestAuditRepairDirective(t *testing.T) {
 	}
 	for _, want := range []string{
 		"REPAIR THE RECORD, NOT THE CONCLUSION",
+		// (d) A rejected argument restated is not a repair: v2 on q221 spent
+		// three passes re-arguing one naming-level inference and flatlined.
+		"FIX THE EVIDENCE, NOT THE WORDING",
 		"a `(tie: ...)` clause per rival on the answer line",
 		"eliminated for ABSENCE",
 		"(2 suspect item(s))",

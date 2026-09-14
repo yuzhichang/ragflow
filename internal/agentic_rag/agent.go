@@ -1360,6 +1360,20 @@ func auditRepairDirective(suspects int, verdict string, hist []int) string {
 		"lawful outcome is a DECLARED TIE (a `(tie: ...)` clause per rival on the answer line), never a "+
 		"silent swap; a rival that is ungrounded is eliminated for ABSENCE with the named search that "+
 		"showed it, never promoted. "+
+		// (d) Fix the EVIDENCE, not the wording. v2 on q221 spent three
+		// passes re-arguing ONE naming-level inference ("the collection is
+		// called the Opium Collection") and flatlined at 5,5,5 while the
+		// deliverable kept "advancing" in prose: a rejected argument
+		// restated is not a repair, and a flat count makes the gate ship
+		// the weaker deliverable.
+		"FIX THE EVIDENCE, NOT THE WORDING: when an opinion says a line only NAMES the candidate (a title, "+
+		"a citation, a bibliography or listing entry, a collection name), restating the same evidence in "+
+		"different words is not a repair and will be rejected again - the only admissible responses are to "+
+		"cite a chunk that STATES the candidate's fitness for the asked slot, or to drop the line and "+
+		"eliminate the candidate for ABSENCE with the named search that showed no content about it. The same "+
+		"holds for any argument the auditor has already rejected (a weakness-based elimination, a "+
+		"naming-level inference): change the EVIDENCE or drop the CLAIM, never re-wrap the claim. An attempt "+
+		"that advances only the prose leaves the suspect count where it was. "+
 		"Citation-field repairs: call list_chunks for the cited chunk_id and OVERWRITE the line's "+
 		"fields with what the tool actually returns - never guess an identifier from memory; a value "+
 		"you cannot look up must be dropped, not invented. Never leave an item whose opinion is not "+

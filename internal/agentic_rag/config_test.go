@@ -240,6 +240,10 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		"elimination disguised as a Tested line",
 		"elimination line names no candidate",
 		"citation line cannot support a clue",
+		// The tie is not merely permitted: the trigger makes it REQUIRED when a
+		// grounded rival stands unrefuted and the discriminating constraint is
+		// unestablished for the retained candidate.
+		"grounded rival not refuted - declare a tie or refute it",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)
@@ -260,6 +264,7 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 			"EVERY tied candidate must be GROUNDED",
 			"asserting SUPPORT",
 			"elimination argument NEVER rides on a",
+			"THE TRIGGER: declare the tie as soon as a rival is GROUNDED",
 		} {
 			if !strings.Contains(tmpl.Content, want) {
 				t.Errorf("%s: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", id, want)
