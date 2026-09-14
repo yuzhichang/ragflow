@@ -1147,6 +1147,17 @@ def _gate_audit_rejections(row: dict[str, Any]) -> int | None:
     return _as_int(audit.get("rejections"))
 
 
+def _gate_audit_failures(row: dict[str, Any]) -> int | None:
+    """How many audit passes the auditor could not complete (LLM timeout, tool
+    outage). A run whose auditor never returned a verdict carries no suspects and
+    no rejections; without this count its record read as "no audit was needed",
+    and the deliverable's label was the only place that showed it."""
+    audit = row.get("gate_audit")
+    if not isinstance(audit, dict):
+        return None
+    return _as_int(audit.get("audit_failures"))
+
+
 def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]) -> dict[str, Any]:
     """Per-question token and time cost, straight from the backend's run
     accounting plus the client-side wall clock the answer phase records."""
@@ -1187,6 +1198,7 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         "audit_suspects": _gate_audit_suspects(row),
         "audit_passed": _gate_audit_passed(row),
         "audit_rejections": _gate_audit_rejections(row),
+        "audit_failures": _gate_audit_failures(row),
         # Chunk-read depth split (None when the backend did not report it):
         # deep = full chunk content the model read, shallow = snippet windows
         # only. Together they show where a run's context weight came from.
@@ -1485,14 +1497,18 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
     if isinstance(gate_audit, dict):
         suspects = gate_audit.get("suspects")
         rejections = _as_int(gate_audit.get("rejections"))
-        # Keep the record when EITHER signal is present: a gate that refused
-        # every deliverable before an audit could run reports no suspects at
-        # all, and dropping the record hid exactly that state (q350/q784).
-        if isinstance(suspects, list) or rejections is not None:
+        audit_failures = _as_int(gate_audit.get("audit_failures"))
+        # Keep the record when ANY signal is present: a gate that refused every
+        # deliverable before an audit could run reports no suspects at all, and
+        # one whose auditor never returned a verdict reports nothing but the
+        # failure - dropping either hid exactly that state (q350/q784, and the
+        # audit-outage case).
+        if isinstance(suspects, list) or rejections is not None or audit_failures is not None:
             stats["gate_audit"] = {
                 "suspects": [_as_int(s) for s in suspects] if isinstance(suspects, list) else None,
                 "passed": bool(gate_audit.get("passed")),
                 "rejections": rejections,
+                "audit_failures": audit_failures,
             }
 
     return stats

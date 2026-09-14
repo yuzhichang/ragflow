@@ -127,3 +127,28 @@ func TestShouldDemoteFinalAnswer(t *testing.T) {
 		t.Fatalf("Rejections = %d, want 2", rec.Rejections)
 	}
 }
+
+// TestShouldDemoteFinalAnswerOnAuditFailure: an audit that never produced a
+// verdict must not read as "audited". The gate exits on an audit error BEFORE
+// recording a verdict, so without the AuditFailures count the record was empty
+// on a never-audited deliverable and a `Final Answer` shipped as-is.
+func TestShouldDemoteFinalAnswerOnAuditFailure(t *testing.T) {
+	if !shouldDemoteFinalAnswer(&GateAuditRecord{AuditFailures: 2}) {
+		t.Error("an aborted audit (no verdict) must demote Final to Guessed")
+	}
+	if shouldDemoteFinalAnswer(&GateAuditRecord{AuditFailures: 0, Passed: true}) {
+		t.Error("a PASSed audit must keep the Final label")
+	}
+	// An empty record means no gate was armed for this run (explicit toolset or
+	// audit_max_pass = 0): the label governance deliberately stays out of it.
+	if shouldDemoteFinalAnswer(&GateAuditRecord{}) {
+		t.Error("a run with no gate at all must not be demoted by this rule")
+	}
+	// The counter has to be reachable from the gate's error path.
+	rec := &GateAuditRecord{}
+	countGateAuditFailure(rec)
+	countGateAuditFailure(nil)
+	if rec.AuditFailures != 1 {
+		t.Errorf("AuditFailures = %d, want 1", rec.AuditFailures)
+	}
+}

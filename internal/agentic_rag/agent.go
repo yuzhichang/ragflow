@@ -137,6 +137,15 @@ type GateAuditRecord struct {
 	// Suspects on a never-PASSed deliverable, which read as "nothing to report"
 	// and let a `Final Answer` label survive unaudited.
 	Rejections int `json:"rejections,omitempty"`
+	// AuditFailures counts audit passes the auditor itself could not complete
+	// (LLM timeout, tool outage). It is the third way "the gate never concluded
+	// PASS" becomes true, and the only one that records nothing else: the gate
+	// returns the standing deliverable on an audit error, so without this count
+	// the record stayed EMPTY on a never-audited deliverable and the label
+	// governance read it as "no audit was needed" — shipping an unverified
+	// `Final Answer`. It doubles as an operator signal: a per-question audit
+	// outage is a provider problem, not a reasoning one.
+	AuditFailures int `json:"audit_failures,omitempty"`
 }
 
 // defaultMaxIterations caps the ReAct loop before the agent must answer. It is
@@ -811,7 +820,17 @@ func shouldDemoteFinalAnswer(audit *GateAuditRecord) bool {
 	if audit == nil || audit.Passed {
 		return false
 	}
-	return len(audit.Suspects) > 0 || audit.Rejections > 0
+	return len(audit.Suspects) > 0 || audit.Rejections > 0 || audit.AuditFailures > 0
+}
+
+// countGateAuditFailure records an audit pass the auditor could not complete, so
+// "the gate never concluded PASS" survives into the label governance even when
+// the gate exits on the error instead of on a verdict. See
+// GateAuditRecord.AuditFailures.
+func countGateAuditFailure(audit *GateAuditRecord) {
+	if audit != nil {
+		audit.AuditFailures++
+	}
 }
 
 // countGateRejection records a deliverable the gate refused before any audit
@@ -1013,6 +1032,10 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				// The auditor itself failed (LLM timeout, tool outage).
 				// Retrying inside this request rarely helps; fall through to
 				// finalizeAnswer, which still catches answer-less finals.
+				// The failure is RECORDED before returning: this is the one exit
+				// that leaves no verdict behind, and an unrecorded exit silently
+				// upgrades an unverified deliverable to an audited one.
+				countGateAuditFailure(in.audit)
 				common.WarnCtx(ctx, "agentic_rag: delivery gate audit failed",
 					zap.Int("pass", pass+1), zap.Error(err))
 				return final, auditedFinal
