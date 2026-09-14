@@ -420,26 +420,55 @@ func unrecordedLocateTools(matrix string, toolCallCounts map[string]int) []strin
 }
 
 // auditVerdictExcerptMax bounds how much of one audit verdict is archived. The
-// excerpt only has to be enough to see WHICH claim was contested and why; the
+// excerpt only has to be enough to see WHICH claims were contested and why; the
 // full text of ten rounds would bloat every benchmark row.
 const auditVerdictExcerptMax = 400
 
-// recordAuditVerdict archives an excerpt of one audit verdict, in the same order
-// as Suspects, so the counts and the auditor's own words stay in step (entry i
-// of AuditVerdicts is the verdict that produced entry i of Suspects). Without
-// it a failure shows a curve (5→3→1→0) but no reason, and the only way to
-// explain the run is to reverse-engineer the shipped deliverable — which is how
-// the #221 analysis twice inferred the wrong cause.
+var (
+	// auditOpinionRe matches the auditor's per-item opinion sub-lines. The
+	// auditor echoes the whole deliverable back and hangs one `- audit: <opinion>`
+	// under every audited line, so the deliverable's own text is 95% of the
+	// verdict string and none of it is a finding.
+	auditOpinionRe = regexp.MustCompile(`(?m)^\s*-\s*audit:\s*(.+?)\s*$`)
+	// auditResultLineRe matches the overall verdict line that closes the audit.
+	auditResultLineRe = regexp.MustCompile(`(?m)^\s*Audit Result:.*$`)
+)
+
+// recordAuditVerdict archives one audit's FINDINGS, in the same order as
+// Suspects, so the counts and the auditor's own words stay in step (entry i of
+// AuditVerdicts is the verdict that produced entry i of Suspects).
+//
+// It keeps the non-pass opinions and the overall verdict line, and drops the
+// echoed deliverable: without this a failure shows a curve (5→3→1→0) but no
+// reason, and the only way to explain the run is to reverse-engineer the shipped
+// deliverable — which is how the #221 analysis twice landed on the wrong cause.
 func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
 	if audit == nil {
 		return
 	}
-	excerpt := strings.TrimSpace(verdict)
-	if excerpt == "" {
+	if strings.TrimSpace(verdict) == "" {
 		return
 	}
-	runes := []rune(excerpt)
-	if len(runes) > auditVerdictExcerptMax {
+	findings := make([]string, 0, 4)
+	for _, m := range auditOpinionRe.FindAllStringSubmatch(verdict, -1) {
+		opinion := strings.TrimSpace(m[1])
+		// A passing item is not a finding: it says nothing a reader would not
+		// assume from the round's suspect count.
+		if opinion == "" || strings.EqualFold(opinion, "pass") {
+			continue
+		}
+		findings = append(findings, opinion)
+	}
+	if overall := strings.TrimSpace(auditResultLineRe.FindString(verdict)); overall != "" {
+		findings = append(findings, overall)
+	}
+	if len(findings) == 0 {
+		// Every opinion passed, or the shape was not recognised. The entry is
+		// kept anyway so the two slices stay index-aligned by round.
+		findings = append(findings, "audit produced no parseable opinion")
+	}
+	excerpt := strings.Join(findings, " | ")
+	if runes := []rune(excerpt); len(runes) > auditVerdictExcerptMax {
 		excerpt = string(runes[:auditVerdictExcerptMax]) + "…"
 	}
 	audit.AuditVerdicts = append(audit.AuditVerdicts, excerpt)

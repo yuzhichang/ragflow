@@ -186,25 +186,56 @@ func TestUnrecordedLocateTools(t *testing.T) {
 	}
 }
 
-// TestRecordAuditVerdict pins the audit record: one excerpt per round, in step
-// with Suspects, truncated — and it must be safe to call on every path,
+// TestRecordAuditVerdict pins the audit record: one FINDING per round, in step
+// with Suspects, with the echoed deliverable dropped (it is 95% of the verdict
+// string and none of it is a finding), trimmed, and safe on every path —
 // including a run whose gate never produced a verdict (nil record).
 func TestRecordAuditVerdict(t *testing.T) {
-	rec := &GateAuditRecord{}
-	rec.Suspects = []int{5}
-	recordAuditVerdict(rec, "  Audit Result: FAIL (5 suspects)\n- clue 3 unsupported  ")
+	// The shape the auditor actually returns: the producer's message echoed back
+	// with one `- audit: <opinion>` sub-line per audited line, then the overall
+	// verdict. Verbatim from the answer_auditor contract in conf/agentic_rag.yaml.
+	verdict := strings.Join([]string{
+		"## Candidate Matrix",
+		"### Sub-question 1: who signed the treaty",
+		`- Retained: Bob (doc: A Title, doc_id: d1, chunk_id: c1, snippet: "...")`,
+		`  - audit: field integrity: field doc is incorrect (list_chunks doc_name says "66090.md", the line claims "A Title")`,
+		"## Reasoning Chain",
+		"- Clue: Bob signed in 1897 (doc: 66090.md, doc_id: d1, chunk_id: c1, snippet: \"...\")",
+		"  - audit: pass",
+		"Final Answer: **1897**",
+		"  - audit: suspect: the supported clues never derive 1897",
+		"Audit Result: FAIL (2 suspects)",
+	}, "\n")
+
+	rec := &GateAuditRecord{Suspects: []int{2}}
+	recordAuditVerdict(rec, verdict)
 	if len(rec.AuditVerdicts) != 1 {
 		t.Fatalf("verdicts = %d, want 1", len(rec.AuditVerdicts))
 	}
-	if got := rec.AuditVerdicts[0]; !strings.HasPrefix(got, "Audit Result: FAIL") || strings.HasSuffix(got, " ") {
-		t.Errorf("the excerpt must be trimmed and keep the verdict's head, got %q", got)
+	got := rec.AuditVerdicts[0]
+	for _, want := range []string{"field integrity: field doc is incorrect", "suspect: the supported clues never derive 1897", "Audit Result: FAIL (2 suspects)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("excerpt must keep %q, got %q", want, got)
+		}
 	}
-	// Entry i of AuditVerdicts must belong to entry i of Suspects.
+	if strings.Contains(got, "Candidate Matrix") || strings.Contains(got, "doc_id: d1") {
+		t.Errorf("the echoed deliverable must not be archived, got %q", got)
+	}
+	if strings.Contains(got, "audit: pass") {
+		t.Errorf("a passing item is not a finding, got %q", got)
+	}
+
+	// Entry i of AuditVerdicts must belong to entry i of Suspects — including a
+	// PASS round, whose findings are empty by construction.
 	rec.Suspects = append(rec.Suspects, 0)
-	recordAuditVerdict(rec, "Audit Result: PASS")
+	recordAuditVerdict(rec, "## Candidate Matrix\n- Retained: Bob\n  - audit: pass\nAudit Result: PASS")
 	if len(rec.AuditVerdicts) != len(rec.Suspects) {
 		t.Fatalf("verdicts %d and suspects %d must stay in step", len(rec.AuditVerdicts), len(rec.Suspects))
 	}
+	if last := rec.AuditVerdicts[len(rec.AuditVerdicts)-1]; !strings.Contains(last, "Audit Result: PASS") {
+		t.Errorf("a PASS round must still record its verdict line, got %q", last)
+	}
+
 	// An empty verdict records nothing, and a nil record is not a panic.
 	before := len(rec.AuditVerdicts)
 	recordAuditVerdict(rec, "   ")
@@ -212,11 +243,11 @@ func TestRecordAuditVerdict(t *testing.T) {
 	if len(rec.AuditVerdicts) != before {
 		t.Error("a blank verdict must not add an entry")
 	}
+
 	// Truncation bound, on rune boundaries.
-	long := strings.Repeat("x", auditVerdictExcerptMax+50)
-	recordAuditVerdict(rec, long)
+	recordAuditVerdict(rec, "  - audit: suspect: "+strings.Repeat("é", auditVerdictExcerptMax+50))
 	last := rec.AuditVerdicts[len(rec.AuditVerdicts)-1]
-	if got := len([]rune(last)); got != auditVerdictExcerptMax+1 {
-		t.Errorf("excerpt is %d runes, want %d (bound plus the ellipsis)", got, auditVerdictExcerptMax+1)
+	if n := len([]rune(last)); n != auditVerdictExcerptMax+1 {
+		t.Errorf("excerpt is %d runes, want %d (bound plus the ellipsis)", n, auditVerdictExcerptMax+1)
 	}
 }
