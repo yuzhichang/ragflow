@@ -1182,6 +1182,16 @@ def _gate_audit_verdicts(row: dict[str, Any]) -> list[str] | None:
     return [str(v) for v in verdicts] if isinstance(verdicts, list) else None
 
 
+def _gate_audit_citation_groundings(row: dict[str, Any]) -> int | None:
+    """Deliverables the gate refused because a candidate line's cited support was a
+    BIBLIOGRAPHIC ENTRY: a citation names a work and states nothing about it, so it
+    cannot tell two siblings apart. The mechanical half of the sibling discipline."""
+    audit = row.get("gate_audit")
+    if not isinstance(audit, dict):
+        return None
+    return _as_int(audit.get("citation_groundings"))
+
+
 def _gate_audit_failures(row: dict[str, Any]) -> int | None:
     """How many audit passes the auditor could not complete (LLM timeout, tool
     outage). A run whose auditor never returned a verdict carries no suspects and
@@ -1234,6 +1244,7 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         "audit_passed": _gate_audit_passed(row),
         "audit_rejections": _gate_audit_rejections(row),
         "audit_failures": _gate_audit_failures(row),
+        "citation_groundings": _gate_audit_citation_groundings(row),
         "audit_verdicts": _gate_audit_verdicts(row),
         # Locate tools used but never credited in the Candidate Matrix: an
         # omission here hides which leg actually did the work.
@@ -1538,17 +1549,21 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
         rejections = _as_int(gate_audit.get("rejections"))
         audit_failures = _as_int(gate_audit.get("audit_failures"))
         verdicts = gate_audit.get("audit_verdicts")
+        citation_groundings = _as_int(gate_audit.get("citation_groundings"))
         # Keep the record when ANY signal is present: a gate that refused every
         # deliverable before an audit could run reports no suspects at all, and
         # one whose auditor never returned a verdict reports nothing but the
         # failure - dropping either hid exactly that state (q350/q784, and the
         # audit-outage case).
-        if isinstance(suspects, list) or rejections is not None or audit_failures is not None or isinstance(verdicts, list):
+        if isinstance(suspects, list) or rejections is not None or audit_failures is not None or isinstance(verdicts, list) or citation_groundings is not None:
             stats["gate_audit"] = {
                 "suspects": [_as_int(s) for s in suspects] if isinstance(suspects, list) else None,
                 "passed": bool(gate_audit.get("passed")),
                 "rejections": rejections,
                 "audit_failures": audit_failures,
+                # The mechanical sibling check: deliverables refused because a
+                # candidate's cited support was a bibliographic entry.
+                "citation_groundings": citation_groundings,
                 # An excerpt of each round's verdict, in step with suspects:
                 # counts show the curve, these show what was actually contested.
                 "audit_verdicts": [str(v) for v in verdicts] if isinstance(verdicts, list) else None,
