@@ -79,6 +79,18 @@ type RetrievalRequest struct {
 	// from sys.user_id). Empty = no user filter. Only meaningful for
 	// retrieval_from=memory.
 	UserID string
+	// VectorOnly, when true, issues ONLY the dense (vector) leg: no text match
+	// expression is built or sent, no fusion expression is attached, and the
+	// kNN candidate set is filtered by SCOPE alone (kb_id, doc_id,
+	// available_int, ...) instead of by the query's own words.
+	//
+	// It exists because a hybrid request with KeywordsSimilarityWeight = 0 is
+	// NOT a pure vector search: the engine still builds the BM25 clause and
+	// passes it as the kNN `filter`, so only chunks matching the query text can
+	// come back — the exact restriction a wording-gap search must not have. A
+	// vector-only request also skips the 4x candidate over-fetch, the fusion
+	// step and the engine's second-pass KNN scoring round trip.
+	VectorOnly bool
 	// OnlyOriginalText, when true, restricts retrieval to ordinary document
 	// text chunks (available_int=1 and no compile_kwd), excluding
 	// knowledge-compiled products.

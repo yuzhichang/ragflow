@@ -256,7 +256,10 @@ func (a *NLPRetrievalAdapter) Search(ctx context.Context, db *gorm.DB, req Retri
 	}
 	query = retrievalUserPrefixPattern.ReplaceAllString(query, "")
 	var rankFeature map[string]float64
-	if a.enhancer != nil {
+	if a.enhancer != nil && !req.VectorOnly {
+		// Rank features are extra scoring clauses on the TEXT leg; a
+		// vector-only request has no text leg, so labelling the question would
+		// be a tag lookup whose result nothing consumes.
 		rankFeature = a.enhancer.LabelQuestion(ctx, query, datasets.kbs)
 	}
 	rerankModel, err := a.resolveRerankModel(ctx, req, datasets.kbs[0].TenantID)
@@ -325,6 +328,7 @@ func nlpRequestFromRetrieval(
 		EmbeddingModel: embeddingModel,
 		Aggs:           boolPtr(false),
 		Highlight:      boolPtr(false),
+		VectorOnly:     req.VectorOnly,
 	}
 	if req.RerankCandidatesCount != 0 {
 		nlpReq.RerankCandidatesCount = &req.RerankCandidatesCount

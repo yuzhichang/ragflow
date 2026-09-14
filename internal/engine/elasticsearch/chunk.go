@@ -1236,7 +1236,13 @@ func (e *Engine) Search(ctx context.Context, req *types.SearchRequest) (*types.S
 		}
 
 		queryBody["knn"] = knnQuery
-		if boolQuery != nil {
+		// A DENSE-ONLY request (no text expression: the vector-only search and
+		// the knowledge-compile lookups) leaves the top-level query unset. The
+		// same scope conditions already ride inside knn.filter, so repeating
+		// them as a scored query adds one scoring pass per search AND blends
+		// that score into _score — which is exactly the number a vector-only
+		// caller reads as the cosine similarity.
+		if boolQuery != nil && matchText != nil {
 			queryBody["query"] = boolQuery
 		}
 	} else if boolQuery != nil {

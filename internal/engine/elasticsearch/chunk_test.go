@@ -527,7 +527,7 @@ func TestBuildQueryStringQueryMinimumShouldMatchHalfUp(t *testing.T) {
 		query := buildQueryStringQuery(&types.MatchTextExpr{
 			MatchingText: "hello",
 			ExtraOptions: map[string]interface{}{"minimum_should_match": tc.fraction},
-		}, 0.5, false, false)
+		}, false, false)
 		got := query["query_string"].(map[string]interface{})["minimum_should_match"].(string)
 		if got != tc.want {
 			t.Errorf("buildQueryStringQuery minimum_should_match for %g = %q, want %q", tc.fraction, got, tc.want)
