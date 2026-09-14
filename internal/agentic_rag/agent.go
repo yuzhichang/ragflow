@@ -1386,6 +1386,23 @@ func auditRepairDirective(suspects int, verdict string, hist []int) string {
 		// already failed, require NEW evidence before any re-render.
 		anchorDemand(len(hist), hist)+
 
+		// (b2) The two classes a failing item can belong to, because the
+		// anti-swap rule below was read as a blanket ban: q283's producer quoted
+		// it FOUR times across nine audits to justify keeping "The Hatchling"
+		// while the auditor correctly said the value does not fill the asked
+		// Z-name slot (the gold, `Zimri Elder`, is in two corpus docs). The rule
+		// bans the swap that silences a complaint with no evidence behind it; it
+		// was never a licence to re-render a value the auditor has already shown
+		// to fail a constraint, and the cost of that misreading was eight extra
+		// audits and a wrong answer.
+		"TWO KINDS OF FAILING ITEM, TWO DIFFERENT REPAIRS. (i) A RECORD item - a missing or malformed field, an unsupported "+
+		"step, an untested rival, a line that only NAMES the candidate - is repaired IN THE RECORD, and never by changing which "+
+		"value ships. (ii) An item about the VALUE ITSELF - `the answer does not fill the asked slot`, `answer is not grounded "+
+		"in the candidate matrix`, a cited chunk that contradicts it, a constraint the value FAILS - IS evidence against that "+
+		"value, so the repair is to CHANGE THE VALUE: re-derive it from a candidate that satisfies the slot, or, when the corpus "+
+		"holds no such candidate, ship the corpus's negative result under `Guessed Answer` with the searches that showed it. "+
+		"Class (ii) is not what the rule below forbids: what is forbidden is a swap with no evidence behind it, and what is "+
+		"equally forbidden is re-rendering the same value a third time when the auditor has shown a constraint it fails. "+
 		// (c) Repair the RECORD, not the conclusion. The cheapest repair
 		// observed is a SWAP: q221 shipped "Opium: A Portrait of the
 		// Heavenly Demon" under `Final Answer` right after the auditor pushed
@@ -1437,7 +1454,18 @@ func anchorDemand(failures int, hist []int) string {
 	return ("ANCHOR CHANGE REQUIRED: this is failed audit #" + fmt.Sprint(failures) + "." + trend +
 		" Your repair MUST open with at least one NEW retrieval call on a DIFFERENT anchor than the ones already in the matrix " +
 		"(the rarest proper noun queried alone, or a grep_chunks co-occurrence regex over two clue terms) and log it as a new " +
-		"`Searched` line. A repair turn that re-renders the matrix with no new `Searched` line is rejected outright.")
+		"`Searched` line. A repair turn that re-renders the matrix with no new `Searched` line is rejected outright. " +
+		// The anchor that keeps a flat count flat is an anchor about the CANDIDATE
+		// the run already holds. q283 is the measured shape: 123 retrievals over
+		// nine audits, every one of them about Outer Wilds or the Z-name, and the
+		// evidence set (nine docs, including the developer's own page wording the
+		// black hole) was NEVER served - zero of nine. Another query about the
+		// candidate cannot produce a value that fills the slot it fails.
+		"When the failing items are about the VALUE (an asked slot it does not fill, a chunk that contradicts it, a constraint " +
+		"it fails), the new anchor must be one that can surface a RIVAL candidate for the SAME constraint: run the broad " +
+		"listing/overview query the constraint makes enumerable (the game/show/book list, the roster, the year list) and test " +
+		"each hit against the slot. An anchor that can only return more about the candidate you already hold keeps this count " +
+		"where it is, and the gate ships what stands.")
 }
 
 func joinInts(values []int) string {

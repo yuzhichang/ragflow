@@ -641,6 +641,23 @@ def run_answer_phase(
         except Exception as exc:  # noqa: BLE001 - one bad question must not kill the run
             row["ragflow_error"] = str(exc)
 
+        # Whether the run ever SAW the documents that carry the answer. Without this
+        # pair a retrieval miss is indistinguishable from a reasoning failure in the
+        # archived row, and the two need opposite fixes: on the 16-question sample six
+        # of the nine stalled runs had the whole expected set unserved (q283: zero of
+        # nine docs across 123 retrievals, while nine audit rounds argued about the
+        # wrong candidate). `served` is the run's own retrieval record, `cited` is what
+        # the deliverable's own lines name - a doc can be served and still never used.
+        if expected_doc_ids:
+            # _unique_doc_ids returns a LIST, so the intersection needs a set on
+            # both sides; this runs outside the try above, where a TypeError would
+            # take the whole row down instead of degrading to a missing field.
+            expected_set = set(expected_doc_ids)
+            served = {str(x) for x in (row.get("retrieved_docids") or [])}
+            answer_now = row.get("ragflow_answer") or ""
+            row["gold_doc_served"] = sorted(expected_set & served)
+            row["gold_doc_cited"] = sorted(doc for doc in expected_set if doc in answer_now)
+
         status = row["ragflow_error"] or f"{len(row['ragflow_answer'])} chars"
         print(f"[answers] {seq}/{total} {run_id}: {status}", flush=True)
         return row
