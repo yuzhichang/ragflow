@@ -493,7 +493,11 @@ type snippetHit struct {
 // tool: one compact vocabulary (<search_results> root with a query echo, chunk
 // attributes incl. rank/score, one <match_snippet> per chunk). Roots differ
 // from list_chunks' <chunks> by design: these are triage views, not deep reads.
-func formatLocateResultsXML(query string, hits []snippetHit) string {
+func formatLocateResultsXML(ctx context.Context, tool, query string, hits []snippetHit) string {
+	// Single serve point for every locate tool: one debug line per served chunk
+	// records exactly what went in front of the model (silent unless the logger
+	// runs at debug level).
+	logServedChunks(ctx, tool, query, hits)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("<search_results count=\"%d\" query=\"%s\">\n",
 		len(hits), xmlEscape(query)))

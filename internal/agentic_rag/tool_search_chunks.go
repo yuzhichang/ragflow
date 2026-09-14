@@ -207,7 +207,7 @@ func (k *SearchChunksTool) invokableRun(ctx context.Context, argumentsInJSON str
 	svc := runtime.GetRetrievalService()
 	tenantID := k.tenantID
 	if svc == nil || tenantID == "" || len(datasetIDs) == 0 {
-		return formatLocateResultsXML(strings.Join(queries, " | "), nil), nil
+		return formatLocateResultsXML(ctx, searchChunksToolName, strings.Join(queries, " | "), nil), nil
 	}
 
 	// Engine context with no per-query timeout (the run-level budget caps the
@@ -318,7 +318,7 @@ func (k *SearchChunksTool) invokableRun(ctx context.Context, argumentsInJSON str
 		}
 		hits = append(hits, snippetHit{chunk: c, snippet: snippet, truncated: truncated, preview: preview})
 	}
-	result := formatLocateResultsXML(strings.Join(queries, " | "), hits)
+	result := formatLocateResultsXML(ctx, searchChunksToolName, strings.Join(queries, " | "), hits)
 	// Partial failure rides on the result in the canonical shape
 	// (severity="warn"): the surviving hits stay usable, but the model must
 	// know those queries returned nothing because the backend errored — not

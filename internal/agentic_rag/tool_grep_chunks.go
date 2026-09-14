@@ -151,7 +151,7 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 	if len(datasetIDs) == 0 {
 		// Bound scope is empty: short-circuit before touching the backend so the
 		// tool never reads outside the conversation's allowed datasets.
-		return formatGrepResults(query, nil, re), nil
+		return formatGrepResults(ctx, query, nil, re), nil
 	}
 
 	svc := runtime.GetGrepService()
@@ -200,7 +200,7 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 		scored = scored[:grepChunksDefaultLimit]
 	}
 
-	out := formatGrepResults(query, scored, re)
+	out := formatGrepResults(ctx, query, scored, re)
 	if degradedNotice != "" {
 		// Canonical graceful-degradation shape: the model must know the hits it
 		// sees are complete-by-prefilter, not complete-by-corpus.
@@ -257,7 +257,7 @@ func scoreGrepChunks(chunks []runtime.RetrievalChunk, re *regexp.Regexp) []grepS
 // a <search_results> root with the query echoed as an attribute and one
 // <match_snippet> per chunk spanning earliest-match − N .. latest-match + N
 // runes (shared snippetContextRunes window).
-func formatGrepResults(query string, results []grepScoredChunk, re *regexp.Regexp) string {
+func formatGrepResults(ctx context.Context, query string, results []grepScoredChunk, re *regexp.Regexp) string {
 	hits := make([]snippetHit, 0, len(results))
 	for _, r := range results {
 		snippet, truncated := "", false
@@ -268,7 +268,7 @@ func formatGrepResults(query string, results []grepScoredChunk, re *regexp.Regex
 		}
 		hits = append(hits, snippetHit{chunk: r.chunk, snippet: snippet, truncated: truncated})
 	}
-	return formatLocateResultsXML(query, hits)
+	return formatLocateResultsXML(ctx, grepChunksToolName, query, hits)
 }
 
 // xmlEscape escapes characters that would break simple XML attribute/element

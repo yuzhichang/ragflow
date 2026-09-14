@@ -17,6 +17,7 @@
 package agentic_rag
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestFormatLocateResultsXMLMarksFragments(t *testing.T) {
 		{chunk: runtime.RetrievalChunk{ID: "c2", Content: strings.Repeat("y ", 900)}, snippet: "opening", preview: true},
 		{chunk: runtime.RetrievalChunk{ID: "c3", Content: "short body", DocumentID: "d3"}, snippet: "short body"},
 	}
-	out := formatLocateResultsXML("q", hits)
+	out := formatLocateResultsXML(context.Background(), "grep_chunks", "q", hits)
 	if !strings.Contains(out, `chunk_id="c1"`) || !strings.Contains(out, `truncated="true"`) {
 		t.Errorf("truncated hit must carry the attribute: %.200q", out)
 	}
@@ -157,7 +158,7 @@ func TestFormatLocateResultsXMLMarksFragments(t *testing.T) {
 		t.Errorf("chunk size must be visible: %.200q", out)
 	}
 	// A results set with no partial snippet stays clean.
-	plain := formatLocateResultsXML("q", hits[2:])
+	plain := formatLocateResultsXML(context.Background(), "grep_chunks", "q", hits[2:])
 	if strings.Contains(plain, "<snippet_note>") {
 		t.Errorf("no note expected when every snippet is complete: %.200q", plain)
 	}

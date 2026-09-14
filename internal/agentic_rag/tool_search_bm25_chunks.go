@@ -170,7 +170,7 @@ func (k *SearchBm25ChunksTool) invokableRun(ctx context.Context, argumentsInJSON
 		zap.Strings("queries", queries),
 	)
 	hits := snippetHitsFor(chunks, queries)
-	return formatLocateResultsXML(strings.Join(queries, " | "), hits), nil
+	return formatLocateResultsXML(ctx, searchBm25ChunksToolName, strings.Join(queries, " | "), hits), nil
 }
 
 // bm25TermTokens derives lowercase literal search terms from the query strings:
