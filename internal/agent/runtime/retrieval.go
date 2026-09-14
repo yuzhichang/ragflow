@@ -178,6 +178,14 @@ var ErrRegexpNotSupported = errors.New(
 	"grep_chunks: regex matching is not supported by this document engine",
 )
 
+// ErrRegexpPushdown is wrapped around a native regex search the engine refused
+// to run — an unsupported construct (Lucene regexp has no \b, no lookaround) or
+// an automaton that blew the engine's state budget (long alternations of `.*`).
+// It is a sentinel so the caller can tell "this pattern is beyond the engine"
+// apart from a transport or scope failure and degrade deliberately instead of
+// surfacing an opaque backend error.
+var ErrRegexpPushdown = errors.New("grep_chunks: regexp pushdown failed")
+
 var (
 	retrievalServiceMu   sync.RWMutex
 	retrievalServiceImpl RetrievalService = stubRetrievalService{}

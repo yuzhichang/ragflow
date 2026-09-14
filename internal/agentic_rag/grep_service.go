@@ -23,11 +23,16 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"ragflow/internal/agent/runtime"
+	"ragflow/internal/common"
 	"ragflow/internal/dao"
 	"ragflow/internal/engine"
 	enginetypes "ragflow/internal/engine/types"
+
+	"go.uber.org/zap"
 )
 
 // Elasticsearch it pushes the regex down to a native `regexp` query; on engines
@@ -311,7 +316,7 @@ func (g *GrepAdapter) Grep(ctx context.Context, req runtime.GrepRequest) ([]runt
 			Filter:       filter,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("grep: regexp pushdown failed: %w.%s", err, regexpPushdownHint(req.Pattern))
+			return nil, fmt.Errorf("grep: %w — %v.%s", runtime.ErrRegexpPushdown, err, regexpPushdownHint(req.Pattern))
 		}
 		return translateGrepChunks(res.Chunks), nil
 	}
@@ -319,6 +324,292 @@ func (g *GrepAdapter) Grep(ctx context.Context, req runtime.GrepRequest) ([]runt
 	// Non-ES engines do not implement regex matching on chunk content; surface
 	// an explicit error rather than returning (empty) regex "matches".
 	return nil, runtime.ErrRegexpNotSupported
+}
+
+const (
+	// grepDegradeMaxSplits caps how far an exploding pattern is split by
+	// alternation: past this the pattern is fragmented enough that a lexical
+	// prefilter is the better tool.
+	grepDegradeMaxSplits = 8
+	// grepDegradeMaxQueries caps the lexical prefilter: the BM25 service takes
+	// 1-5 queries, one per alternation branch is the natural mapping.
+	grepDegradeMaxQueries = 5
+	// grepDegradeTopNFactor widens the prefilter's per-query pool: the caller
+	// re-filters with the real regexp, so over-fetching costs only ranking
+	// noise while under-fetching loses recall the caveat cannot recover.
+	grepDegradeTopNFactor = 4
+)
+
+// degradeGrep recovers from a pushdown the engine refused, in three steps,
+// cheapest and most faithful first.
+//
+//  1. Sanitize and retry. Lucene's regexp dialect lacks constructs Go accepts
+//     (\b, \B, \A, \z, named groups). The rewrites either keep the language
+//     identical (\A -> ^) or WIDEN it (\b -> empty); a wider engine-side filter
+//     costs nothing here because the caller re-checks every returned chunk with
+//     the original Go regexp. Coverage stays full, so nothing is reported.
+//
+//  2. Split the top-level alternation and push each branch as its own regexp.
+//     State explosion is an automaton PRODUCT: `.*(A.*B|C.*D|E.*F).*` compiles
+//     into one machine whose state count multiplies the branches. Pushed
+//     separately, each branch stays small. Splitting is EXACT — the union of
+//     `.*(A.*B).*`, `.*(C.*D).*` … is precisely what the combined pattern
+//     matches — so this step keeps full regexp semantics and full coverage. A
+//     branch that still fails leaves a genuine hole, which the notice reports.
+//
+//  3. Lexical prefilter. A pattern (or branch) the engine keeps refusing is
+//     reduced to its literal terms and handed to the BM25 service. The local
+//     regexp filter restores precision, but recall now rides on the prefilter's
+//     top-N — hence the notice: an empty result is NOT proof the corpus lacks
+//     the phrase.
+//
+// The pushdown error is returned when no step yields anything, so the model
+// still gets the "retry with a cheaper pattern" hint instead of a silently
+// empty result.
+func degradeGrep(
+	ctx context.Context,
+	svc runtime.GrepService,
+	req runtime.GrepRequest,
+	pushErr error,
+) ([]runtime.RetrievalChunk, string, error) {
+	if safe, changed := luceneSafeRegexp(req.Pattern); changed {
+		retry := req
+		retry.Pattern = safe
+		if chunks, retryErr := svc.Grep(ctx, retry); retryErr == nil {
+			// Full coverage: the sanitized pattern matches a SUPERSET, so an
+			// empty result is a genuine "no matches" and needs no caveat.
+			common.InfoCtx(ctx, "agentic_rag: grep pushdown recovered by sanitizing the pattern",
+				zap.String("pattern", req.Pattern), zap.String("sanitized", safe), zap.Int("chunks", len(chunks)))
+			return chunks, "", nil
+		}
+	}
+
+	if chunks, notice, ok := grepBySplitAlternation(ctx, svc, req); ok {
+		return chunks, notice, nil
+	}
+
+	if queries := regexpLiteralTerms(req.Pattern, grepDegradeMaxQueries); len(queries) > 0 {
+		if bm25 := runtime.GetBm25Service(); bm25 != nil {
+			chunks, bmErr := bm25.SearchBm25(ctx, runtime.Bm25Request{
+				Queries:    queries,
+				DatasetIDs: req.DatasetIDs,
+				DocScope:   req.DocScope,
+				TopN:       req.Limit * grepDegradeTopNFactor,
+				TenantID:   req.TenantID,
+			})
+			if bmErr == nil && len(chunks) > 0 {
+				common.WarnCtx(ctx, "agentic_rag: grep pushdown degraded to a lexical prefilter (approximate coverage)",
+					zap.String("pattern", req.Pattern),
+					zap.Strings("queries", queries),
+					zap.Int("candidates", len(chunks)))
+				notice := fmt.Sprintf("regexp pushdown unavailable for this pattern - the engine refused it "+
+					"(automaton state budget or unsupported syntax), so it was degraded to a lexical prefilter over %s. "+
+					"Every candidate was re-checked against your regexp locally, so the hits are real, but coverage is "+
+					"APPROXIMATE: an empty or thin result does NOT prove the corpus lacks the phrase. Simplify the pattern "+
+					"(literal terms joined by `.*`, at most 2-3 alternation branches, no bounded repetition) to search it fully.",
+					strings.Join(queries, " | "))
+				return chunks, notice, nil
+			}
+		}
+	}
+	return nil, "", pushErr
+}
+
+// grepBySplitAlternation pushes each top-level alternation branch as its own
+// regexp query and merges the hits. Reports ok=false when there is nothing to
+// split or every branch failed (the caller then falls through to the lexical
+// prefilter). A partial success returns what the surviving branches matched,
+// plus a notice naming the hole — hits stay real, coverage does not.
+func grepBySplitAlternation(
+	ctx context.Context,
+	svc runtime.GrepService,
+	req runtime.GrepRequest,
+) ([]runtime.RetrievalChunk, string, bool) {
+	branches := splitTopLevelAlternation(req.Pattern, grepDegradeMaxSplits)
+	if len(branches) < 2 {
+		return nil, "", false
+	}
+	var (
+		merged []runtime.RetrievalChunk
+		failed []string
+	)
+	for _, branch := range branches {
+		branchReq := req
+		branchReq.Pattern = branch
+		chunks, err := svc.Grep(ctx, branchReq)
+		if err != nil {
+			failed = append(failed, branch)
+			continue
+		}
+		merged = append(merged, chunks...)
+	}
+	if len(merged) == 0 && len(failed) == len(branches) {
+		return nil, "", false
+	}
+	if len(failed) == 0 {
+		// Exact: the union of the branches IS the original pattern's match set.
+		common.InfoCtx(ctx, "agentic_rag: grep pushdown recovered by splitting the alternation",
+			zap.String("pattern", req.Pattern), zap.Int("branches", len(branches)), zap.Int("chunks", len(merged)))
+		return merged, "", true
+	}
+	shown := failed
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	common.WarnCtx(ctx, "agentic_rag: grep pushdown split left branches unsearched",
+		zap.String("pattern", req.Pattern), zap.Int("branches", len(branches)),
+		zap.Strings("failed_branches", failed), zap.Int("chunks", len(merged)))
+	notice := fmt.Sprintf("the pattern was split into %d alternation branches to fit the engine's automaton state "+
+		"budget (splitting is exact, but %d branch(es) still failed: %s). The hits returned are real, yet the "+
+		"failed branches were never searched - treat a miss here as INCOMPLETE evidence.",
+		len(branches), len(failed), strings.Join(shown, " | "))
+	return merged, notice, true
+}
+
+// splitTopLevelAlternation splits a pattern on the `|` operators that sit
+// outside every group and character class — the branches the engine would
+// otherwise compile into one automaton. Returns nil when the pattern has no
+// top-level alternation, carries an EMPTY branch (which matches everything, so
+// splitting would change the semantics), or fragments past max.
+func splitTopLevelAlternation(pattern string, max int) []string {
+	var branches []string
+	depth, start := 0, 0
+	escaped, inClass := false, false
+	for i, r := range pattern {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case inClass:
+			if r == ']' {
+				inClass = false
+			}
+		case r == '[':
+			inClass = true
+		case r == '(':
+			depth++
+		case r == ')':
+			if depth > 0 {
+				depth--
+			}
+		case r == '|' && depth == 0:
+			if len(branches)+1 >= max {
+				return nil
+			}
+			branches = append(branches, pattern[start:i])
+			start = i + 1
+		}
+	}
+	if len(branches) == 0 {
+		return nil
+	}
+	branches = append(branches, pattern[start:])
+	out := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			return nil // an empty branch matches everything; do not split
+		}
+		out = append(out, branch)
+	}
+	return out
+}
+
+var (
+	// Lookaround: Lucene's dialect has no lookahead/lookbehind. Not rewritten —
+	// no equivalent preserves what matches.
+	luceneLookaroundRe = regexp.MustCompile(`\(\?<?[=!]`)
+	// Inline flags ((?i), (?m), ...): Lucene takes them as a parameter, not in
+	// the pattern; dropping them would silently flip case sensitivity.
+	luceneInlineFlagRe = regexp.MustCompile(`\(\?[imsUx-]+[):]`)
+	// Named groups: Lucene has no group names, but a plain group is equivalent.
+	luceneNamedGroupRe = regexp.MustCompile(`\(\?P?<[A-Za-z_][A-Za-z0-9_]*>`)
+)
+
+// luceneSafeRegexp rewrites the Go-only regexp constructs Lucene rejects and
+// reports whether anything changed. Each rewrite keeps the language identical
+// (\A -> ^, \z -> $, named group -> plain group) or widens it (\b, \B -> empty),
+// which is safe for an engine-side prefilter because the caller re-filters with
+// the original pattern. Patterns carrying lookaround or inline flags are left
+// alone: they cannot be expressed without changing what matches, so they take
+// the lexical path and its coverage caveat.
+func luceneSafeRegexp(pattern string) (string, bool) {
+	if luceneLookaroundRe.MatchString(pattern) || luceneInlineFlagRe.MatchString(pattern) {
+		return pattern, false
+	}
+	safe := pattern
+	safe = strings.ReplaceAll(safe, `\b`, "")
+	safe = strings.ReplaceAll(safe, `\B`, "")
+	safe = strings.ReplaceAll(safe, `\A`, "^")
+	safe = strings.ReplaceAll(safe, `\z`, "$")
+	safe = strings.ReplaceAll(safe, `\Z`, "$")
+	safe = luceneNamedGroupRe.ReplaceAllString(safe, "(")
+	if safe == pattern || strings.TrimSpace(safe) == "" {
+		return pattern, false
+	}
+	return safe, true
+}
+
+// regexpLiteralTerms reduces a pattern to the literal queries a keyword search
+// can run. One query per alternation branch (up to max) — the branch IS the
+// intended phrasing — with regex syntax stripped so only words survive. Top-level
+// branches win (a group's inner alternation stays one query, which is closer to
+// the phrasing the model meant); a pattern without top-level alternation falls
+// back to splitting on every `|`.
+func regexpLiteralTerms(pattern string, max int) []string {
+	branches := splitTopLevelAlternation(pattern, max)
+	if len(branches) == 0 {
+		branches = strings.Split(pattern, "|")
+	}
+	var queries []string
+	for _, branch := range branches {
+		if len(queries) >= max {
+			break
+		}
+		if terms := regexpLiteralTokens(branch); len(terms) > 0 {
+			queries = append(queries, strings.Join(terms, " "))
+		}
+	}
+	return queries
+}
+
+// regexpLiteralTokens strips regex syntax from one alternation branch and
+// returns the words left. Escaped characters count as literals (\., \\) so a
+// `A\.B` branch still drives a search for "A.B"'s words.
+func regexpLiteralTokens(branch string) []string {
+	var b strings.Builder
+	escaped := false
+	for _, r := range branch {
+		switch {
+		case escaped:
+			escaped = false
+			switch {
+			case strings.ContainsRune("bBdDsSwW", r):
+				// \b, \d, \w ...: a character CLASS, not a literal word.
+				b.WriteRune(' ')
+			case unicode.IsLetter(r) || unicode.IsDigit(r):
+				b.WriteRune(r)
+			default:
+				// \. \\ \( ...: punctuation, never part of a searchable word.
+				b.WriteRune(' ')
+			}
+		case r == '\\':
+			escaped = true
+		case strings.ContainsRune(".*+?()[]{}^$|", r):
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	var tokens []string
+	for _, token := range strings.Fields(b.String()) {
+		token = strings.Trim(strings.ToLower(token), "-_,")
+		if utf8.RuneCountInString(token) >= 2 {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 // engineCallContext returns a context for a single engine query. It carries no
