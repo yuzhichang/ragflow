@@ -156,7 +156,7 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 
 	svc := runtime.GetGrepService()
 	tenantID := g.tenantID
-	chunks, err := svc.Grep(ctx, runtime.GrepRequest{
+	req := runtime.GrepRequest{
 		Pattern:      query,
 		DatasetIDs:   datasetIDs,
 		DocScope:     args.DocScope,
@@ -164,14 +164,35 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 		Sort:         grepChunksSortFields, // order by doc_id, page_num_int, chunk_order_int
 		SelectFields: grepChunksSelectFields,
 		TenantID:     tenantID,
-	})
+	}
+	chunks, err := svc.Grep(ctx, req)
+	degradedNotice := ""
 	if err != nil {
-		return "", fmt.Errorf("grep_chunks: %w", err)
+		// The engine refused the pattern (unsupported construct or a blown
+		// automaton budget). Recover rather than dead-end the turn: sanitize
+		// and retry, then fall back to a lexical prefilter — the regexp filter
+		// below re-checks every candidate, so only recall can degrade, and the
+		// notice says so.
+		var degradeErr error
+		chunks, degradedNotice, degradeErr = degradeGrep(ctx, svc, req, err)
+		if degradeErr != nil {
+			return "", fmt.Errorf("grep_chunks: %w", degradeErr)
+		}
 	}
 
-	// Dedupe + cap. Results are ordered by reading order (doc_id, page,
-	// chunk_index) from the engine.
+	// Dedupe, then keep only real matches: the pushdown path returns matching
+	// chunks already, but the lexical prefilter (degradeGrep) hands back
+	// CANDIDATES that the local regexp must still approve — a zero score means
+	// it did not match, and shipping it would put prose the query never matched
+	// in front of the model as a "hit".
 	scored := scoreGrepChunks(chunks, re)
+	matched := make([]grepScoredChunk, 0, len(scored))
+	for _, s := range scored {
+		if s.score > 0 {
+			matched = append(matched, s)
+		}
+	}
+	scored = matched
 	sort.SliceStable(scored, func(i, j int) bool {
 		return readingOrderLess(scored[i].chunk, scored[j].chunk)
 	})
@@ -179,7 +200,13 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 		scored = scored[:grepChunksDefaultLimit]
 	}
 
-	return formatGrepResults(query, scored, re), nil
+	out := formatGrepResults(query, scored, re)
+	if degradedNotice != "" {
+		// Canonical graceful-degradation shape: the model must know the hits it
+		// sees are complete-by-prefilter, not complete-by-corpus.
+		out = toolErrorXML(grepChunksToolName, "warn", degradedNotice) + "\n" + out
+	}
+	return out, nil
 }
 
 // grepScoredChunk pairs a retrieval chunk with its regex match score.
@@ -233,13 +260,13 @@ func scoreGrepChunks(chunks []runtime.RetrievalChunk, re *regexp.Regexp) []grepS
 func formatGrepResults(query string, results []grepScoredChunk, re *regexp.Regexp) string {
 	hits := make([]snippetHit, 0, len(results))
 	for _, r := range results {
-		snippet := ""
+		snippet, truncated := "", false
 		if r.chunk.Content != "" && re != nil {
 			if first, last, ok := regexMatchSpan(re, r.chunk.Content); ok {
-				snippet = sliceSnippet(r.chunk.Content, first, last)
+				snippet, truncated = snippetForMatches(r.chunk.Content, first, last)
 			}
 		}
-		hits = append(hits, snippetHit{chunk: r.chunk, snippet: snippet})
+		hits = append(hits, snippetHit{chunk: r.chunk, snippet: snippet, truncated: truncated})
 	}
 	return formatLocateResultsXML(query, hits)
 }

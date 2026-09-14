@@ -307,11 +307,16 @@ func (k *SearchChunksTool) invokableRun(ctx context.Context, argumentsInJSON str
 	}
 	hits := make([]snippetHit, 0, len(merged))
 	for _, c := range merged {
-		snippet := ""
+		snippet, truncated, preview := "", false, false
 		if first, last, ok := termMatchSpan(terms, c.Content); ok {
-			snippet = sliceSnippet(c.Content, first, last)
+			snippet, truncated = snippetForMatches(c.Content, first, last)
+		} else {
+			// A semantic hit need not contain the query terms verbatim: ship the
+			// chunk's opening and label it a preview instead of an empty snippet.
+			snippet, truncated = previewForChunk(c.Content)
+			preview = snippet != ""
 		}
-		hits = append(hits, snippetHit{chunk: c, snippet: snippet})
+		hits = append(hits, snippetHit{chunk: c, snippet: snippet, truncated: truncated, preview: preview})
 	}
 	result := formatLocateResultsXML(strings.Join(queries, " | "), hits)
 	// Partial failure rides on the result in the canonical shape

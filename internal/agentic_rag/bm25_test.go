@@ -172,37 +172,40 @@ func TestUnifiedSnippetHelpers(t *testing.T) {
 	if last <= lastFirst+len("bronner") {
 		t.Fatalf("span end %d did not cover the latest occurrence (first end at %d)", last, lastFirst+len("bronner"))
 	}
-	snip := sliceSnippet(content, first, last)
+	snip, truncated := snippetForMatches(content, first, last)
 	lower := strings.ToLower(snip)
 	for _, want := range []string{"bronner"} {
 		if !strings.Contains(lower, want) {
 			t.Errorf("snippet lost matched term: %.160q", snip)
 		}
 	}
+	if !truncated {
+		t.Error("a 2400-rune chunk must yield a truncated snippet")
+	}
 	if !strings.HasPrefix(snip, "...") || !strings.HasSuffix(snip, "...") {
 		t.Errorf("snippet missing both ellipses: %.80q / %.80q", snip[:8], snip[len(snip)-8:])
 	}
-	maxRunes := 2*snippetContextRunes + len("Bronner archive today. More Bronner lore follows.") + 2*len("...")
-	if n := len([]rune(snip)); n > maxRunes {
-		t.Errorf("snippet too long: %d > %d runes", n, maxRunes)
+	// Bounded by the snippet budget (the match span here is far shorter).
+	if n := len([]rune(snip)); n > snippetMaxRunes+len("...")*2 {
+		t.Errorf("snippet too long: %d > %d runes", n, snippetMaxRunes)
 	}
 	if strings.ContainsAny(snip, "\n") {
 		t.Error("snippet must be single-line")
 	}
 
-	// Regex counterpart shares the window semantics.
+	// Regex counterpart shares the span semantics.
 	re := regexp.MustCompile(`(?i)bronner`)
 	rf, rl, rok := regexMatchSpan(re, content)
 	if !rok || rf != first || rl != last {
 		t.Fatalf("regex span (%d,%d) diverges from term span (%d,%d)", rf, rl, first, last)
 	}
 
-	// No match → not-ok span; sliceSnippet guards inverted bounds.
+	// No match → not-ok span; inverted bounds are clamped, not dropped.
 	if _, _, ok := termMatchSpan([]string{"zzz"}, content); ok {
 		t.Fatal("unexpected match for absent term")
 	}
-	if got := sliceSnippet(content, 10, 5); got != "" {
-		t.Errorf("inverted bounds must yield empty snippet, got %.40q", got)
+	if got, _ := snippetForMatches(content, 10, 5); got == "" {
+		t.Error("inverted bounds must still yield a fragment")
 	}
 }
 

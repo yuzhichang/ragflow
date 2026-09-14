@@ -205,11 +205,17 @@ func snippetHitsFor(chunks []runtime.RetrievalChunk, queries []string) []snippet
 	terms := bm25TermTokens(queries)
 	hits := make([]snippetHit, 0, len(chunks))
 	for _, c := range chunks {
-		snippet := ""
+		snippet, truncated, preview := "", false, false
 		if first, last, ok := termMatchSpan(terms, c.Content); ok {
-			snippet = sliceSnippet(c.Content, first, last)
+			snippet, truncated = snippetForMatches(c.Content, first, last)
+		} else {
+			// Lexical scoring matched a stemmed form the surface query does not
+			// contain: ship the chunk's opening and label it a preview rather
+			// than handing the model a chunk_id with no text at all.
+			snippet, truncated = previewForChunk(c.Content)
+			preview = snippet != ""
 		}
-		hits = append(hits, snippetHit{chunk: c, snippet: snippet})
+		hits = append(hits, snippetHit{chunk: c, snippet: snippet, truncated: truncated, preview: preview})
 	}
 	return hits
 }

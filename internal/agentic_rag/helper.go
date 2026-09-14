@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"ragflow/internal/agent/runtime"
@@ -154,12 +155,34 @@ func readingOrderLess(a, b runtime.RetrievalChunk) bool {
 	return a.ChunkIndex < b.ChunkIndex
 }
 
-// snippetContextRunes is THE shared half-window (in runes) that every locate
-// tool — grep_chunks, search_bm25_chunks, search_chunks — extends beyond its
-// match span when rendering snippets: the window starts snippetContextRunes
-// runes before the earliest match and ends snippetContextRunes runes after the
-// latest match. One knob governs all three.
-const snippetContextRunes = 120
+// Snippet shaping, shared by every locate tool — grep_chunks,
+// search_bm25_chunks, search_chunks. One set of knobs governs all three.
+const (
+	// snippetWholeChunkRunes is the size under which a chunk ships WHOLE. A
+	// fixed byte window on a short chunk buys nothing and is exactly how a
+	// hit's answer-bearing sentence fell outside the snippet: the model saw the
+	// keyword and never the paragraph around it.
+	snippetWholeChunkRunes = 600
+	// snippetSpanWholeChunkRunes is the same idea for scattered hits: when the
+	// outermost matches sit further apart than the snippet budget, shipping the
+	// whole chunk (up to this size) beats cutting one of them out.
+	snippetSpanWholeChunkRunes = 3000
+	// snippetMaxRunes caps one snippet. Beyond it the fragment is a window and
+	// is marked truncated so the model knows to deep-read.
+	snippetMaxRunes = 1200
+	// snippetMinContextRunes is the least context each side of the match span
+	// gets before boundary alignment — the hit is never the first or last thing
+	// in the fragment.
+	snippetMinContextRunes = 240
+	// snippetAlignTolerance is how far past snippetMaxRunes alignment may reach
+	// to land on a sentence end. A hard cap that cuts mid-sentence is worse
+	// than a few dozen extra runes: the cut sentence is exactly where the answer
+	// tends to sit.
+	snippetAlignTolerance = 240
+	// snippetWholeCollapseRatio is the coverage above which a window is
+	// pointless: trimming 5% off a chunk and adding ellipses only creates doubt.
+	snippetWholeCollapseRatio = 0.9
+)
 
 // collapseSpaces normalises a chunk body to single-line form so snippets never
 // carry raw newlines regardless of the source formatting.
@@ -171,21 +194,130 @@ func collapseSpaces(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// clampRuneBounds widens [firstByte,lastByte) by snippetContextRunes on each
-// side, converts both byte offsets to rune indexes (snapping inward onto rune
-// boundaries), and clamps to the content length. Returns -1,-1 when content is
-// empty or the bounds are inverted after clamping.
-func clampRuneBounds(content string, firstByte, lastByte int) (int, int) {
-	if content == "" || firstByte < 0 || lastByte < firstByte || lastByte > len(content) {
-		if content != "" && lastByte > len(content) && firstByte >= 0 && firstByte <= len(content) {
-			lastByte = len(content)
-		} else if !(content != "" && firstByte >= 0 && firstByte <= lastByte && lastByte <= len(content)) {
-			return -1, -1
-		}
+// previewForChunk renders a chunk that matched NO literal query term — the
+// normal case for a lexical search (BM25 indexes stemmed word forms, so the
+// surface term can be absent from the text it scored). Shipping an empty
+// snippet left the model holding a chunk_id and no text, which is how a
+// document ends up "surfaced but never read": give it the chunk's own opening
+// (or the whole body when short) and mark it as a preview, not a keyword window.
+func previewForChunk(content string) (string, bool) {
+	if content == "" {
+		return "", false
 	}
 	runes := []rune(content)
-	start := utf8.RuneCountInString(content[:firstByte]) - snippetContextRunes
-	end := utf8.RuneCountInString(content[:lastByte]) + snippetContextRunes
+	if len(runes) <= snippetWholeChunkRunes {
+		return collapseSpaces(content), false
+	}
+	return renderSnippetFragment(runes, 0, snippetMaxRunes), true
+}
+
+// snippetForMatches renders the fragment of content that CONTAINS the match
+// span [firstByte,lastByte), extended to natural boundaries. It returns the
+// fragment and whether anything was left out.
+//
+// The match span is always inside the returned fragment, so a keyword can never
+// be cut out. The rules, in order:
+//
+//  1. A chunk that fits in snippetWholeChunkRunes ships WHOLE, no ellipsis.
+//  2. Scattered hits whose span exceeds the snippet budget ship the whole chunk
+//     too, as long as it stays under snippetSpanWholeChunkRunes (a narrower
+//     fragment would have to drop a hit).
+//  3. Otherwise the span is widened to the enclosing PARAGRAPH (blank-line
+//     separated — the corpus is markdown) when that fits in snippetMaxRunes:
+//     the complete paragraph around the keyword, which is what the model needs
+//     to answer rather than the keyword alone.
+//  4. Otherwise it is widened to sentence boundaries within the budget, with at
+//     least snippetMinContextRunes on each side.
+//
+// Reason for the whole dance: a fixed byte window ends mid-sentence and hides
+// the sentence right after the keyword — observed as "the document surfaced as
+// a snippet, but the paragraph carrying the answer was never read".
+func snippetForMatches(content string, firstByte, lastByte int) (string, bool) {
+	if content == "" {
+		return "", false
+	}
+	runes := []rune(content)
+	if firstByte < 0 {
+		firstByte = 0
+	}
+	if lastByte > len(content) {
+		lastByte = len(content)
+	}
+	if firstByte > lastByte {
+		firstByte, lastByte = lastByte, firstByte
+	}
+	start := utf8.RuneCountInString(content[:firstByte])
+	end := utf8.RuneCountInString(content[:lastByte])
+	if start >= len(runes) {
+		return "", false
+	}
+	if end > len(runes) {
+		end = len(runes)
+	}
+	if end <= start {
+		end = start + 1
+	}
+
+	if len(runes) <= snippetWholeChunkRunes {
+		return collapseSpaces(content), false
+	}
+	if end-start >= snippetMaxRunes {
+		// The hits themselves are further apart than the budget. Shipping the
+		// whole chunk keeps every keyword (rule 2); past that size the fragment
+		// keeps the FIRST cluster and the truncation note sends the model to the
+		// full chunk — a window that dropped both clusters would be worse.
+		if len(runes) <= snippetSpanWholeChunkRunes {
+			return collapseSpaces(content), false
+		}
+		return renderSnippetFragment(runes, start, start+snippetMaxRunes), true
+	}
+
+	// Paragraph first: the complete semantic unit around the hit.
+	pStart, pEnd := paragraphBounds(runes, start, end)
+	if pEnd-pStart <= snippetMaxRunes {
+		return renderSnippetFragment(runes, pStart, pEnd), pStart > 0 || pEnd < len(runes)
+	}
+
+	// Align each edge, but never let alignment run away with the budget: a
+	// sentence-terminator-free tail would otherwise swallow a thousand runes.
+	wStart := snapToWordStart(runes, start-snippetMinContextRunes)
+	if head := alignForwardToSentenceHead(runes, wStart); head <= start {
+		wStart = head
+	} else if prev := alignToSentenceStart(runes, wStart); prev < wStart {
+		wStart = prev
+	}
+	wEnd := end + snippetMinContextRunes
+	if wEnd > len(runes) {
+		wEnd = len(runes)
+	}
+	if aligned := alignToSentenceEnd(runes, wEnd); aligned-wStart <= snippetMaxRunes+snippetAlignTolerance {
+		wEnd = aligned
+	}
+	if wEnd-wStart > snippetMaxRunes {
+		// The match span must survive: pull the start forward to fit the budget
+		// (never past the first hit), preferring a sentence head.
+		target := wEnd - snippetMaxRunes
+		if target < start {
+			target = start
+		}
+		if target > wStart {
+			wStart = snapToWordStart(runes, target)
+		}
+		if head := alignForwardToSentenceHead(runes, wStart); head <= start {
+			wStart = head
+		}
+	}
+	// A window that has grown to cover nearly the whole chunk IS the chunk:
+	// shipping it whole beats shipping 95% plus two ellipses.
+	if float64(wEnd-wStart) >= snippetWholeCollapseRatio*float64(len(runes)) {
+		return collapseSpaces(content), false
+	}
+	return renderSnippetFragment(runes, wStart, wEnd), wStart > 0 || wEnd < len(runes)
+}
+
+// renderSnippetFragment renders runes[start:end] with "..." marking truncation
+// at either end.
+func renderSnippetFragment(runes []rune, start, end int) string {
 	if start < 0 {
 		start = 0
 	}
@@ -193,24 +325,8 @@ func clampRuneBounds(content string, firstByte, lastByte int) (int, int) {
 		end = len(runes)
 	}
 	if start >= end {
-		return -1, -1
-	}
-	return start, end
-}
-
-// sliceSnippet renders the shared snippet shape: whitespace-collapsed text of
-// content from (earliest match − N) to (latest match + N) runes, with leading /
-// trailing "..." marking any truncation. Callers locate their own span first
-// (regex or literal terms) and hand in its byte bounds.
-func sliceSnippet(content string, firstByte, lastByte int) string {
-	if content == "" {
 		return ""
 	}
-	start, end := clampRuneBounds(content, firstByte, lastByte)
-	if start < 0 {
-		return ""
-	}
-	runes := []rune(content)
 	prefix, suffix := "", ""
 	if start > 0 {
 		prefix = "..."
@@ -219,6 +335,91 @@ func sliceSnippet(content string, firstByte, lastByte int) string {
 		suffix = "..."
 	}
 	return prefix + collapseSpaces(string(runes[start:end])) + suffix
+}
+
+// paragraphBounds widens [start,end) to the blank-line separated block around
+// it — the corpus is markdown, so a blank line is a paragraph break.
+func paragraphBounds(runes []rune, start, end int) (int, int) {
+	pStart := start
+	for pStart > 0 {
+		if runes[pStart-1] == '\n' && (pStart < 2 || runes[pStart-2] == '\n') {
+			break
+		}
+		pStart--
+	}
+	pEnd := end
+	for pEnd < len(runes) {
+		if runes[pEnd] == '\n' && pEnd+1 < len(runes) && runes[pEnd+1] == '\n' {
+			break
+		}
+		pEnd++
+	}
+	return pStart, pEnd
+}
+
+// alignToSentenceStart walks back to the nearest sentence head so the fragment
+// never opens mid-sentence.
+func alignToSentenceStart(runes []rune, candidate int) int {
+	for s := candidate; s > 0; s-- {
+		if isSentenceTerminator(runes[s-1]) {
+			return s
+		}
+	}
+	return 0
+}
+
+// alignToSentenceEnd walks forward to the nearest sentence end so the fragment
+// never closes mid-sentence.
+func alignToSentenceEnd(runes []rune, candidate int) int {
+	for e := candidate; e < len(runes); e++ {
+		if isSentenceTerminator(runes[e]) {
+			return e + 1
+		}
+	}
+	return len(runes)
+}
+
+// snapToWordStart moves candidate forward to the next word boundary, so a
+// fragment never opens in the middle of a word (which reads as corruption).
+func snapToWordStart(runes []rune, candidate int) int {
+	if candidate <= 0 {
+		return 0
+	}
+	if candidate >= len(runes) {
+		return len(runes)
+	}
+	if unicode.IsSpace(runes[candidate-1]) {
+		return candidate
+	}
+	for s := candidate; s < len(runes); s++ {
+		if unicode.IsSpace(runes[s]) {
+			for s < len(runes) && unicode.IsSpace(runes[s]) {
+				s++
+			}
+			return s
+		}
+	}
+	return candidate
+}
+
+// alignForwardToSentenceHead returns the first sentence head at or after
+// candidate — the shrink direction, used to bring an over-budget window's start
+// back inside the budget without opening mid-sentence.
+func alignForwardToSentenceHead(runes []rune, candidate int) int {
+	for s := candidate; s < len(runes); s++ {
+		if s > 0 && isSentenceTerminator(runes[s-1]) {
+			return s
+		}
+	}
+	return candidate
+}
+
+func isSentenceTerminator(r rune) bool {
+	switch r {
+	case '.', '!', '?', ';', '\n', '。', '！', '？', '；':
+		return true
+	}
+	return false
 }
 
 // regexMatchSpan returns the earliest match start / latest match end byte
@@ -276,6 +477,16 @@ func termMatchSpan(terms []string, content string) (int, int, bool) {
 type snippetHit struct {
 	chunk   runtime.RetrievalChunk
 	snippet string
+	// truncated marks a snippet that shows only part of its chunk: the keyword's
+	// own paragraph, not the whole body. The XML says so explicitly, and the
+	// results carry a hint pointing at list_chunks for the rest — otherwise the
+	// model quotes a window as if it were the document.
+	truncated bool
+	// preview marks a chunk that surfaced WITHOUT a literal term match (BM25
+	// scores stemmed forms): the snippet is the chunk's own opening, not the
+	// keyword's neighbourhood, and the model must not read it as evidence that
+	// the query terms appear there.
+	preview bool
 }
 
 // formatLocateResultsXML renders the UNIFIED payload shared by every locate
@@ -286,18 +497,39 @@ func formatLocateResultsXML(query string, hits []snippetHit) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("<search_results count=\"%d\" query=\"%s\">\n",
 		len(hits), xmlEscape(query)))
+	truncatedHits := 0
+	previewHits := 0
 	for i, h := range hits {
 		c := h.chunk
+		truncatedAttr := ""
+		if h.truncated {
+			truncatedAttr = ` truncated="true"`
+			truncatedHits++
+		}
+		matchAttr := ""
+		if h.preview {
+			matchAttr = ` match="none"`
+			previewHits++
+		}
 		b.WriteString(fmt.Sprintf(
-			"<chunk rank=\"%d\" chunk_id=\"%s\" doc_id=\"%s\" page_num=\"%d\" chunk_index=\"%d\" dataset_id=\"%s\" doc_name=\"%s\" score=\"%.3f\">\n",
+			"<chunk rank=\"%d\" chunk_id=\"%s\" doc_id=\"%s\" page_num=\"%d\" chunk_index=\"%d\" dataset_id=\"%s\" doc_name=\"%s\" score=\"%.3f\" chunk_runes=\"%d\"%s%s>\n",
 			i+1,
 			xmlEscape(c.ID), xmlEscape(c.DocumentID), c.PageNum, c.ChunkIndex,
 			xmlEscape(c.DatasetID), xmlEscape(c.DocumentName), c.Score,
+			utf8.RuneCountInString(c.Content), truncatedAttr, matchAttr,
 		))
 		if h.snippet != "" {
 			b.WriteString(fmt.Sprintf("<match_snippet>%s</match_snippet>\n", xmlEscape(h.snippet)))
 		}
 		b.WriteString("</chunk>\n")
+	}
+	if truncatedHits > 0 || previewHits > 0 {
+		// The model must not quote a fragment as if it were the document.
+		b.WriteString(fmt.Sprintf("<snippet_note>%d snippet(s) are TRUNCATED (truncated=\"true\") and %d chunk(s) "+
+			"carry NO keyword match (match=\"none\" - a lexical hit whose surface term is absent, e.g. a stemmed form). "+
+			"Read the chunk in full with list_chunks (chunk_id + number_neighbors=0) before relying on it: a fragment "+
+			"shows the neighbourhood of the match, not everything the chunk says.</snippet_note>\n",
+			truncatedHits, previewHits))
 	}
 	if len(hits) == 0 {
 		// Zero hits usually means a WORD-FORM mismatch (the corpus says
