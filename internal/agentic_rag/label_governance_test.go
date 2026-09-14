@@ -142,3 +142,17 @@ func TestCountChunkElementsStillWorks(t *testing.T) {
 		t.Fatalf("count = %d, want 1", n)
 	}
 }
+
+// TestReconcileAnswerLabelsBacktickForm covers a shipped shape that slipped the
+// detector: the value line wrapped in backticks, under a `## Final Answer`
+// heading (observed on q350). The heading must still be reconciled.
+func TestReconcileAnswerLabelsBacktickForm(t *testing.T) {
+	mixed := "## Final Answer\n`Guessed Answer: **insufficient corpus evidence** (assumption: x)`"
+	out := reconcileAnswerLabels(mixed)
+	if strings.Contains(out, "Final Answer") {
+		t.Fatalf("heading kept the stronger claim: %q", out)
+	}
+	if !strings.Contains(out, "## Guessed Answer") {
+		t.Fatalf("heading was not rewritten: %q", out)
+	}
+}

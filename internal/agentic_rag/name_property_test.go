@@ -67,3 +67,32 @@ func TestListOnlyNameReason(t *testing.T) {
 		t.Fatalf("a value absent from the haystack must not be gated here, got %q", got)
 	}
 }
+
+// TestListOnlyNameReasonCJK covers the bilingual corpus: a question asking for
+// 本名/艺名 must gate on the same rule, and the CJK property phrasings count as
+// statements of it.
+func TestListOnlyNameReasonCJK(t *testing.T) {
+	question := "这个人的本名是什么？- 1920 年代生于巴黎 - 1950 年代出演过一部喜剧电影。"
+	list := `<chunk chunk_id="c1">` + `Robert VattierGisèle GrayAndré BervilJacques DynamJacques Meyran` +
+		`Félix PaquetAndrée ServilangeJean DaurandPhilippe JanvierJoe BreitbardMarcel Perès` +
+		`Pierre Albert BrasseurHenri HenneryHarry MaxJean-Pierre Lorrain</chunk>`
+	if reason := listOnlyNameReason(question, "Pierre Albert Brasseur", list); reason == "" {
+		t.Fatal("CJK name-property question must gate a list-only value")
+	}
+	if got := listOnlyNameReason(question, "Jacqueline Cantrelle", "她本名 Jacqueline Cantrelle，1994 年去世。"); got != "" {
+		t.Fatalf("`本名 <value>` must count as a statement, got %q", got)
+	}
+}
+
+// TestNamePropertyHint pins the repair guidance: a name-property question must
+// ask for the SENTENCE that states the property, not for another anchor.
+func TestNamePropertyHint(t *testing.T) {
+	question := "Give me this person's full birth name."
+	hint := namePropertyHint(question, "Pierre Albert Brasseur")
+	if !strings.Contains(hint, "birth name") || !strings.Contains(hint, "born <value>") {
+		t.Fatalf("hint must point at the property shape: %q", hint)
+	}
+	if got := namePropertyHint("Who directed the film?", "Pierre Brasseur"); got != "" {
+		t.Fatalf("non-property questions get no hint, got %q", got)
+	}
+}

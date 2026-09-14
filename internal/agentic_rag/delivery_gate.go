@@ -90,7 +90,11 @@ func hasFOSStructure(final string) bool {
 // 2 = the label word, 3 = the "answer" tail including its colon when present.
 // Matching the prefix is what lets ONE regex serve both shapes the deliverable
 // mixes — the `## Final Answer` heading and the `**Final Answer: X**` value line.
-var answerLabelRe = regexp.MustCompile(`(?i)^([^\S\n]*(?:#{1,4}\s*)?\**\s*)(final|guessed)(\s+answer\s*:?)`)
+// The prefix tolerates the wrappers a deliverable puts around the label —
+// emphasis, backticks, straight or curly quotes — so a value line written as
+// `Guessed Answer: **X**` is still recognised (RE2 has no \uXXXX escapes, hence
+// the literal quotes).
+var answerLabelRe = regexp.MustCompile("(?i)^([^\\S\\n]*(?:#{1,4}\\s*)?[`*\"'‘’“”\\s]*)(final|guessed)(\\s+answer\\s*:?)")
 
 // demoteFinalAnswerLabel rewrites the deliverable's answer label from
 // `Final Answer` to `Guessed Answer` when the delivery gate shipped WITHOUT a
@@ -186,12 +190,13 @@ func reconcileAnswerLabels(final string) string {
 
 var (
 	// namePropertyQuestionRe matches a question asking for a NAME PROPERTY — the
-	// kind of fact an enumeration can never establish.
-	namePropertyQuestionRe = regexp.MustCompile(`(?i)\b(birth name|full birth name|full name|given name|real name|maiden name|birth surname|née|né)\b`)
+	// kind of fact an enumeration can never establish. CJK phrasings are
+	// included because the corpus and the questions are bilingual.
+	namePropertyQuestionRe = regexp.MustCompile(`(?i)\b(birth name|full birth name|full name|given name|real name|maiden name|birth surname|née|né)\b|本名|艺名|原名|真名|全名|姓名`)
 	// propertyBeforeRe / propertyAfterRe match the phrasing that STATES such a
 	// property, applied to a window just before / after the value.
-	propertyBeforeRe = regexp.MustCompile(`(?i)(born|née|né|real name|birth ?name|given name|full name|maiden name|surname)\s*[:,\-]?\s*$`)
-	propertyAfterRe  = regexp.MustCompile(`(?i)^\s*[:,\-]?\s*(was born|is born|born)\b`)
+	propertyBeforeRe = regexp.MustCompile(`(?i)(born|née|né|real name|birth ?name|given name|full name|maiden name|surname)\s*[:,\-]?\s*$|(本名|艺名|原名|真名|全名|姓名)\s*[:：,，]?\s*$`)
+	propertyAfterRe  = regexp.MustCompile(`(?i)^\s*[:,\-]?\s*(was born|is born|born)\b|^\s*[，,：:]?\s*(本名|艺名|原名|真名)`)
 	// nameTokenRe counts name-like tokens in a window: a cast/crew list is a
 	// dense run of capitalized words, a prose sentence is not.
 	nameTokenRe = regexp.MustCompile(`\b[\p{Lu}][\p{Ll}\p{L}]{1,}\b`)
@@ -264,6 +269,23 @@ func listOnlyNameReason(question, value, haystack string) string {
 		"an answer. Do NOT re-render the same matrix. Find the sentence that STATES the property (shapes like " +
 		"`born <value>`, `<value>'s birth name was ...`, `née <value>`, `real name <value>`) and quote it, or ship " +
 		"`Guessed Answer: **" + value + "** (assumption: no chunk read states the " + strings.ToLower(property) + ")`."
+}
+
+// namePropertyHint returns extra repair text for a question that asks for a
+// NAME PROPERTY, appended to the ungrounded-value directive. The generic advice
+// ("run a new retrieval with a different anchor") sends the model hunting for
+// the same slot; the property question needs a different shape of evidence — a
+// sentence that STATES whose name it is — so say so explicitly.
+func namePropertyHint(question, value string) string {
+	property := namePropertyQuestionRe.FindString(question)
+	if property == "" || strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return " This question asks for the " + strings.ToLower(property) + ": what you need is a sentence that STATES that " +
+		"property about a value (shapes like `born <value>`, `<value>'s birth name was ...`, `née <value>`, `本名 <value>`), " +
+		"not another mention of a name. Search for the property word itself together with a distinctive clue " +
+		"(grep_chunks `birth name.*<clue>` / `<clue>.*born`), and quote the sentence in the Reasoning Chain. A name that only " +
+		"appears inside a cast/crew/name list never satisfies this - every entry there matches equally."
 }
 
 // looksLikeEnumeration reports whether the window around a match reads as a list

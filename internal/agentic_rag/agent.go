@@ -929,6 +929,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		verdict := ""
 		directive := ""
 		shipped := finalAnswerValue(final)
+		question := lastUserQuestion(in.baseMessages)
 		if strings.TrimSpace(final) != "" && shipped != "" && !answerValueIsGrounded(shipped, groundingHaystack) {
 			// GROUNDING CHECK (lever 2): a named value that occurs in NO
 			// chunk the run read cannot be corpus-supported - it was
@@ -941,8 +942,9 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				"Run at least one NEW retrieval with a different anchor first - the rarest proper noun of the question " +
 				"queried ALONE, or a grep_chunks co-occurrence regex over two clue terms - then rebuild the Candidate " +
 				"Matrix from what actually surfaces. If nothing supports any candidate, ship `Guessed Answer: **<value>** " +
-				"(assumption: ...)` naming what is unverified, or state the insufficiency explicitly.")
-		} else if reason := listOnlyNameReason(lastUserQuestion(in.baseMessages), shipped, groundingHaystack); reason != "" {
+				"(assumption: ...)` naming what is unverified, or state the insufficiency explicitly." +
+				namePropertyHint(question, shipped))
+		} else if reason := listOnlyNameReason(question, shipped, groundingHaystack); reason != "" {
 			// NAME-PROPERTY CHECK (lever 2B): the value is grounded - it occurs
 			// in a chunk that was read - but only as one entry in an
 			// enumeration, which cannot state the property the question asks for
