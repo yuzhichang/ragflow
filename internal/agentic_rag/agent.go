@@ -436,6 +436,10 @@ type instrumentedTool struct {
 	acc    *durationAccumulator
 	docs   *docIDLedger
 	chunks *chunkReadLedger
+	// watch is the run's locate watchdog (see locate_watch.go): it counts
+	// locate calls and, when the meaning-based leg is held but never called,
+	// appends one reminder to the tool result the model is about to read.
+	watch *locateWatch
 }
 
 // toolOutputDocNameRe pulls the document names out of the XML every retrieval
@@ -497,6 +501,16 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 		zap.String("tool", name),
 		zap.Float64("cost_ms", float64(cost.Milliseconds())),
 		zap.String("args", truncateForLog(args, 200)),
+	}
+	if err == nil && t.watch != nil {
+		// The locate watchdog rides the result, not the prompt: a rule read
+		// once at the top of the system prompt competes with everything else
+		// there, while this line appears in the tool result the model is
+		// looking at when it decides what to query next.
+		if nudge := t.watch.observe(name); nudge != "" {
+			out += "\n" + nudge
+			fields = append(fields, zap.Int("locate_watchdog", 1))
+		}
 	}
 	if err != nil {
 		fields = append(fields, zap.Error(err))
@@ -596,14 +610,22 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// in.RetrievedDocIDs. Tools that aren't InvokableTool (e.g.
 	// streamable-only) are passed through unwrapped — all agent tools here are
 	// InvokableTool.
+	// The locate watchdog may only advertise the meaning-based leg if THIS run
+	// holds it, so availability is established while the tools are wrapped —
+	// before the model can call anything (see locate_watch.go).
+	watch := newLocateWatch()
 	wrapped := make([]tool.BaseTool, len(tools))
 	for i, t := range tools {
 		if it, ok := t.(tool.InvokableTool); ok {
+			if info, ierr := it.Info(ctx); ierr == nil && info != nil && info.Name == searchSemanticChunksToolName {
+				watch.markSemanticAvailable()
+			}
 			wrapped[i] = &instrumentedTool{
 				InvokableTool: it,
 				acc:           in.ToolCallDurations,
 				docs:          in.RetrievedDocIDs,
 				chunks:        in.ChunkReads,
+				watch:         watch,
 			}
 		} else {
 			wrapped[i] = t
