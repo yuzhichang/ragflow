@@ -146,6 +146,13 @@ type GateAuditRecord struct {
 	// `Final Answer`. It doubles as an operator signal: a per-question audit
 	// outage is a provider problem, not a reasoning one.
 	AuditFailures int `json:"audit_failures,omitempty"`
+	// AuditVerdicts holds an excerpt of EVERY audit verdict, oldest first, in
+	// step with Suspects. The counts alone say a curve moved 5→3→1→0 but never
+	// WHAT was contested, so a failure could only be explained by re-reading the
+	// shipped deliverable and guessing — which is how the #221 analysis had to
+	// proceed, and how it managed to infer the wrong cause twice. One excerpt
+	// per round makes the audit's own words the record.
+	AuditVerdicts []string `json:"audit_verdicts,omitempty"`
 }
 
 // defaultMaxIterations caps the ReAct loop before the agent must answer. It is
@@ -1077,18 +1084,22 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			}
 			// Per-round suspect accounting for benchmarks (Input.GateAudit):
 			// every audit is recorded, PASS rounds included — a PASS verdict
-			// reports 0 suspects, so the list doubles as the round count.
+			// reports 0 suspects, so the list doubles as the round count. The
+			// verdict's own words ride along, so a curve can be explained from
+			// the record instead of reverse-engineered from the deliverable.
 			if in.audit != nil {
 				in.audit.Suspects = append(in.audit.Suspects, auditSuspectCount(verdict))
 				in.audit.Passed = auditPassed(verdict)
 			}
+			recordAuditVerdict(in.audit, verdict)
 			if auditPassed(verdict) {
 				break // audited and passed as a whole — ship
 			}
 
 			common.InfoCtx(ctx, "agentic_rag: delivery gate audit failed the deliverable",
 				zap.Int("pass", pass+1),
-				zap.Int("suspects", auditSuspectCount(verdict)))
+				zap.Int("suspects", auditSuspectCount(verdict)),
+				zap.String("verdict", truncateForLog(verdict, 300)))
 
 			suspectHist = append(suspectHist, auditSuspectCount(verdict))
 			// Stall check fires BEFORE the repair turn: once three observations

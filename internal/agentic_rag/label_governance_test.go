@@ -185,3 +185,38 @@ func TestUnrecordedLocateTools(t *testing.T) {
 		t.Errorf("a deliverable with no Searched lines = %v, want [search_chunks]", got)
 	}
 }
+
+// TestRecordAuditVerdict pins the audit record: one excerpt per round, in step
+// with Suspects, truncated — and it must be safe to call on every path,
+// including a run whose gate never produced a verdict (nil record).
+func TestRecordAuditVerdict(t *testing.T) {
+	rec := &GateAuditRecord{}
+	rec.Suspects = []int{5}
+	recordAuditVerdict(rec, "  Audit Result: FAIL (5 suspects)\n- clue 3 unsupported  ")
+	if len(rec.AuditVerdicts) != 1 {
+		t.Fatalf("verdicts = %d, want 1", len(rec.AuditVerdicts))
+	}
+	if got := rec.AuditVerdicts[0]; !strings.HasPrefix(got, "Audit Result: FAIL") || strings.HasSuffix(got, " ") {
+		t.Errorf("the excerpt must be trimmed and keep the verdict's head, got %q", got)
+	}
+	// Entry i of AuditVerdicts must belong to entry i of Suspects.
+	rec.Suspects = append(rec.Suspects, 0)
+	recordAuditVerdict(rec, "Audit Result: PASS")
+	if len(rec.AuditVerdicts) != len(rec.Suspects) {
+		t.Fatalf("verdicts %d and suspects %d must stay in step", len(rec.AuditVerdicts), len(rec.Suspects))
+	}
+	// An empty verdict records nothing, and a nil record is not a panic.
+	before := len(rec.AuditVerdicts)
+	recordAuditVerdict(rec, "   ")
+	recordAuditVerdict(nil, "Audit Result: PASS")
+	if len(rec.AuditVerdicts) != before {
+		t.Error("a blank verdict must not add an entry")
+	}
+	// Truncation bound, on rune boundaries.
+	long := strings.Repeat("x", auditVerdictExcerptMax+50)
+	recordAuditVerdict(rec, long)
+	last := rec.AuditVerdicts[len(rec.AuditVerdicts)-1]
+	if got := len([]rune(last)); got != auditVerdictExcerptMax+1 {
+		t.Errorf("excerpt is %d runes, want %d (bound plus the ellipsis)", got, auditVerdictExcerptMax+1)
+	}
+}

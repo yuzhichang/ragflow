@@ -1169,6 +1169,19 @@ def _unrecorded_locate_tools(row: dict[str, Any]) -> list[str] | None:
     return missing or None
 
 
+def _gate_audit_verdicts(row: dict[str, Any]) -> list[str] | None:
+    """An excerpt of every audit verdict, oldest first, in step with
+    `audit_suspects`. The counts alone say a curve moved 5-3-1-0 but never WHAT
+    was contested, so a failure had to be explained by reverse-engineering the
+    shipped deliverable - which is how the #221 analysis twice inferred the
+    wrong cause."""
+    audit = row.get("gate_audit")
+    if not isinstance(audit, dict):
+        return None
+    verdicts = audit.get("audit_verdicts")
+    return [str(v) for v in verdicts] if isinstance(verdicts, list) else None
+
+
 def _gate_audit_failures(row: dict[str, Any]) -> int | None:
     """How many audit passes the auditor could not complete (LLM timeout, tool
     outage). A run whose auditor never returned a verdict carries no suspects and
@@ -1221,6 +1234,7 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         "audit_passed": _gate_audit_passed(row),
         "audit_rejections": _gate_audit_rejections(row),
         "audit_failures": _gate_audit_failures(row),
+        "audit_verdicts": _gate_audit_verdicts(row),
         # Locate tools used but never credited in the Candidate Matrix: an
         # omission here hides which leg actually did the work.
         "unrecorded_locate_tools": _unrecorded_locate_tools(row),
@@ -1523,17 +1537,21 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
         suspects = gate_audit.get("suspects")
         rejections = _as_int(gate_audit.get("rejections"))
         audit_failures = _as_int(gate_audit.get("audit_failures"))
+        verdicts = gate_audit.get("audit_verdicts")
         # Keep the record when ANY signal is present: a gate that refused every
         # deliverable before an audit could run reports no suspects at all, and
         # one whose auditor never returned a verdict reports nothing but the
         # failure - dropping either hid exactly that state (q350/q784, and the
         # audit-outage case).
-        if isinstance(suspects, list) or rejections is not None or audit_failures is not None:
+        if isinstance(suspects, list) or rejections is not None or audit_failures is not None or isinstance(verdicts, list):
             stats["gate_audit"] = {
                 "suspects": [_as_int(s) for s in suspects] if isinstance(suspects, list) else None,
                 "passed": bool(gate_audit.get("passed")),
                 "rejections": rejections,
                 "audit_failures": audit_failures,
+                # An excerpt of each round's verdict, in step with suspects:
+                # counts show the curve, these show what was actually contested.
+                "audit_verdicts": [str(v) for v in verdicts] if isinstance(verdicts, list) else None,
             }
 
     return stats

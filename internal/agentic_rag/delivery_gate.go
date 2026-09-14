@@ -419,6 +419,32 @@ func unrecordedLocateTools(matrix string, toolCallCounts map[string]int) []strin
 	return out
 }
 
+// auditVerdictExcerptMax bounds how much of one audit verdict is archived. The
+// excerpt only has to be enough to see WHICH claim was contested and why; the
+// full text of ten rounds would bloat every benchmark row.
+const auditVerdictExcerptMax = 400
+
+// recordAuditVerdict archives an excerpt of one audit verdict, in the same order
+// as Suspects, so the counts and the auditor's own words stay in step (entry i
+// of AuditVerdicts is the verdict that produced entry i of Suspects). Without
+// it a failure shows a curve (5→3→1→0) but no reason, and the only way to
+// explain the run is to reverse-engineer the shipped deliverable — which is how
+// the #221 analysis twice inferred the wrong cause.
+func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
+	if audit == nil {
+		return
+	}
+	excerpt := strings.TrimSpace(verdict)
+	if excerpt == "" {
+		return
+	}
+	runes := []rune(excerpt)
+	if len(runes) > auditVerdictExcerptMax {
+		excerpt = string(runes[:auditVerdictExcerptMax]) + "…"
+	}
+	audit.AuditVerdicts = append(audit.AuditVerdicts, excerpt)
+}
+
 // auditPayload is the ONE JSON object answer_auditor audits: the producer's
 // complete FINAL message, verbatim. The question under audit is pinned into
 // the auditor's system prompt at construction time and never re-sent.
