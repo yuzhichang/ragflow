@@ -204,6 +204,23 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 	if !strings.Contains(auditor.Content, "elision marker") {
 		t.Error("an explicit elision marker must be the stated way to quote non-adjacent passages")
 	}
+	// Elimination has exactly two admissible grounds (a refuting chunk, or the
+	// corpus never describing the candidate), and BOTH sides must say so: the
+	// producer shipped a self-conceding elimination on q221 ("both satisfy the
+	// stated constraints") and the auditor rejected it, correctly, for the only
+	// ground its own prompt allowed — a contradiction. One side alone leaves the
+	// producer writing a ground the auditor cannot accept, or the auditor
+	// accepting a ground the producer was never told to use.
+	for _, want := range []string{
+		"no corpus content describes it",
+		"elimination ground not on the record",
+		"eliminated for weakness, not evidence",
+		"elimination ground contradicted by cited chunk",
+	} {
+		if !strings.Contains(auditor.Content, want) {
+			t.Errorf("the auditor must define the elimination ground %q", want)
+		}
+	}
 	for _, id := range []string{"smart-reasoning", "smart-grep", "smart-grep-bm25"} {
 		tmpl, err := resolveTemplateFor(id)
 		if err != nil {
@@ -211,6 +228,11 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		}
 		if tmpl.Temperature != nil {
 			t.Errorf("%s: temperature = %v, want nil — this knob is the auditor's, and pinning a producer's sampling from this file would silently take away the exploration its temperature buys", id, *tmpl.Temperature)
+		}
+		for _, want := range []string{"no corpus content describes it", "a named, grounded rival you cannot refute is RETAINED"} {
+			if !strings.Contains(tmpl.Content, want) {
+				t.Errorf("%s: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", id, want)
+			}
 		}
 	}
 }
