@@ -802,6 +802,19 @@ func Run(ctx context.Context, in Input) (string, error) {
 		final = reconciled
 	}
 
+	// Diagnosis, not enforcement: a locate tool the run called but the matrix
+	// never credits leaves nothing in the archived row to show it was used. On
+	// #71 the ONE call that surfaced the answer's own document was a
+	// search_semantic_chunks query the matrix omitted, so only the server log
+	// revealed that the pure-vector leg had done the work. Two of three runs
+	// trip this (see unrecordedLocateTools), which is why it warns instead of
+	// rejecting: the deliverable's job is the answer, and a bookkeeping
+	// omission that the schema does not enforce is not worth a repair pass.
+	if missing := unrecordedLocateTools(final, in.ToolCallCounts); len(missing) > 0 {
+		common.WarnCtx(ctx, "agentic_rag: deliverable omits locate calls it used",
+			zap.Strings("tools", missing))
+	}
+
 	// The answer channel carries exactly one thing: the deliverable this run
 	// is shipping, emitted once, now that the gate and the fallbacks have
 	// settled on it. Everything the loop said on the way there already went

@@ -156,3 +156,32 @@ func TestReconcileAnswerLabelsBacktickForm(t *testing.T) {
 		t.Fatalf("heading was not rewritten: %q", out)
 	}
 }
+
+// TestUnrecordedLocateTools pins the diagnostic: a locate tool the run called
+// must be credited on a `Searched:` line, and the check exists because an
+// omitted call is invisible in the archived row (on #71 the decisive
+// pure-vector call was omitted). Tools never called are not reported.
+func TestUnrecordedLocateTools(t *testing.T) {
+	matrix := "### Sub-question 1\n" +
+		"- `Searched: search_bm25_chunks(\"Ballast Bank Wexford\") -> top: doc 15985.md`\n" +
+		"- `Tested: Ballast Bank - all clues supported`\n" +
+		"Final Answer: **Ballast Bank**"
+	counts := map[string]int{
+		"grep_chunks":            8,
+		"search_bm25_chunks":     11,
+		"search_semantic_chunks": 1,
+		"list_chunks":            17,
+	}
+	got := unrecordedLocateTools(matrix, counts)
+	if len(got) != 2 || got[0] != "grep_chunks" || got[1] != "search_semantic_chunks" {
+		t.Fatalf("unrecordedLocateTools = %v, want [grep_chunks search_semantic_chunks]", got)
+	}
+	// A deep read is not a locate call, and a tool that was never called cannot
+	// be missing.
+	if got := unrecordedLocateTools(matrix, map[string]int{"list_chunks": 3}); len(got) != 0 {
+		t.Errorf("unrecordedLocateTools with no locate calls = %v, want none", got)
+	}
+	if got := unrecordedLocateTools("", map[string]int{"search_chunks": 2}); len(got) != 1 || got[0] != "search_chunks" {
+		t.Errorf("a deliverable with no Searched lines = %v, want [search_chunks]", got)
+	}
+}

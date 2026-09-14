@@ -1147,6 +1147,28 @@ def _gate_audit_rejections(row: dict[str, Any]) -> int | None:
     return _as_int(audit.get("rejections"))
 
 
+_LOCATE_TOOLS = ("grep_chunks", "search_bm25_chunks", "search_semantic_chunks", "search_chunks")
+_SEARCHED_LINE_RE = re.compile(r"(?im)Searched:\s*(grep_chunks|search_bm25_chunks|search_semantic_chunks|search_chunks)")
+
+
+def _unrecorded_locate_tools(row: dict[str, Any]) -> list[str] | None:
+    """Locate tools the run called but the Candidate Matrix never credits on a
+    `Searched:` line.
+
+    Reported, never scored: measured on 703 scored rows, 69% of runs omit at
+    least one (grep_chunks in 362), so it is the norm rather than an anomaly and
+    rejecting runs over it would reject two in three. It is recorded because the
+    omission makes a call INVISIBLE - on #71 the one call that surfaced the
+    answer's own document was an unrecorded search_semantic_chunks query, and
+    nothing but the server log showed the pure-vector leg had done the work."""
+    counts = row.get("tool_call_counts")
+    if not isinstance(counts, dict):
+        return None
+    listed = {m.lower() for m in _SEARCHED_LINE_RE.findall(str(row.get("ragflow_answer") or ""))}
+    missing = [t for t in _LOCATE_TOOLS if (_as_int(counts.get(t)) or 0) > 0 and t not in listed]
+    return missing or None
+
+
 def _gate_audit_failures(row: dict[str, Any]) -> int | None:
     """How many audit passes the auditor could not complete (LLM timeout, tool
     outage). A run whose auditor never returned a verdict carries no suspects and
@@ -1199,6 +1221,9 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         "audit_passed": _gate_audit_passed(row),
         "audit_rejections": _gate_audit_rejections(row),
         "audit_failures": _gate_audit_failures(row),
+        # Locate tools used but never credited in the Candidate Matrix: an
+        # omission here hides which leg actually did the work.
+        "unrecorded_locate_tools": _unrecorded_locate_tools(row),
         # Chunk-read depth split (None when the backend did not report it):
         # deep = full chunk content the model read, shallow = snippet windows
         # only. Together they show where a run's context weight came from.

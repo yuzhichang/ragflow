@@ -19,6 +19,7 @@ package agentic_rag
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -377,6 +378,45 @@ func answerValueIsGrounded(value, haystack string) bool {
 		}
 	}
 	return missing <= 1
+}
+
+// locateToolNames are the tools whose calls the Candidate Matrix's `Searched:`
+// lines are supposed to record.
+var locateToolNames = []string{"grep_chunks", "search_bm25_chunks", "search_semantic_chunks", "search_chunks"}
+
+// searchedLineRe matches a matrix line that records a locate call, capturing the
+// tool name it credits.
+var searchedLineRe = regexp.MustCompile(`(?im)Searched:\s*(grep_chunks|search_bm25_chunks|search_semantic_chunks|search_chunks)`)
+
+// unrecordedLocateTools returns the locate tools the run actually called but the
+// deliverable never credits on a `Searched:` line, sorted.
+//
+// It exists for DIAGNOSIS, and deliberately not as a gate rejection: measured on
+// 703 scored rows, 69% used some locate tool whose call the matrix never names
+// (grep_chunks in 362 of them), so rejecting runs on it would reject two out of
+// three deliverables over bookkeeping. The cost of that silence is real, though:
+// on #71 the ONE call that surfaced the answer's own document was a
+// search_semantic_chunks query the matrix omitted, so nothing in the archived row
+// showed the pure-vector leg had done the work — the log had to be read to see
+// it. The warning makes that visible without changing what the model is asked to
+// do; whether to enforce the schema is a separate, evidence-gated decision.
+func unrecordedLocateTools(matrix string, toolCallCounts map[string]int) []string {
+	recorded := map[string]struct{}{}
+	for _, m := range searchedLineRe.FindAllStringSubmatch(matrix, -1) {
+		recorded[strings.ToLower(m[1])] = struct{}{}
+	}
+	out := make([]string, 0, len(locateToolNames))
+	for _, name := range locateToolNames {
+		if toolCallCounts[name] <= 0 {
+			continue
+		}
+		if _, ok := recorded[name]; ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // auditPayload is the ONE JSON object answer_auditor audits: the producer's
