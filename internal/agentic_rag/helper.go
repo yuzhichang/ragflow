@@ -541,9 +541,43 @@ func formatLocateResultsXML(ctx context.Context, tool, query string, hits []snip
 		// absence. Surface the retry discipline here so the model sees it at
 		// the exact moment it decides what to query next.
 		b.WriteString("<hint>0 hits — the corpus may use a different WORD FORM of your terms. Retry with: (1) derivational variants of the rarest term (mineralizer -> mineralization -> mineralize), singular/plural forms; (2) for grep_chunks, the stem plus a trailing wildcard (mineralizer -> mineraliz.*); (3) the single rarest term ALONE instead of a multi-word phrase (a proper noun, procedure name, or unique date). An exact-phrase 0-hit is not evidence that the corpus lacks the answer.</hint>\n")
+		b.WriteString(zeroHitNextStep(tool))
 	}
 	b.WriteString("</search_results>")
 	return b.String()
+}
+
+// lexicalLocateTools match the query's WORDS: grep_chunks by regex over chunk
+// text, search_bm25_chunks by token ranking. A zero-hit result from one of them
+// is evidence about the caller's vocabulary, not about the corpus.
+var lexicalLocateTools = map[string]struct{}{
+	"grep_chunks":        {},
+	"search_bm25_chunks": {},
+}
+
+// zeroHitNextStep is the recovery step appended to a 0-hit locate result,
+// chosen by which leg produced the zero. The distinction matters and is the
+// whole point of the message:
+//
+//   - a LEXICAL tool that found nothing has proved that the corpus does not
+//     state the thing in the caller's words — the one condition the
+//     meaning-based leg exists for. Rewriting the same words (the natural next
+//     move, and the one a benchmark run repeated 28 times on one question) adds
+//     nothing, so the hint asks for a DESCRIPTION instead, and for a new
+//     CATEGORY when the first description misses.
+//   - a SEMANTIC tool that found nothing has a different problem: nothing in the
+//     corpus MEANS that, so the description — typically the question's own
+//     abstract wording ("business", "manufacturing", "award") — is what has to
+//     change.
+//
+// Both branches name the next move in one sentence: the model reads this at the
+// moment it decides what to query, which is where a rule stated once in the
+// system prompt gets forgotten.
+func zeroHitNextStep(tool string) string {
+	if _, lexical := lexicalLocateTools[tool]; lexical {
+		return "<hint_next>THIS IS THE LEXICAL DEAD-END SIGNAL, not a corpus gap: your words are not how the corpus states this. Do NOT rewrite the same terms a third time — run ONE search_semantic_chunks query that DESCRIBES the thing you are looking for in plain language (what it is and what is true about it), and if that comes back off-target, describe a DIFFERENT CATEGORY of thing (restaurant -> hotel -> winery -> manufacturer).</hint_next>\n"
+	}
+	return "<hint_next>A MEANING search returned nothing, so the problem is the DESCRIPTION rather than the vocabulary: nothing in the corpus means what you asked for. Drop the question's abstract words (\"business\", \"manufacturing\", \"an award\") and describe the concrete thing instead, or describe a different CATEGORY of thing (restaurant -> hotel -> winery -> manufacturer), then retry ONCE.</hint_next>\n"
 }
 
 // dedupStrings returns s in first-occurrence order without duplicates.

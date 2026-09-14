@@ -83,7 +83,10 @@ func toolRegistry() map[string]toolFactory {
 		"grep_chunks":        func(t string, d []string) tool.BaseTool { return NewGrepChunksTool(t, d) },
 		"search_chunks":      func(t string, d []string) tool.BaseTool { return NewSearchChunksTool(t, d) },
 		"search_bm25_chunks": func(t string, d []string) tool.BaseTool { return NewSearchBm25ChunksTool(t, d) },
-		"list_chunks":        func(t string, d []string) tool.BaseTool { return NewListChunksTool(t, d) },
+		// The pure-vector leg: same payload as search_chunks, no keyword leg at
+		// all (see tool_search_semantic_chunks.go).
+		"search_semantic_chunks": func(t string, d []string) tool.BaseTool { return NewSearchSemanticChunksTool(t, d) },
+		"list_chunks":            func(t string, d []string) tool.BaseTool { return NewListChunksTool(t, d) },
 	}
 }
 

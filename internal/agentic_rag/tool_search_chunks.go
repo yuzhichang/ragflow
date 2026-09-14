@@ -19,18 +19,11 @@ package agentic_rag
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
-	"go.uber.org/zap"
-
-	"ragflow/internal/agent/runtime"
-	"ragflow/internal/common"
-	"ragflow/internal/dao"
 )
 
 // searchChunksToolName is a thin wrapper over hybrid retrieval that accepts 1–5
@@ -161,176 +154,22 @@ func (k *SearchChunksTool) invokableRun(ctx context.Context, argumentsInJSON str
 		return "", fmt.Errorf("search_chunks: parse arguments: %w", err)
 	}
 
-	// Validate query count.
-	queries := make([]string, 0, len(args.Queries))
-	for _, q := range args.Queries {
-		if q = strings.TrimSpace(q); q != "" {
-			queries = append(queries, q)
-		}
-	}
-	if len(queries) == 0 {
-		return "", fmt.Errorf("search_chunks: queries must contain 1-5 non-empty semantic questions")
-	}
-	if len(queries) > 5 {
-		return "", fmt.Errorf("search_chunks: queries must contain at most 5 questions, got %d", len(queries))
-	}
-
-	// Enforce the declared input bounds before touching production retrieval: a
-	// hostile or confused model could otherwise ask for top_n in the millions and
-	// forward an unbounded TopK downstream.
-	topN := args.TopN
-	if topN <= 0 {
-		topN = searchChunksDefaultTopN
-	}
-	if topN > 50 {
-		topN = 50
-	}
-	similarityThreshold := searchChunksDefaultSimilarityThreshold
-	if args.SimilarityThreshold != nil {
-		similarityThreshold = clampFloat01(*args.SimilarityThreshold)
-	}
+	// The keyword share is the model's to choose here (default 0.7): this tool
+	// IS the fusion leg. Weight 0 does not turn it into a pure vector search —
+	// use search_semantic_chunks for that (see locateSearchSpec.vectorOnly).
 	weight := searchChunksDefaultKeywordsSimilarityWeight
 	if args.KeywordsSimilarityWeight != nil {
 		weight = clampFloat01(*args.KeywordsSimilarityWeight)
 	}
-	datasetIDs, err := resolveDatasetScope(k.datasetIDs, args.DatasetIDs)
-	if err != nil {
-		return "", fmt.Errorf("search_chunks: %w", err)
-	}
-	if len(datasetIDs) > 10 {
-		datasetIDs = datasetIDs[:10]
-	}
-	if len(args.DocScope) > 10 {
-		args.DocScope = args.DocScope[:10]
-	}
-
-	svc := runtime.GetRetrievalService()
-	tenantID := k.tenantID
-	if svc == nil || tenantID == "" || len(datasetIDs) == 0 {
-		return formatLocateResultsXML(ctx, searchChunksToolName, strings.Join(queries, " | "), nil), nil
-	}
-
-	// Engine context with no per-query timeout (the run-level budget caps the
-	// whole run): eino's streaming ReAct may hand the tool an already-canceled
-	// context right after the model emits tool_calls; a canceled parent must
-	// not kill the retrieval. Fall back to a fresh context in that case.
-	ectx, ecancel := engineCallContext(ctx)
-	defer ecancel()
-
-	seen := map[string]struct{}{}
-	var merged []runtime.RetrievalChunk
-	var failed []error
-	for _, q := range queries {
-		chunks, err := svc.Search(ectx, dao.DB, runtime.RetrievalRequest{
-			Query:                    q,
-			DatasetIDs:               datasetIDs,
-			TopN:                     topN,
-			TopK:                     topN * 4,
-			SimilarityThreshold:      &similarityThreshold,
-			KeywordsSimilarityWeight: &weight,
-			DocScope:                 args.DocScope,
-			TenantID:                 tenantID,
-			SelectFields:             grepChunksSelectFields,
-			// Same "only ordinary prose" filter as grep_chunks: exclude
-			// compiled products so the model reads original document text, not
-			// derived graph content.
-			OnlyOriginalText: true,
-		})
-		if err != nil {
-			// Record and fall back on failure, keep other queries' results.
-			// (A query embedding failure lands here: the semantic bridge is
-			// dead for that query, but the others may still return hits.)
-			failed = append(failed, fmt.Errorf("%q: %w", q, err))
-			continue
-		}
-		for _, c := range chunks {
-			if _, dup := seen[c.ID]; dup {
-				continue
-			}
-			seen[c.ID] = struct{}{}
-			// Skip graph relation/entity/location chunks so the model reads
-			// actual document prose rather than extracted graph triples
-			// (which are sparse and miss events like "何进斩马元义").
-			if isGraphChunkContent(c.Content) {
-				continue
-			}
-			merged = append(merged, c)
-		}
-	}
-
-	// Every query failed: the tool cannot claim "no results" — that would
-	// silently silence the whole semantic bridge. Surfacing the reason is the
-	// difference between "the corpus has nothing" (true empty) and "the
-	// embedding backend is down" (an outage the caller must see). Observed on
-	// browsecomp: a SiliconFlow balance drain zeroed 339 semantic searches
-	// across two days before anyone noticed.
-	if len(merged) == 0 && len(failed) == len(queries) {
-		rootCause := failed[0].Error()
-		if r := []rune(rootCause); len(r) > 300 {
-			rootCause = string(r[:300]) + "…"
-		}
-		// ERROR level: an outage must be visible in the operator's log — a
-		// warn would hide it among per-question noise.
-		common.ErrorCtx(ctx, "agentic_rag: search_chunks semantic retrieval unavailable - embedding/retrieval backend failed for every query",
-			errors.Join(failed...),
-			zap.Int("failed_queries", len(failed)),
-			zap.String("root_cause", rootCause))
-		// ...and in the TOOL RESULT: the model reads the result, not the
-		// log, so the reason plus a hard "do not retry" instruction goes
-		// here, in the canonical <tool_error> shape. Returning an error
-		// instead would invite the agent to retry the same dead tool; a
-		// result notice redirects it to the lexical tools, which still work
-		// without embeddings.
-		return toolErrorXML(searchChunksToolName, "error",
-			fmt.Sprintf("SEMANTIC RETRIEVAL UNAVAILABLE: all %d queries failed at the embedding/retrieval backend. Root cause: %s. "+
-				"Do NOT call search_chunks again while this notice is active - it will keep failing. "+
-				"Use grep_chunks (regex over literal wording) or search_bm25_chunks (lexical keywords) instead, and deep-read (list_chunks) what they surface.",
-				len(queries), rootCause),
-			[2]string{"failed_queries", fmt.Sprintf("%d", len(failed))}), nil
-	}
-	if len(failed) > 0 {
-		common.WarnCtx(ctx, "agentic_rag: search_chunks partial failure",
-			zap.Int("failed_queries", len(failed)), zap.Error(failed[0]))
-	}
-
-	common.DebugCtx(ctx, "agentic_rag: search_chunks result",
-		zap.Int("chunks", len(merged)),
-		zap.Strings("queries", queries),
-	)
-	// Snippet anchoring mirrors grep/bm25: term boundaries over the queries
-	// (earliest hit − N .. latest hit + N, shared half-window). A semantic hit
-	// whose text lacks any query term renders without a <match_snippet> —
-	// consistent with the other locate tools.
-	var terms []string
-	for _, q := range queries {
-		terms = append(terms, bm25TermTokens([]string{q})...)
-	}
-	hits := make([]snippetHit, 0, len(merged))
-	for _, c := range merged {
-		snippet, truncated, preview := "", false, false
-		if first, last, ok := termMatchSpan(terms, c.Content); ok {
-			snippet, truncated = snippetForMatches(c.Content, first, last)
-		} else {
-			// A semantic hit need not contain the query terms verbatim: ship the
-			// chunk's opening and label it a preview instead of an empty snippet.
-			snippet, truncated = previewForChunk(c.Content)
-			preview = snippet != ""
-		}
-		hits = append(hits, snippetHit{chunk: c, snippet: snippet, truncated: truncated, preview: preview})
-	}
-	result := formatLocateResultsXML(ctx, searchChunksToolName, strings.Join(queries, " | "), hits)
-	// Partial failure rides on the result in the canonical shape
-	// (severity="warn"): the surviving hits stay usable, but the model must
-	// know those queries returned nothing because the backend errored — not
-	// because the corpus is empty.
-	if len(failed) > 0 {
-		reason := failed[0].Error()
-		if r := []rune(reason); len(r) > 200 {
-			reason = string(r[:200]) + "…"
-		}
-		result += "\n" + toolErrorXML(searchChunksToolName, "warn", reason,
-			[2]string{"failed_queries", fmt.Sprintf("%d", len(failed))},
-			[2]string{"total_queries", fmt.Sprintf("%d", len(queries))})
-	}
-	return result, nil
+	return runLocateSearch(ctx, locateSearchSpec{
+		tool:                searchChunksToolName,
+		queries:             args.Queries,
+		datasetIDs:          args.DatasetIDs,
+		boundDatasetIDs:     k.datasetIDs,
+		docScope:            args.DocScope,
+		topN:                args.TopN,
+		similarityThreshold: args.SimilarityThreshold,
+		weight:              weight,
+		tenantID:            k.tenantID,
+	})
 }

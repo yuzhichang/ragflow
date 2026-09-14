@@ -386,16 +386,18 @@ func (l *chunkReadLedger) Snapshot() (deep, shallow int) {
 // relevance triage, not the document itself — a doc seen only through them was
 // located, not retrieved.
 var fullContentDocTools = map[string]struct{}{
-	"search_chunks": {},
-	"list_chunks":   {},
+	"search_chunks":          {},
+	"search_semantic_chunks": {},
+	"list_chunks":            {},
 }
 
 // deepReadChunkTools render FULL chunk content — their <chunk> elements are
 // counted as deep reads. shallowReadChunkTools render only a
 // <match_snippet> window per chunk — counted as shallow reads.
 var deepReadChunkTools = map[string]struct{}{
-	"search_chunks": {},
-	"list_chunks":   {},
+	"search_chunks":          {},
+	"search_semantic_chunks": {},
+	"list_chunks":            {},
 }
 
 var shallowReadChunkTools = map[string]struct{}{
