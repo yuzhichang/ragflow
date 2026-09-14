@@ -957,3 +957,37 @@ func TestFinalAnswerValueWholeBold(t *testing.T) {
 		t.Errorf("whole-bold line with a tie: ties = %v, want one rival", ties)
 	}
 }
+
+// TestAnswerValueIsGroundedTokensMustBeLocal pins the q283 shape, which is the
+// one the token-coverage rule could not see: the delivered value's tokens were
+// each present in the haystack, but in DIFFERENT documents. The run had the page
+// that says "a clone of security officer Zimri Elder" and shipped `Zimri Eder` -
+// one letter off the gold - and the precheck read it as grounded, so the audit
+// never had a reason to send it back.
+func TestAnswerValueIsGroundedTokensMustBeLocal(t *testing.T) {
+	hay := "<chunk chunk_id=c1>The Persistence challenges you, a clone of security officer Zimri Elder, to survive aboard a doomed starship.</chunk>\n" +
+		"<chunk chunk_id=c2>Eder is a surname recorded in several European countries, and unrelated to this question.</chunk>"
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"the misspelled gold must NOT read as grounded", "Zimri Eder", false},
+		{"the corpus spelling is grounded", "Zimri Elder", true},
+		{"head present, middle inserted by the corpus", "Zimri Elder", true},
+		{"a token from another document's neighbourhood", "Zimri surname", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := answerValueIsGrounded(tc.value, hay); got != tc.want {
+				t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+	// The window is a window, not a sentence: a value whose tokens sit a few
+	// words apart in one source is still grounded.
+	wide := "<chunk chunk_id=c1>The Wexford Ballast Bank, a public house in Wexford town, Ireland, is a landmark.</chunk>"
+	if !answerValueIsGrounded("Wexford Ballast Bank", wide) {
+		t.Error("tokens within one window must stay grounded")
+	}
+}

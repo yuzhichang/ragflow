@@ -488,26 +488,80 @@ func answerValueIsGrounded(value, haystack string) bool {
 	if len(tokens) < 2 {
 		return false
 	}
-	longest := tokens[0]
-	for _, token := range tokens {
-		if len(token) > len(longest) {
-			longest = token
+	// Locality, not just token coverage. The rule above asks whether each token
+	// appears SOMEWHERE in the haystack, and the haystack is every chunk the run
+	// read - so a value can be assembled from tokens that never share a document.
+	// q283 shipped `Zimri Eder` for the gold `Zimri Elder` WITH the right page in
+	// hand ("a clone of security officer Zimri Elder"): "Zimri" came from that
+	// page and "Eder" from somewhere else in the haystack, both were "grounded",
+	// and the audit PASSed a misspelled gold. The tokens must therefore occur IN
+	// ORDER inside one window, the head (the last token - what the entity IS) may
+	// never be the missing one, and at most ONE non-final token may be missing,
+	// which keeps the middle-omission allowance intact (q784's "Jacqueline
+	// Georgette Cantrelle" over the corpus's "Jacqueline Cantrelle").
+	return valueTokensAppearNearby(strings.Fields(normalizeForMatch(haystack)), tokens)
+}
+
+// groundingWindowSlack is how many words a sliding match may span beyond the
+// value's own length: the slack absorbs the words a source inserts between the
+// value's tokens (a title, an epithet, the middle name the VALUE omits).
+const groundingWindowSlack = 4
+
+// valueTokensAppearNearby reports whether tokens occur in words in order, inside
+// one window, with at most one skipped NON-FINAL token and the final one matched.
+//
+// It is a forward pass over the window with the state (matched, skipped) rather
+// than a greedy walk, because the two admissible moves conflict: at "Jacqueline
+// Cantrelle" the token `cantrelle` must be held for the head while `georgette`
+// (the value's own middle token) is the one skipped. A greedy matcher that skips
+// the value's token on the first mismatch eats the head and rejects the q784 gold.
+func valueTokensAppearNearby(words, tokens []string) bool {
+	last := len(tokens) - 1
+	span := last + groundingWindowSlack
+	reach := make([][2]bool, len(tokens)+1)
+	for start := 0; start < len(words); start++ {
+		if words[start] != tokens[0] {
+			continue
+		}
+		end := start + span + 1
+		if end > len(words) {
+			end = len(words)
+		}
+		for i := range reach {
+			reach[i] = [2]bool{}
+		}
+		reach[1][0] = true
+		for j := start + 1; j < end; j++ {
+			// Skipping a value's own token consumes NO haystack word, so it has to
+			// be closed over BEFORE the word at this position is matched: otherwise
+			// the match of `cantrelle` is only ever tried while the state still
+			// expects `georgette`, and the two moves that q784 needs (omit the
+			// middle token, then match the head) can never combine.
+			for i := 0; i < last; i++ {
+				if reach[i][0] {
+					reach[i+1][1] = true
+				}
+			}
+			next := make([][2]bool, len(tokens)+1)
+			for i := 0; i <= len(tokens); i++ {
+				for skipped := 0; skipped < 2; skipped++ {
+					if !reach[i][skipped] {
+						continue
+					}
+					// The corpus may insert words the value does not carry.
+					next[i][skipped] = true
+					if i < len(tokens) && words[j] == tokens[i] {
+						next[i+1][skipped] = true
+					}
+				}
+			}
+			reach = next
+			if reach[len(tokens)][0] || reach[len(tokens)][1] {
+				return true
+			}
 		}
 	}
-	if !strings.Contains(spacedHay, " "+longest+" ") {
-		return false
-	}
-	head := tokens[len(tokens)-1]
-	if !strings.Contains(spacedHay, " "+head+" ") {
-		return false
-	}
-	missing := 0
-	for _, token := range tokens {
-		if !strings.Contains(spacedHay, " "+token+" ") {
-			missing++
-		}
-	}
-	return missing <= 1
+	return false
 }
 
 // locateToolNames are the tools whose calls the Candidate Matrix's `Searched:`

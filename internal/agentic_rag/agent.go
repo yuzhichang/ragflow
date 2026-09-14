@@ -1151,7 +1151,12 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		// short-circuits, and no audit at all on more than half the set).
 		prechecks := collectGatePrechecks(question, shipped, final, groundingHaystack)
 		if len(prechecks) > 0 {
-			countGateRejection(in.audit)
+			// NOT countGateRejection: the gate does not refuse here any more, the
+			// auditor rules on these suspicions in the same pass. Counting them as
+			// refusals made every archived row claim the gate refused deliverables it
+			// audited - q323's row read `rejections=7` against seven precheck rounds
+			// and no refusal at all, and q350/q223 the same (3 and 8). The kinds are
+			// recorded separately, which is what the number was being read for.
 			countGatePrechecks(in.audit, precheckKinds(prechecks))
 			common.InfoCtx(ctx, "agentic_rag: delivery gate prechecks (the audit decides)",
 				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks))
