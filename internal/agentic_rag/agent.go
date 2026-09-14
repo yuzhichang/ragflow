@@ -130,6 +130,13 @@ type Input struct {
 type GateAuditRecord struct {
 	Suspects []int `json:"suspects,omitempty"`
 	Passed   bool  `json:"passed"`
+	// Rejections counts the deliverables the gate refused BEFORE an audit ran —
+	// an ungrounded value, a list-only name, a value-less answer line, an
+	// answer-less continuation. Without it, a run whose gate never reached the
+	// auditor (both q350 and q784 short-circuited this way) carried an EMPTY
+	// Suspects on a never-PASSed deliverable, which read as "nothing to report"
+	// and let a `Final Answer` label survive unaudited.
+	Rejections int `json:"rejections,omitempty"`
 }
 
 // defaultMaxIterations caps the ReAct loop before the agent must answer. It is
@@ -716,7 +723,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// PASSED. When the gate stopped on a stall, a budget or the clock, the
 	// claim is demoted to `Guessed Answer` - the value is untouched (that is
 	// what the judge scores), only the confidence claim is corrected.
-	if in.GateAudit != nil && len(in.GateAudit.Suspects) > 0 && !in.GateAudit.Passed {
+	if shouldDemoteFinalAnswer(in.GateAudit) {
 		if demoted, changed := demoteFinalAnswerLabel(final, "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"); changed {
 			common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer (audit did not pass)")
 			final = demoted
@@ -791,6 +798,27 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// several competing "Final Answer" blocks.
 	emit(ctx, in.OnDelta, final, "")
 	return final, runErr
+}
+
+// shouldDemoteFinalAnswer reports whether the run's `Final Answer` claim has to
+// fall back to `Guessed Answer`: the gate never concluded PASS and it has
+// SOMETHING on record — an audit verdict (Suspects) or a deliverable it refused
+// before an audit could run (Rejections). Without the Rejections arm a run whose
+// gate short-circuited pre-audit shipped an unaudited `Final Answer`.
+func shouldDemoteFinalAnswer(audit *GateAuditRecord) bool {
+	if audit == nil || audit.Passed {
+		return false
+	}
+	return len(audit.Suspects) > 0 || audit.Rejections > 0
+}
+
+// countGateRejection records a deliverable the gate refused before any audit
+// ran, so "the gate never concluded PASS" survives into the label governance
+// and the benchmark's accounting even when the auditor never got a turn.
+func countGateRejection(audit *GateAuditRecord) {
+	if audit != nil {
+		audit.Rejections++
+	}
 }
 
 // gateNoProgressLimit bounds CONSECUTIVE repair attempts that fail to advance
@@ -937,6 +965,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			// auditing a claim that has no evidence behind it.
 			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected an ungrounded answer value",
 				zap.Int("pass", pass+1), zap.String("value", shipped))
+			countGateRejection(in.audit)
 			directive = ("The value on your answer line (" + shipped + ") appears in NO chunk you have read: nothing " +
 				"you retrieved contains it, so it cannot be a corpus-supported answer. Do NOT re-render the same matrix. " +
 				"Run at least one NEW retrieval with a different anchor first - the rarest proper noun of the question " +
@@ -952,6 +981,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			// the pass; send it back for the property's own sentence.
 			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected a list-only answer value",
 				zap.Int("pass", pass+1), zap.String("value", shipped))
+			countGateRejection(in.audit)
 			directive = reason
 		} else if strings.TrimSpace(final) != "" && hasFOSStructure(final) && shipped == "" {
 			// A deliverable that carries no answer VALUE is not shippable:
@@ -963,6 +993,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			// different film from the body). Repair instead of shipping.
 			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected a value-less answer line",
 				zap.Int("pass", pass+1))
+			countGateRejection(in.audit)
 			directive = ("Your FINAL message has a Final/Guessed Answer heading that carries NO value. " +
 				"Restate it on ONE line in the exact shape `Final Answer: **<value>**` " +
 				"(or `Guessed Answer: **<value>** (assumption: ...)` when the value rests on an assumption), " +
@@ -1099,6 +1130,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 					"`## Reasoning Chain`, and the LAST line `Final Answer: **<value>**` or " +
 					"`Guessed Answer: **<value>** (assumption: ...)` - a bare answer line or any narration " +
 					"instead of the deliverable is discarded again.")
+				countGateRejection(in.audit)
 				common.InfoCtx(ctx, "agentic_rag: delivery gate rejected answer-less continuation",
 					zap.Int("pass", pass+1),
 					// Preview of what was discarded: without it there is no way

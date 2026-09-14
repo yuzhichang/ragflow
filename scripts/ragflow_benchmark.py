@@ -1119,6 +1119,16 @@ def _calibration_bin_size(lb_cfg: dict[str, Any]) -> int:
     return max(1, size)
 
 
+def _gate_audit_rejections(row: dict[str, Any]) -> int | None:
+    """How many deliverables the gate refused BEFORE an audit ran (ungrounded
+    value, list-only name, value-less line, answer-less continuation). A run
+    with rejections and no suspects never reached the auditor."""
+    audit = row.get("gate_audit")
+    if not isinstance(audit, dict):
+        return None
+    return _as_int(audit.get("rejections"))
+
+
 def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]) -> dict[str, Any]:
     """Per-question token and time cost, straight from the backend's run
     accounting plus the client-side wall clock the answer phase records."""
@@ -1155,6 +1165,7 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         # verdict. None when the backend did not report gate_audit.
         "audit_suspects": _gate_audit_suspects(row),
         "audit_passed": _gate_audit_passed(row),
+        "audit_rejections": _gate_audit_rejections(row),
         # Chunk-read depth split (None when the backend did not report it):
         # deep = full chunk content the model read, shallow = snippet windows
         # only. Together they show where a run's context weight came from.
@@ -1446,10 +1457,15 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
     gate_audit = source.get("gate_audit")
     if isinstance(gate_audit, dict):
         suspects = gate_audit.get("suspects")
-        if isinstance(suspects, list):
+        rejections = _as_int(gate_audit.get("rejections"))
+        # Keep the record when EITHER signal is present: a gate that refused
+        # every deliverable before an audit could run reports no suspects at
+        # all, and dropping the record hid exactly that state (q350/q784).
+        if isinstance(suspects, list) or rejections is not None:
             stats["gate_audit"] = {
-                "suspects": [_as_int(s) for s in suspects],
+                "suspects": [_as_int(s) for s in suspects] if isinstance(suspects, list) else None,
                 "passed": bool(gate_audit.get("passed")),
+                "rejections": rejections,
             }
 
     return stats

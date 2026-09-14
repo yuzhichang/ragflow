@@ -96,3 +96,34 @@ func TestNamePropertyHint(t *testing.T) {
 		t.Fatalf("non-property questions get no hint, got %q", got)
 	}
 }
+
+// TestShouldDemoteFinalAnswer pins the label-governance condition after the
+// Rejections arm was added: a gate that refused deliverables pre-audit (empty
+// Suspects) must still demote, or an unaudited `Final Answer` ships.
+func TestShouldDemoteFinalAnswer(t *testing.T) {
+	cases := []struct {
+		name  string
+		audit *GateAuditRecord
+		want  bool
+	}{
+		{"no record", nil, false},
+		{"audited and passed", &GateAuditRecord{Suspects: []int{0}, Passed: true}, false},
+		{"audited, suspects left", &GateAuditRecord{Suspects: []int{3}, Passed: false}, true},
+		{"never audited, but refused", &GateAuditRecord{Rejections: 4, Passed: false}, true},
+		{"clean run", &GateAuditRecord{Passed: false}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldDemoteFinalAnswer(tc.audit); got != tc.want {
+				t.Fatalf("shouldDemoteFinalAnswer = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	rec := &GateAuditRecord{}
+	countGateRejection(rec)
+	countGateRejection(rec)
+	countGateRejection(nil) // must not panic
+	if rec.Rejections != 2 {
+		t.Fatalf("Rejections = %d, want 2", rec.Rejections)
+	}
+}

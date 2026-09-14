@@ -334,7 +334,37 @@ func answerValueIsGrounded(value, haystack string) bool {
 	if !strings.ContainsAny(value, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") {
 		return true // numeric/derived: exempt
 	}
-	return strings.Contains(" "+normalizeForMatch(haystack)+" ", " "+normalizeForMatch(value)+" ")
+	spacedHay := " " + normalizeForMatch(haystack) + " "
+	if strings.Contains(spacedHay, " "+normalizeForMatch(value)+" ") {
+		return true
+	}
+	// Token coverage: a value that is MORE complete than the corpus wording — a
+	// middle name the source omitted, a formal title, an accent-free spelling —
+	// must not read as unsupported, or a CORRECT answer gets sent back. On q784
+	// the gold "Jacqueline Georgette Cantrelle" was refused nine times because
+	// the corpus only ever wrote "Jacqueline Cantrelle". Grounded when the most
+	// distinctive token (the longest — usually the surname) occurs and at most
+	// one other token is missing.
+	tokens := strings.Fields(normalizeForMatch(value))
+	if len(tokens) < 2 {
+		return false
+	}
+	longest := tokens[0]
+	for _, token := range tokens {
+		if len(token) > len(longest) {
+			longest = token
+		}
+	}
+	if !strings.Contains(spacedHay, " "+longest+" ") {
+		return false
+	}
+	present := 0
+	for _, token := range tokens {
+		if strings.Contains(spacedHay, " "+token+" ") {
+			present++
+		}
+	}
+	return present >= len(tokens)-1
 }
 
 // auditPayload is the ONE JSON object answer_auditor audits: the producer's
