@@ -342,9 +342,17 @@ func answerValueIsGrounded(value, haystack string) bool {
 	// middle name the source omitted, a formal title, an accent-free spelling —
 	// must not read as unsupported, or a CORRECT answer gets sent back. On q784
 	// the gold "Jacqueline Georgette Cantrelle" was refused nine times because
-	// the corpus only ever wrote "Jacqueline Cantrelle". Grounded when the most
-	// distinctive token (the longest — usually the surname) occurs and at most
-	// one other token is missing.
+	// the corpus only ever wrote "Jacqueline Cantrelle".
+	//
+	// The allowance absorbs a MIDDLE omission and nothing else: the value's LAST
+	// token is its head, the noun that says what the entity IS, so a value whose
+	// head the corpus never writes with the rest is a DIFFERENT entity rather
+	// than a fuller spelling of one. Observed on #71: a deliverable shipped "The
+	// Ballast Bank Bar" over a chunk about "The Wexford Ballast Bank", and with
+	// the tail optional three of four tokens present passed the check — the
+	// audit concluded PASS and the answering step was never sent back to fix it.
+	// A differently headed form now goes back for repair, and the repair turn
+	// restates it the way the corpus writes it, which is the fix the run owes.
 	tokens := strings.Fields(normalizeForMatch(value))
 	if len(tokens) < 2 {
 		return false
@@ -358,13 +366,17 @@ func answerValueIsGrounded(value, haystack string) bool {
 	if !strings.Contains(spacedHay, " "+longest+" ") {
 		return false
 	}
-	present := 0
+	head := tokens[len(tokens)-1]
+	if !strings.Contains(spacedHay, " "+head+" ") {
+		return false
+	}
+	missing := 0
 	for _, token := range tokens {
-		if strings.Contains(spacedHay, " "+token+" ") {
-			present++
+		if !strings.Contains(spacedHay, " "+token+" ") {
+			missing++
 		}
 	}
-	return present >= len(tokens)-1
+	return missing <= 1
 }
 
 // auditPayload is the ONE JSON object answer_auditor audits: the producer's

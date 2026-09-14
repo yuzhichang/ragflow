@@ -697,3 +697,31 @@ func TestGateRunAuditNilAuditorErrors(t *testing.T) {
 		t.Fatal("gateRunAudit with a nil auditor should error")
 	}
 }
+
+// TestAnswerValueIsGroundedTailIsNotOptional pins the class-2 boundary: the
+// middle-omission allowance exists so a MORE complete value is not refused
+// (q784's "Jacqueline Georgette Cantrelle" over a corpus that only wrote
+// "Jacqueline Cantrelle"), but it must not absorb a swapped HEAD — the last
+// token is what the entity IS, and #71 shipped "The Ballast Bank Bar" over a
+// chunk about "The Wexford Ballast Bank" with three of four tokens present.
+func TestAnswerValueIsGroundedTailIsNotOptional(t *testing.T) {
+	hay := "The Wexford Ballast Bank is a public house in Wexford town, Ireland. " +
+		"Jacqueline Cantrelle was a French musician born in Paris."
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"verbatim value", "The Wexford Ballast Bank", true},
+		{"middle omitted (the q784 shape)", "Jacqueline Georgette Cantrelle", true},
+		{"head swapped (the #71 shape)", "The Ballast Bank Bar", false},
+		{"head absent, two others missing", "Ballast Bank Dundalk Arms", false},
+		{"single token that is present", "Wexford", true},
+		{"single token that is absent", "Dundalk", false},
+	}
+	for _, tc := range cases {
+		if got := answerValueIsGrounded(tc.value, hay); got != tc.want {
+			t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
