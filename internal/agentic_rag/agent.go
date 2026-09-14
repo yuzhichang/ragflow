@@ -1187,25 +1187,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				"answering: an answer drawn from memory instead of the corpus is not acceptable, and " +
 				"ending the turn on narration or on another tool call leaves the user with nothing.")
 		} else {
-			directive = fmt.Sprintf("Your FINAL message failed the pipeline's mandatory answer auditor "+
-				"(%d suspect item(s)):\n%s\nFix every item whose audit opinion is not `pass` before shipping: "+
-				"keep retrieving or list_chunks-read the flagged line, repair or drop it, re-derive the answer "+
-				"from the supported steps, and re-render the COMPLETE FOS FINAL message (## Candidate Matrix, "+
-				"## Reasoning Chain, and the Final/Guessed Answer line). If the audit reported schema integrity "+
-				"(missing candidate_matrix / reasoning_chain / answer), render the full deliverable now. "+
-				"If the audit reported `retrieval breadth insufficient`, do NOT re-render the same matrix: "+
-				"decompose the question into its rarest distinctive terms (proper nouns, unique titles, exact "+
-				"dates) and run one SHORT keyword query per term - long multi-clue paraphrases do not match "+
-				"the corpus's wording. "+
-				// Lever 3: a repair that only re-renders the matrix is the
-				// observed failure shape - the suspect count sits flat or
-				// climbs because the anchor never moved. Once a repair has
-				// already failed, require NEW evidence before any re-render.
-				anchorDemand(len(suspectHist), suspectHist)+
-				"Citation-field repairs: call list_chunks for the cited chunk_id and OVERWRITE the line's "+
-				"fields with what the tool actually returns - never guess an identifier from memory; a value "+
-				"you cannot look up must be dropped, not invented. Never leave an item whose opinion is not "+
-				"`pass` in the deliverable.", auditSuspectCount(verdict), verdict)
+			directive = auditRepairDirective(auditSuspectCount(verdict), verdict, suspectHist)
 		}
 		// Repair loop: retry IN PLACE until the deliverable ADVANCES. An
 		// attempt that aborted, went silent, or ended in narration leaves the
@@ -1336,6 +1318,55 @@ func runRepairAttempt(
 // because the retrieval anchor never moved, so the repair buys audit rounds
 // without buying evidence. From the second failed audit on, a repair turn must
 // open with new retrieval, and a turn with no new `Searched` line is rejected.
+// auditRepairDirective is the instruction the gate hands back to the producer after an
+// audit FAIL: what to fix, in what order, and - since q221 - what NOT to touch.
+//
+// It is a function rather than an inline literal because the rules it carries are
+// behavioural contracts (repair the record and not the conclusion; a stalled suspect
+// count needs NEW evidence rather than a re-render) and are pinned by tests, the same
+// way anchorDemand is.
+func auditRepairDirective(suspects int, verdict string, hist []int) string {
+	directive := fmt.Sprintf("Your FINAL message failed the pipeline's mandatory answer auditor "+
+		"(%d suspect item(s)):\n%s\nFix every item whose audit opinion is not `pass` before shipping: "+
+		"keep retrieving or list_chunks-read the flagged line, repair or drop it, re-derive the answer "+
+		"from the supported steps, and re-render the COMPLETE FOS FINAL message (## Candidate Matrix, "+
+		"## Reasoning Chain, and the Final/Guessed Answer line). If the audit reported schema integrity "+
+		"(missing candidate_matrix / reasoning_chain / answer), render the full deliverable now. "+
+		"If the audit reported `retrieval breadth insufficient`, do NOT re-render the same matrix: "+
+		"decompose the question into its rarest distinctive terms (proper nouns, unique titles, exact "+
+		"dates) and run one SHORT keyword query per term - long multi-clue paraphrases do not match "+
+		"the corpus's wording. "+
+		// Lever 3: a repair that only re-renders the matrix is the
+		// observed failure shape - the suspect count sits flat or
+		// climbs because the anchor never moved. Once a repair has
+		// already failed, require NEW evidence before any re-render.
+		anchorDemand(len(hist), hist)+
+
+		// (c) Repair the RECORD, not the conclusion. The cheapest repair
+		// observed is a SWAP: q221 shipped "Opium: A Portrait of the
+		// Heavenly Demon" under `Final Answer` right after the auditor pushed
+		// the producer off a weakness-based elimination of the gold - a PASS
+		// bought by weakening the answer, strictly worse than the FAIL it
+		// replaced. A grounded rival that cannot be refuted is a declared
+		// TIE, never a promotion by default.
+		"REPAIR THE RECORD, NOT THE CONCLUSION: an audit opinion is a claim about the RECORD - a field, "+
+		"a snippet, an unsupported step, an untested rival, a constraint that is not established - and it is "+
+		"NEVER on its own a reason to change which candidate you retain or which value you ship. Do NOT "+
+		"swap the retained candidate or the answer value to make a complaint disappear: a deliverable "+
+		"re-decided against its own evidence can pass the same auditor and then ships the WEAKER answer "+
+		"under the SAME label, which is worse than the FAIL it replaces. Change the value ONLY when an "+
+		"opinion names evidence AGAINST the current candidate (a chunk that contradicts it, a constraint "+
+		"it fails), and carry that evidence on the new line. When a GROUNDED rival cannot be refuted, the "+
+		"lawful outcome is a DECLARED TIE (a `(tie: ...)` clause per rival on the answer line), never a "+
+		"silent swap; a rival that is ungrounded is eliminated for ABSENCE with the named search that "+
+		"showed it, never promoted. "+
+		"Citation-field repairs: call list_chunks for the cited chunk_id and OVERWRITE the line's "+
+		"fields with what the tool actually returns - never guess an identifier from memory; a value "+
+		"you cannot look up must be dropped, not invented. Never leave an item whose opinion is not "+
+		"`pass` in the deliverable.", suspects, verdict)
+	return directive
+}
+
 func anchorDemand(failures int, hist []int) string {
 	if failures < 2 {
 		return ""

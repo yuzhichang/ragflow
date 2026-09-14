@@ -232,6 +232,14 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		"tie contradicted by cited chunk",
 		"Final Answer claims a tie",
 		"tie written as two answers",
+		// (b)+(a): a Tested line must state the candidate's fitness (a
+		// bibliography line merely names it), and an elimination may not hide
+		// inside one — q221's audit PASSed a deliverable whose value rested on
+		// the citation line of the rival it silently promoted.
+		"Tested line merely names the candidate",
+		"elimination disguised as a Tested line",
+		"elimination line names no candidate",
+		"citation line cannot support a clue",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)
@@ -250,6 +258,8 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 			"a named, grounded rival you cannot refute is RETAINED",
 			"once per rival",
 			"EVERY tied candidate must be GROUNDED",
+			"asserting SUPPORT",
+			"elimination argument NEVER rides on a",
 		} {
 			if !strings.Contains(tmpl.Content, want) {
 				t.Errorf("%s: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", id, want)

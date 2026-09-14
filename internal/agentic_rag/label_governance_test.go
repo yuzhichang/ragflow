@@ -295,3 +295,43 @@ func TestDemoteFinalAnswerKeepsTieParseable(t *testing.T) {
 		t.Errorf("demoted deliverable must carry the Guessed label and the gate's reason:\n%s", got)
 	}
 }
+
+// TestAuditRepairDirective pins the instruction the gate hands the producer after
+// an audit FAIL. Two rules ride in it, and both cost a whole pass when they are
+// missing:
+//
+//   - Lever 3 (unchanged): a repair after TWO failures must open with new
+//     retrieval on a different anchor — re-rendering the same matrix leaves the
+//     suspect count flat or climbing.
+//   - (c) Repair the RECORD, not the conclusion: q221 shipped "Opium: A Portrait
+//     of the Heavenly Demon" under `Final Answer` right after the auditor pushed
+//     it off a weakness-based elimination of the gold, i.e. a PASS bought by
+//     swapping the answer. The directive must forbid that swap by name, and send
+//     a grounded-but-unrefutable rival to a declared TIE instead.
+func TestAuditRepairDirective(t *testing.T) {
+	early := auditRepairDirective(2, "Audit Result: FAIL (2 suspects)\n  - audit: suspect: competing slot-filler never tested", []int{2})
+	if strings.Contains(early, "ANCHOR CHANGE REQUIRED") {
+		t.Error("the anchor demand must not fire on the first failure — it would forbid a repair before one was tried")
+	}
+	for _, want := range []string{
+		"REPAIR THE RECORD, NOT THE CONCLUSION",
+		"a `(tie: ...)` clause per rival on the answer line",
+		"eliminated for ABSENCE",
+		"(2 suspect item(s))",
+		// The verdict rides along verbatim: the producer repairs the lines the
+		// auditor named, not a paraphrase of them.
+		"competing slot-filler never tested",
+	} {
+		if !strings.Contains(early, want) {
+			t.Errorf("repair directive must carry %q", want)
+		}
+	}
+
+	stalled := auditRepairDirective(3, "Audit Result: FAIL (3 suspects)", []int{5, 4, 6})
+	if !strings.Contains(stalled, "ANCHOR CHANGE REQUIRED") {
+		t.Error("a repair after two failures must demand new evidence on a different anchor")
+	}
+	if !strings.Contains(stalled, "5 -> 4 -> 6") {
+		t.Errorf("the directive must show the suspect trend it is reacting to, got:\n%s", stalled)
+	}
+}
