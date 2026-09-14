@@ -17,12 +17,13 @@
     "llm": "MiniMax-M3",
     "retriever": "RAGFlow agentic retrieval (hybrid BM25 + BAAI/bge-m3 vector, ReAct loop over the fixed 94k-page BrowseComp-Plus corpus)",
     "link": "https://github.com/infiniflow/ragflow",
-    "evaluation_date": "2026-09-05",
+    "evaluation_date": "2026-09-08",
     "search_tools": [
       "search_chunks",
       "grep_chunks",
       "search_bm25_chunks",
       "search_semantic_chunks"
+
     ],
     "calibration_bin_size": 100
   },
@@ -38,54 +39,8 @@
   },
   "question_ids": {
     "include": [],
-    "random": 100,
-    "exclude": [
-      55,
-      67,
-      86,
-      122,
-      140,
-      153,
-      156,
-      238,
-      256,
-      280,
-      284,
-      366,
-      372,
-      376,
-      405,
-      410,
-      428,
-      481,
-      502,
-      506,
-      509,
-      513,
-      525,
-      540,
-      671,
-      695,
-      731,
-      732,
-      749,
-      775,
-      801,
-      804,
-      809,
-      811,
-      910,
-      996,
-      1034,
-      1053,
-      1060,
-      1111,
-      1149,
-      1155,
-      1184,
-      1188,
-      1220
-    ]
+    "random": 0,
+    "exclude": []
   },
   "annotations": {
     "passed": [
@@ -235,5 +190,10 @@
         "note": "Counts are final state after the 20260831_120153 rerun. 111 judged questions total."
       }
     }
-  }
+  },
+  "judge_llm_ids": [
+    "639286668fd611f18a8527a64e461315",
+    "80007a388fd611f18a8527a64e461315",
+    "5c96bd9d88a84eda833b0b99f89b41d9"
+  ]
 }

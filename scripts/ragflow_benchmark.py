@@ -242,7 +242,7 @@ confidence: The extracted confidence score between 0|\%| and 100|\%| from [respo
 # list_chunks is the deep read (BrowseComp-Plus calls it get_document) - it
 # opens a document the agent already located, so it is reported separately in
 # avg_tool_stats but does not inflate the search count.
-DEFAULT_SEARCH_TOOLS = ("search_chunks", "grep_chunks", "search_bm25_chunks")
+DEFAULT_SEARCH_TOOLS = ("search_chunks", "search_semantic_chunks", "grep_chunks", "search_bm25_chunks")
 
 # Official script: calibration error needs at least this many scored
 # confidences, otherwise it is reported as 0.0 with a warning.
