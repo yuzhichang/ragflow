@@ -411,3 +411,96 @@ func TestGovernAnswerLabel(t *testing.T) {
 		t.Errorf("the tie must survive governance untouched, got %v", ties)
 	}
 }
+
+// TestIsCitationShapedSnippet pins the three signals that separate a
+// bibliographic entry from prose that merely mentions a work.
+func TestIsCitationShapedSnippet(t *testing.T) {
+	cases := []struct {
+		name   string
+		snip   string
+		want   bool
+		reason string
+	}{
+		{
+			name: "finding-aid Sources entry",
+			snip: "Hodgson, Barbara. Opium: A Portrait of the Heavenly Demon. San Francisco: Chronicle Books. 1999.",
+			want: true,
+		},
+		{
+			name: "entry with a comma before the year",
+			snip: "Hodgson, Barbara. In the Arms of Morpheus: The Tragic History of Laudanum, Morphine, and Patent Medicines. Vancouver: Greystone Books, 2001.",
+			want: true,
+		},
+		{
+			// Prose that satisfies the opener and the closing year but has no
+			// `Author. Title.` skeleton: one sentence, not an entry.
+			name: "prose mentioning an author and a year",
+			snip: "Hodgson, Barbara wrote Opium in 1999.",
+			want: false,
+		},
+		{
+			name: "the scope sentence that names both books",
+			snip: "Many of the items were reproduced in Hodgson's non-fiction publications In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines (2001) and Opium: A Portrait of the Heavenly Demon (1999).",
+			want: false,
+		},
+		{
+			name: "the publisher blurb",
+			snip: "In the Arms of Morpheus is the shocking story of how a simple but bewitching substance touted as a miracle drug enslaved unwitting generations, 1901 included.",
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isCitationShapedSnippet(tc.snip); got != tc.want {
+				t.Errorf("isCitationShapedSnippet(%q) = %v, want %v %s", tc.snip, got, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+// TestCitationOnlyGroundings pins the mechanical sibling check on the shape the
+// passing q221 deliveries actually had (y1): both family members "supported" by
+// bibliographic entries from the SAME Sources chunk, decided afterwards by title
+// preference. The auditor is asked to catch this and often does — this check does
+// not depend on the round.
+func TestCitationOnlyGroundings(t *testing.T) {
+	citationB := `Tested: "Opium: A Portrait of the Heavenly Demon" (1999) - clue [1, 2, 3] supported (doc: 59224.md, doc_id: e66d61a91653453d8ad81f9e6c65bf52, chunk_id: a8d8adae46b0e123, snippet: "Hodgson, Barbara. Opium: A Portrait of the Heavenly Demon. San Francisco: Chronicle Books. 1999.")`
+	citationA := `Tested: "In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines" (2001) - also supported (doc: 59224.md, doc_id: e66d61a91653453d8ad81f9e6c65bf52, chunk_id: a8d8adae46b0e123, snippet: "Hodgson, Barbara. In the Arms of Morpheus: The Tragic History of Laudanum, Morphine, and Patent Medicines. Vancouver: Greystone Books, 2001.")`
+
+	got := citationOnlyGroundings(strings.Join([]string{"## Candidate Matrix", "### Sub-question 4: the book", citationB, citationA, `Retained: "Opium: A Portrait of the Heavenly Demon"`}, "\n"))
+	if len(got) != 2 {
+		t.Fatalf("citationOnlyGroundings = %v, want both candidate lines", got)
+	}
+	for _, want := range []string{"Opium: A Portrait of the Heavenly Demon", "In the Arms of Morpheus", "a8d8adae46b0e123"} {
+		joined := strings.Join(got, " | ")
+		if !strings.Contains(joined, want) {
+			t.Errorf("the rejection must name %q, got %v", want, got)
+		}
+	}
+	// The directive must send the producer to a chunk that STATES the claim, and
+	// must offer the sibling/tie outcomes rather than a title preference.
+	dir := citationGroundingDirective(got)
+	for _, want := range []string{"BIBLIOGRAPHIC ENTRY", "TEXT states the claim", "DECLARED TIE", "states a sibling's"} {
+		if !strings.Contains(dir, want) {
+			t.Errorf("directive must carry %q, got:\n%s", want, dir)
+		}
+	}
+
+	// A properly grounded line is untouched: the blurb STATES the work's subject.
+	blurb := `Tested: "In the Arms of Morpheus" - clue [1] supported (doc: 22894.md, chunk_id: f7838c11ad90d0ac, snippet: "In the Arms of Morpheus is the shocking story of how a simple but bewitching substance touted as a miracle drug enslaved unwitting generations. Extracted from opium, the sap of the poppy, Opium was welcomed into the homes of rich and poor alike under the guise of medical use in the form of laudanum and patent medicines.")`
+	if got := citationOnlyGroundings(blurb); len(got) != 0 {
+		t.Errorf("a chunk that states the subject must pass, got %v", got)
+	}
+	// A citation carried by a line about the YEAR is not this defect: the entry's
+	// own date can genuinely be that line's evidence.
+	yearLine := `Tested: 2001 - clue [2] publication year (doc: 59224.md, chunk_id: a8d8adae46b0e123, snippet: "Hodgson, Barbara. In the Arms of Morpheus: The Tragic History of Laudanum, Morphine, and Patent Medicines. Vancouver: Greystone Books, 2001.")`
+	if got := citationOnlyGroundings(yearLine); len(got) != 0 {
+		t.Errorf("a numeric candidate must be exempt from the citation check, got %v", got)
+	}
+	// The scope sentence names both books without stating either one's fitness: the
+	// audit-side sibling rule owns that shape, not this check.
+	scope := `Tested: "Opium: A Portrait of the Heavenly Demon" - book about opium (doc: 59224.md, chunk_id: e383712ea597e4ee, snippet: "Many of the items were reproduced in Hodgson's non-fiction publications In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines (2001) and Opium: A Portrait of the Heavenly Demon (1999).")`
+	if got := citationOnlyGroundings(scope); len(got) != 0 {
+		t.Errorf("a scope sentence is judged by the auditor, not by this check, got %v", got)
+	}
+}

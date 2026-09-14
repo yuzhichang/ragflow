@@ -155,6 +155,15 @@ type GateAuditRecord struct {
 	// `Final Answer`. It doubles as an operator signal: a per-question audit
 	// outage is a provider problem, not a reasoning one.
 	AuditFailures int `json:"audit_failures,omitempty"`
+	// CitationGroundings counts the deliverables the gate rejected because their
+	// candidate lines rested on a BIBLIOGRAPHIC ENTRY (a citation names a work and
+	// states nothing about it). It is the mechanical half of the sibling discipline:
+	// the auditor is ASKED to widen its read, but whether a round does it is up to
+	// the model, and 10 of 17 measured q221 runs shipped the wrong member of a
+	// two-book family — every one of them "grounded" by a citation line. Recorded
+	// separately from Rejections so a benchmark can tell a citation-only matrix from
+	// a missing-value one.
+	CitationGroundings int `json:"citation_groundings,omitempty"`
 	// AuditVerdicts holds an excerpt of EVERY audit verdict, oldest first, in
 	// step with Suspects. The counts alone say a curve moved 5→3→1→0 but never
 	// WHAT was contested, so a failure could only be explained by re-reading the
@@ -938,6 +947,14 @@ func shouldDemoteFinalAnswer(audit *GateAuditRecord) bool {
 // "the gate never concluded PASS" survives into the label governance even when
 // the gate exits on the error instead of on a verdict. See
 // GateAuditRecord.AuditFailures.
+// countCitationGrounding records a deliverable refused for grounding candidates on
+// citations only. See GateAuditRecord.CitationGroundings.
+func countCitationGrounding(audit *GateAuditRecord) {
+	if audit != nil {
+		audit.CitationGroundings++
+	}
+}
+
 func countGateAuditFailure(audit *GateAuditRecord) {
 	if audit != nil {
 		audit.AuditFailures++
@@ -1131,6 +1148,19 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				"(or `Guessed Answer: **<value>** (assumption: ...)` when the value rests on an assumption), " +
 				"where <value> is the single named answer - one entity/title/date, never a sentence, never empty. " +
 				"Re-render the COMPLETE FOS FINAL message (## Candidate Matrix, ## Reasoning Chain, then that line).")
+		} else if citing := citationOnlyGroundings(final); len(citing) > 0 {
+			// CITATION-GROUNDING CHECK (lever 2C, mechanical): a candidate whose cited
+			// support is a bibliographic entry is NAMED, not evidenced — and the same
+			// Sources chunk can name every sibling, which is how a family ends up
+			// "tested" twice and then decided by title preference. The auditor is told
+			// to catch this, but that is a model rule; this one is text-only and
+			// deterministic, so the pass is spent on the repair instead of on an audit
+			// that may or may not apply its own rule.
+			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected citation-only candidate grounding",
+				zap.Int("pass", pass+1), zap.Strings("lines", citing))
+			countGateRejection(in.audit)
+			countCitationGrounding(in.audit)
+			directive = citationGroundingDirective(citing)
 		} else if strings.TrimSpace(final) != "" {
 			// The gate audits the deliverable it actually holds — audit-target
 			// freshness is structural, not tracked. The question lives in the
