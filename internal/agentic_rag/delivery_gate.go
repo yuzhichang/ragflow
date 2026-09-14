@@ -184,6 +184,109 @@ func reconcileAnswerLabels(final string) string {
 	return strings.Join(lines, "\n")
 }
 
+var (
+	// namePropertyQuestionRe matches a question asking for a NAME PROPERTY — the
+	// kind of fact an enumeration can never establish.
+	namePropertyQuestionRe = regexp.MustCompile(`(?i)\b(birth name|full birth name|full name|given name|real name|maiden name|birth surname|née|né)\b`)
+	// propertyBeforeRe / propertyAfterRe match the phrasing that STATES such a
+	// property, applied to a window just before / after the value.
+	propertyBeforeRe = regexp.MustCompile(`(?i)(born|née|né|real name|birth ?name|given name|full name|maiden name|surname)\s*[:,\-]?\s*$`)
+	propertyAfterRe  = regexp.MustCompile(`(?i)^\s*[:,\-]?\s*(was born|is born|born)\b`)
+	// nameTokenRe counts name-like tokens in a window: a cast/crew list is a
+	// dense run of capitalized words, a prose sentence is not.
+	nameTokenRe = regexp.MustCompile(`\b[\p{Lu}][\p{Ll}\p{L}]{1,}\b`)
+)
+
+// listOnlyNameReason reports why a name-shaped answer must not ship: the
+// question asks for a name PROPERTY, and the value only ever appears as one
+// entry in an enumeration (a cast/crew/name list).
+//
+// A list names everyone in a film; it cannot state whose BIRTH NAME something
+// is, so any name in it "matches" equally — shipping one is a pick, not an
+// answer. Measured on q784: the gold name reached the model 7 times, the wrong
+// name 152 times, and the answer came out of a cast list.
+//
+// Returns "" whenever the check does not apply (not a name-property question, a
+// non-name value, or a value stated in a property context), so a prose answer is
+// never rejected by this lever.
+func listOnlyNameReason(question, value, haystack string) string {
+	if strings.TrimSpace(value) == "" || haystack == "" {
+		return ""
+	}
+	property := namePropertyQuestionRe.FindString(question)
+	if property == "" {
+		return "" // the question does not ask for a name property
+	}
+	// Name-shaped only: digits or long phrases are not a person's name, and the
+	// property argument does not apply to them.
+	if strings.ContainsAny(value, "0123456789") || len(strings.Fields(value)) > 6 {
+		return ""
+	}
+	hay := strings.ToLower(haystack)
+	needle := strings.ToLower(strings.TrimSpace(value))
+	if needle == "" {
+		return ""
+	}
+	inList := false
+	for scan := 0; scan < len(hay); {
+		offset := strings.Index(hay[scan:], needle)
+		if offset < 0 {
+			break
+		}
+		idx := scan + offset
+		scan = idx + len(needle)
+		// No word-boundary test here on purpose: the corpus glues list entries
+		// together (`...PerèsPierre Albert BrasseurHenri Hennery...`) when markup
+		// is stripped, so requiring a boundary would miss exactly the case this
+		// lever exists for.
+		beforeStart := idx - 60
+		if beforeStart < 0 {
+			beforeStart = 0
+		}
+		after := hay[idx+len(needle):]
+		if len(after) > 60 {
+			after = after[:60]
+		}
+		if propertyBeforeRe.MatchString(hay[beforeStart:idx]) || propertyAfterRe.MatchString(after) {
+			return "" // stated as the property: nothing to object to
+		}
+		if !inList && looksLikeEnumeration(haystack, idx, len(needle)) {
+			inList = true
+		}
+		// Keep scanning: a later occurrence may state the property properly.
+	}
+	if !inList {
+		return ""
+	}
+	return "The value on your answer line (" + value + ") appears only as one entry in an ENUMERATION " +
+		"(a cast/crew/name list). The question asks for the " + strings.ToLower(property) + ", and a list entry cannot " +
+		"state a " + strings.ToLower(property) + " - every name in that list would match equally, so this is a pick, not " +
+		"an answer. Do NOT re-render the same matrix. Find the sentence that STATES the property (shapes like " +
+		"`born <value>`, `<value>'s birth name was ...`, `née <value>`, `real name <value>`) and quote it, or ship " +
+		"`Guessed Answer: **" + value + "** (assumption: no chunk read states the " + strings.ToLower(property) + ")`."
+}
+
+// looksLikeEnumeration reports whether the window around a match reads as a list
+// rather than prose: either many separators, or a dense run of capitalized
+// (name-like) tokens. The corpus loses list separators when markup is stripped,
+// so the capitalized-run test carries the weight.
+func looksLikeEnumeration(haystack string, idx, length int) bool {
+	start := idx - 200
+	if start < 0 {
+		start = 0
+	}
+	end := idx + length + 200
+	if end > len(haystack) {
+		end = len(haystack)
+	}
+	window := haystack[start:end]
+	separators := strings.Count(window, ",") + strings.Count(window, ";") + strings.Count(window, "、") + strings.Count(window, "·")
+	if separators >= 4 {
+		return true
+	}
+	return len(nameTokenRe.FindAllString(window, -1)) >= 8
+}
+
 // normalizeForMatch folds text for a substring test: lowercase, drop markdown
 // emphasis and collapse whitespace.
 var nonWordRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)

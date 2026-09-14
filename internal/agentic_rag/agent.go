@@ -928,7 +928,8 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		// audits as soon as a deliverable exists.
 		verdict := ""
 		directive := ""
-		if shipped := finalAnswerValue(final); strings.TrimSpace(final) != "" && shipped != "" && !answerValueIsGrounded(shipped, groundingHaystack) {
+		shipped := finalAnswerValue(final)
+		if strings.TrimSpace(final) != "" && shipped != "" && !answerValueIsGrounded(shipped, groundingHaystack) {
 			// GROUNDING CHECK (lever 2): a named value that occurs in NO
 			// chunk the run read cannot be corpus-supported - it was
 			// synthesized. Send the agent back with a new anchor instead of
@@ -941,7 +942,16 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				"queried ALONE, or a grep_chunks co-occurrence regex over two clue terms - then rebuild the Candidate " +
 				"Matrix from what actually surfaces. If nothing supports any candidate, ship `Guessed Answer: **<value>** " +
 				"(assumption: ...)` naming what is unverified, or state the insufficiency explicitly.")
-		} else if strings.TrimSpace(final) != "" && hasFOSStructure(final) && finalAnswerValue(final) == "" {
+		} else if reason := listOnlyNameReason(lastUserQuestion(in.baseMessages), shipped, groundingHaystack); reason != "" {
+			// NAME-PROPERTY CHECK (lever 2B): the value is grounded - it occurs
+			// in a chunk that was read - but only as one entry in an
+			// enumeration, which cannot state the property the question asks for
+			// (whose birth name, whose real name). Auditing such a pick wastes
+			// the pass; send it back for the property's own sentence.
+			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected a list-only answer value",
+				zap.Int("pass", pass+1), zap.String("value", shipped))
+			directive = reason
+		} else if strings.TrimSpace(final) != "" && hasFOSStructure(final) && shipped == "" {
 			// A deliverable that carries no answer VALUE is not shippable:
 			// the FOS contract requires `Final Answer: **<value>**` (or the
 			// Guessed variant). Shipping one silently downgrades the run - the
