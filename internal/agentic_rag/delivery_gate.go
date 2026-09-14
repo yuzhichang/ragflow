@@ -566,23 +566,85 @@ func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
 }
 
 // auditPayload is the ONE JSON object answer_auditor audits: the producer's
-// complete FINAL message, verbatim. The question under audit is pinned into
-// the auditor's system prompt at construction time and never re-sent.
+// complete FINAL message, verbatim, plus the gate's own mechanical suspicions
+// about it. The question under audit is pinned into the auditor's system prompt
+// at construction time and never re-sent.
 type auditPayload struct {
 	FinalMessage string `json:"final_message"`
+	// GatePrechecks carries the gate's text-only reading of the deliverable (see
+	// collectGatePrechecks) as EVIDENCE for the auditor, not as a verdict: the
+	// auditor must rule on every entry, and what ships follows from its verdict.
+	GatePrechecks []string `json:"gate_prechecks,omitempty"`
 }
 
-// buildAuditPayload serializes the deliverable into answer_auditor's one-key
-// JSON - the same shape the audit contract advertises. It is a verbatim
-// passthrough, not an extraction: the auditor reads the FINAL message's own
-// md structure (## Candidate Matrix, ## Reasoning Chain, the Final/Guessed
-// Answer line) and echoes it back with audit opinions, so the gate must not
-// reshape or truncate it.
-func buildAuditPayload(final string) string {
-	b, err := json.Marshal(auditPayload{FinalMessage: final})
+// buildAuditPayload serializes the deliverable into answer_auditor's JSON - the
+// shape the audit contract advertises. It is a verbatim passthrough, not an
+// extraction: the auditor reads the FINAL message's own md structure (##
+// Candidate Matrix, ## Reasoning Chain, the Final/Guessed Answer line) and echoes
+// it back with audit opinions, so the gate must not reshape or truncate it.
+func buildAuditPayload(final string, prechecks []string) string {
+	b, err := json.Marshal(auditPayload{FinalMessage: final, GatePrechecks: prechecks})
 	if err != nil {
 		// json.Marshal of plain strings cannot fail.
 		return ""
 	}
 	return string(b)
+}
+
+// The gate's mechanical precheck kinds. They are record vocabulary, so they are
+// stable identifiers rather than prose.
+const (
+	precheckUngroundedValue   = "ungrounded_answer_value"
+	precheckListOnlyValue     = "list_only_answer_value"
+	precheckCitationGrounding = "citation_only_grounding"
+	precheckNoAnswerValue     = "answer_value_missing"
+)
+
+// collectGatePrechecks runs the gate's cheap, text-only checks over a deliverable
+// that is about to be audited, returning one line per suspicion (empty when the
+// deliverable looks clean) and nil when there is nothing to audit at all.
+//
+// These checks used to be pre-audit REJECTIONS: each one skipped the audit and
+// sent the producer a directive of its own. Measured over 24 hard benchmark
+// questions that cost far more than it caught - 62 rejections, 11 short-circuits,
+// and the auditor never ran on more than half the set, so none of its own checks
+// (grounding, slot properties, siblings) could fire. q253 is the clearest case:
+// one value refused ten times in a row, the whole audit budget gone, no verdict
+// produced. The question is a CONTENT judgement, and the auditor is the component
+// that holds the tools to make it; the gate's reading becomes evidence for that
+// judgement, and the rounds it would have refused are counted per kind.
+func collectGatePrechecks(question, shipped, final, haystack string) []string {
+	if strings.TrimSpace(final) == "" {
+		return nil // nothing to audit; the caller asks for a deliverable
+	}
+	var prechecks []string
+	if shipped == "" {
+		prechecks = append(prechecks, precheckNoAnswerValue+
+			": the deliverable carries an answer heading with NO value; the contract requires"+
+			" `Final Answer: **<value>**` (or the Guessed variant) as its LAST line")
+	} else {
+		if !answerValueIsGrounded(shipped, haystack) {
+			prechecks = append(prechecks, precheckUngroundedValue+
+				": the value `"+shipped+"` appears in NO chunk this run read")
+		}
+		if reason := listOnlyNameReason(question, shipped, haystack); reason != "" {
+			prechecks = append(prechecks, precheckListOnlyValue+": "+reason)
+		}
+	}
+	if gaps := citationOnlyGroundings(final); len(gaps) > 0 {
+		prechecks = append(prechecks, precheckCitationGrounding+
+			": these lines are grounded only by a bibliographic entry: "+strings.Join(gaps, "; "))
+	}
+	return prechecks
+}
+
+// precheckKinds extracts each precheck's kind (its text before the first colon)
+// so the record can count them per kind rather than as one lump.
+func precheckKinds(prechecks []string) []string {
+	kinds := make([]string, 0, len(prechecks))
+	for _, p := range prechecks {
+		kind, _, _ := strings.Cut(p, ":")
+		kinds = append(kinds, strings.TrimSpace(kind))
+	}
+	return kinds
 }

@@ -218,7 +218,7 @@ func TestBuildAuditPayload(t *testing.T) {
 		"- Clue: Bob signed in 1897 (doc: a.md, doc_id: d1, chunk_id: c1, snippet: \"...\")\n" +
 		"Final Answer: **1897**\n"
 
-	p := buildAuditPayload(final)
+	p := buildAuditPayload(final, nil)
 	var decoded auditPayload
 	if err := json.Unmarshal([]byte(p), &decoded); err != nil {
 		t.Fatalf("buildAuditPayload produced invalid JSON: %v\n%s", err, p)
@@ -228,10 +228,25 @@ func TestBuildAuditPayload(t *testing.T) {
 	if decoded.FinalMessage != final {
 		t.Errorf("final_message not verbatim:\n got %q\nwant %q", decoded.FinalMessage, final)
 	}
+
+	// The gate's own reading rides the SAME payload when it has one, and is
+	// absent when it does not: evidence for the auditor's verdict, never a
+	// verdict of its own.
+	if decoded.GatePrechecks != nil {
+		t.Errorf("a clean deliverable must not carry an empty precheck list: %v", decoded.GatePrechecks)
+	}
+	withPre := buildAuditPayload(final, []string{"citation_only_grounding: lines A"})
+	var decodedPre auditPayload
+	if err := json.Unmarshal([]byte(withPre), &decodedPre); err != nil {
+		t.Fatalf("buildAuditPayload produced invalid JSON: %v", err)
+	}
+	if len(decodedPre.GatePrechecks) != 1 || decodedPre.GatePrechecks[0] != "citation_only_grounding: lines A" {
+		t.Errorf("prechecks must ride the payload, got %v", decodedPre.GatePrechecks)
+	}
 }
 
 func TestBuildAuditPayloadEmptyFinal(t *testing.T) {
-	p := buildAuditPayload("")
+	p := buildAuditPayload("", nil)
 	var decoded auditPayload
 	if err := json.Unmarshal([]byte(p), &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
@@ -319,7 +334,7 @@ func TestGateRunAuditReturnsVerdict(t *testing.T) {
 	fake := &fakeAuditorAgent{verdict: "## Reasoning Chain\n- Clue: x\n  - audit: pass\nFinal Answer: **1**\n  - audit: pass\nAudit Result: PASS"}
 
 	verdict, err := gateRunAudit(context.Background(), fake, newTestConversation(),
-		"Final Answer: **1897**", nil)
+		"Final Answer: **1897**", nil, nil)
 	if err != nil {
 		t.Fatalf("gateRunAudit error: %v", err)
 	}
@@ -794,7 +809,7 @@ func TestRunDeliveryGateRejectsBareAnswerLine(t *testing.T) {
 func TestGateRunAuditNilAuditorErrors(t *testing.T) {
 	// Must return an error (not panic) when the auditor is unavailable.
 	if _, err := gateRunAudit(context.Background(), nil, newTestConversation(),
-		"Final Answer: **1897**", nil); err == nil {
+		"Final Answer: **1897**", nil, nil); err == nil {
 		t.Fatal("gateRunAudit with a nil auditor should error")
 	}
 }
@@ -824,5 +839,68 @@ func TestAnswerValueIsGroundedTailIsNotOptional(t *testing.T) {
 		if got := answerValueIsGrounded(tc.value, hay); got != tc.want {
 			t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
 		}
+	}
+}
+
+// TestCollectGatePrechecks pins the gate's reading as EVIDENCE rather than a
+// verdict. Each of these checks used to skip the audit and send a directive of
+// its own; measured over 24 hard questions that cost 62 rejections, 11
+// short-circuits and no audit at all on more than half the set — q253 refused one
+// value ten times in a row and produced no verdict. The round is audited now; the
+// gate's reading rides in the payload and the per-kind counts stay on the record.
+func TestCollectGatePrechecks(t *testing.T) {
+	// Nothing to audit: the caller asks for a deliverable instead.
+	if got := collectGatePrechecks("q", "X", "   ", ""); got != nil {
+		t.Errorf("an empty deliverable must yield no prechecks, got %v", got)
+	}
+
+	// A citation-grounded candidate AND a missing answer value are both reported:
+	// a precheck list is what the auditor must rule on, not a single-issue gate.
+	deliverable := "## Candidate Matrix\n" +
+		`- Tested: "Opium: A Portrait of the Heavenly Demon" (chunk_id: a8d8, snippet: "Hodgson, Barbara. Opium: A Portrait of the Heavenly Demon. San Francisco: Chronicle Books. 1999.")` + "\n"
+	got := collectGatePrechecks("q", "", deliverable, "no haystack")
+	kinds := precheckKinds(got)
+	want := map[string]bool{precheckNoAnswerValue: false, precheckCitationGrounding: false}
+	for _, k := range kinds {
+		if _, ok := want[k]; ok {
+			want[k] = true
+		}
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("precheck %q must fire, got %v", k, got)
+		}
+	}
+
+	// An ungrounded value is reported; a grounded one is not.
+	grounded := collectGatePrechecks("q", "KeSPA Cup 2019", "Final Answer: **KeSPA Cup 2019**", "…the KeSPA Cup 2019 was held…")
+	if len(grounded) != 0 {
+		t.Errorf("a grounded, answer-bearing deliverable must yield no prechecks, got %v", grounded)
+	}
+	ungrounded := collectGatePrechecks("q", "Fabricated Name", "Final Answer: **Fabricated Name**", "nothing of the sort here")
+	if len(precheckKinds(ungrounded)) != 1 || precheckKinds(ungrounded)[0] != precheckUngroundedValue {
+		t.Errorf("an ungrounded value must be reported as %q, got %v", precheckUngroundedValue, ungrounded)
+	}
+}
+
+// TestAdoptableContinuation pins the relaxation that lets the AUDITOR decide about
+// a deliverable missing its answer line. Requiring the value here rejected the
+// continuation three times and gave up (q490/q784/q872 ended that way, never
+// audited); requiring the SECTIONS is what keeps a bare answer line from throwing
+// away a structured deliverable (q1093 burned 16 passes on that shape).
+func TestAdoptableContinuation(t *testing.T) {
+	matrixOnly := "## Candidate Matrix\n- Tested: X (chunk_id: c1)\n"
+	if !adoptableContinuation(matrixOnly) {
+		t.Error("a matrix without its answer line is auditable — the auditor names the missing answer")
+	}
+	bare := "Guessed Answer: **X** (assumption: I do not have sufficient evidence)"
+	if adoptableContinuation(bare) {
+		t.Error("an answer line alone must not replace a structured deliverable (q1093)")
+	}
+	if adoptableContinuation("I have all the evidence I need. Let me now render the deliverable.") {
+		t.Error("narration is not a deliverable")
+	}
+	if adoptableContinuation("") {
+		t.Error("an empty continuation is not a deliverable")
 	}
 }

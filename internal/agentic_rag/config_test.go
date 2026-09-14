@@ -248,6 +248,11 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// deliverable-relative, so a producer that never surfaces the family can
 		// pass with any member (x1: [0], PASS, a wrong sibling, 39s).
 		"sibling work named by a cited document never tested",
+		// The gate's own mechanical reading is EVIDENCE for the auditor, never a
+		// verdict: the checks that used to skip the audit ride the payload now.
+		"gate_prechecks",
+		"gate precheck cleared",
+		"answer value appears in no cited evidence",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)

@@ -164,6 +164,12 @@ type GateAuditRecord struct {
 	// separately from Rejections so a benchmark can tell a citation-only matrix from
 	// a missing-value one.
 	CitationGroundings int `json:"citation_groundings,omitempty"`
+	// PrecheckCounts counts, per kind, the rounds in which the gate's own
+	// mechanical checks disagreed with the deliverable (see
+	// collectGatePrechecks). Kept apart from Rejections because those rounds do
+	// get AUDITED now: the numbers must show how often the gate's regex
+	// disagreed, not how often it managed to block the audit.
+	PrecheckCounts map[string]int `json:"precheck_counts,omitempty"`
 	// AuditVerdicts holds an excerpt of EVERY audit verdict, oldest first, in
 	// step with Suspects. The counts alone say a curve moved 5→3→1→0 but never
 	// WHAT was contested, so a failure could only be explained by re-reading the
@@ -949,6 +955,37 @@ func shouldDemoteFinalAnswer(audit *GateAuditRecord) bool {
 // GateAuditRecord.AuditFailures.
 // countCitationGrounding records a deliverable refused for grounding candidates on
 // citations only. See GateAuditRecord.CitationGroundings.
+// countGatePrechecks records the kinds of the gate's mechanical suspicions for
+// one round. A precheck round still gets audited, so its outcome is in Suspects
+// too; this map is what tells an operator WHICH reading disagreed.
+func countGatePrechecks(audit *GateAuditRecord, kinds []string) {
+	if audit == nil || len(kinds) == 0 {
+		return
+	}
+	if audit.PrecheckCounts == nil {
+		audit.PrecheckCounts = make(map[string]int, len(kinds))
+	}
+	for _, kind := range kinds {
+		audit.PrecheckCounts[kind]++
+	}
+}
+
+// adoptableContinuation reports whether a repair continuation may replace the
+// standing deliverable: it must carry the FOS SECTIONS. An answer line alone may
+// not - a bare "Guessed Answer: I do not have sufficient evidence" satisfies that
+// while dropping every cited chunk, and adopting it threw away a structured
+// deliverable to buy a re-audit that could only repeat the coverage defect
+// (q1093 burned 16 passes that way).
+//
+// The answer VALUE is deliberately not required. A matrix without its answer line
+// is auditable, and the auditor's `schema integrity: answer is missing` names the
+// defect precisely; requiring the value here instead rejected the continuation
+// three times and then gave up - q490, q784 and q872 all ended that way, never
+// audited, on a deliverable that only needed its last line restored.
+func adoptableContinuation(text string) bool {
+	return hasFOSStructure(text)
+}
+
 func countCitationGrounding(audit *GateAuditRecord) {
 	if audit != nil {
 		audit.CitationGroundings++
@@ -1107,68 +1144,26 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		directive := ""
 		shipped := finalAnswerValue(final)
 		question := lastUserQuestion(in.baseMessages)
-		if strings.TrimSpace(final) != "" && shipped != "" && !answerValueIsGrounded(shipped, groundingHaystack) {
-			// GROUNDING CHECK (lever 2): a named value that occurs in NO
-			// chunk the run read cannot be corpus-supported - it was
-			// synthesized. Send the agent back with a new anchor instead of
-			// auditing a claim that has no evidence behind it.
-			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected an ungrounded answer value",
-				zap.Int("pass", pass+1), zap.String("value", shipped))
+		// The gate's own checks are SUSPICIONS, not verdicts (see
+		// collectGatePrechecks): they ride into the audit payload and the auditor rules
+		// on them, so a mechanical reading never costs a pass by itself — which, over
+		// 24 hard benchmark questions, is exactly what it cost (62 rejections, 11
+		// short-circuits, and no audit at all on more than half the set).
+		prechecks := collectGatePrechecks(question, shipped, final, groundingHaystack)
+		if len(prechecks) > 0 {
 			countGateRejection(in.audit)
-			directive = ("The value on your answer line (" + shipped + ") appears in NO chunk you have read: nothing " +
-				"you retrieved contains it, so it cannot be a corpus-supported answer. Do NOT re-render the same matrix. " +
-				"Run at least one NEW retrieval with a different anchor first - the rarest proper noun of the question " +
-				"queried ALONE, or a grep_chunks co-occurrence regex over two clue terms - then rebuild the Candidate " +
-				"Matrix from what actually surfaces. If nothing supports any candidate, ship `Guessed Answer: **<value>** " +
-				"(assumption: ...)` naming what is unverified, or state the insufficiency explicitly." +
-				namePropertyHint(question, shipped))
-		} else if reason := listOnlyNameReason(question, shipped, groundingHaystack); reason != "" {
-			// NAME-PROPERTY CHECK (lever 2B): the value is grounded - it occurs
-			// in a chunk that was read - but only as one entry in an
-			// enumeration, which cannot state the property the question asks for
-			// (whose birth name, whose real name). Auditing such a pick wastes
-			// the pass; send it back for the property's own sentence.
-			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected a list-only answer value",
-				zap.Int("pass", pass+1), zap.String("value", shipped))
-			countGateRejection(in.audit)
-			directive = reason
-		} else if strings.TrimSpace(final) != "" && hasFOSStructure(final) && shipped == "" {
-			// A deliverable that carries no answer VALUE is not shippable:
-			// the FOS contract requires `Final Answer: **<value>**` (or the
-			// Guessed variant). Shipping one silently downgrades the run - the
-			// caller's recovery ladder then adopts some earlier message and
-			// the judge ends up reading a stray entity out of the prose
-			// (q1228: bare `## Final Answer` heading, judge extracted a
-			// different film from the body). Repair instead of shipping.
-			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected a value-less answer line",
-				zap.Int("pass", pass+1))
-			countGateRejection(in.audit)
-			directive = ("Your FINAL message has a Final/Guessed Answer heading that carries NO value. " +
-				"Restate it on ONE line in the exact shape `Final Answer: **<value>**` " +
-				"(or `Guessed Answer: **<value>** (assumption: ...)` when the value rests on an assumption), " +
-				"where <value> is the single named answer - one entity/title/date, never a sentence, never empty. " +
-				"Re-render the COMPLETE FOS FINAL message (## Candidate Matrix, ## Reasoning Chain, then that line).")
-		} else if citing := citationOnlyGroundings(final); len(citing) > 0 {
-			// CITATION-GROUNDING CHECK (lever 2C, mechanical): a candidate whose cited
-			// support is a bibliographic entry is NAMED, not evidenced — and the same
-			// Sources chunk can name every sibling, which is how a family ends up
-			// "tested" twice and then decided by title preference. The auditor is told
-			// to catch this, but that is a model rule; this one is text-only and
-			// deterministic, so the pass is spent on the repair instead of on an audit
-			// that may or may not apply its own rule.
-			common.InfoCtx(ctx, "agentic_rag: delivery gate rejected citation-only candidate grounding",
-				zap.Int("pass", pass+1), zap.Strings("lines", citing))
-			countGateRejection(in.audit)
-			countCitationGrounding(in.audit)
-			directive = citationGroundingDirective(citing)
-		} else if strings.TrimSpace(final) != "" {
+			countGatePrechecks(in.audit, precheckKinds(prechecks))
+			common.InfoCtx(ctx, "agentic_rag: delivery gate prechecks (the audit decides)",
+				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks))
+		}
+		if strings.TrimSpace(final) != "" {
 			// The gate audits the deliverable it actually holds — audit-target
 			// freshness is structural, not tracked. The question lives in the
 			// auditor's system prompt, so the payload carries the deliverable
-			// only.
+			// plus the gate's own reading of it.
 			auditedFinal = final
 			var err error
-			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts)
+			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, prechecks, in.toolCallCounts)
 			if err != nil {
 				// The auditor itself failed (LLM timeout, tool outage).
 				// Retrying inside this request rarely helps; fall through to
@@ -1222,11 +1217,12 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			}
 		}
 
-		if directive == "" && strings.TrimSpace(final) == "" {
+		if strings.TrimSpace(final) == "" {
 			// No deliverable: this repair is not a correction, it is the FIRST
 			// production of the answer.
 			common.InfoCtx(ctx, "agentic_rag: delivery gate skipped the audit — no deliverable yet",
 				zap.Int("pass", pass+1))
+			countGateRejection(in.audit)
 			directive = ("You have produced NO deliverable yet, so there is nothing to ship to the user. " +
 				"Continue the investigation in this turn and render the COMPLETE FOS FINAL message: the " +
 				"`## Candidate Matrix` blocks, then `## Reasoning Chain`, and the LAST line " +
@@ -1271,7 +1267,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				// it throws away a structured (if failing) deliverable and
 				// buys a re-audit that can only repeat the coverage defect
 				// (q1093 burned 16 audit passes that way).
-				if finalAnswerValue(trimmed) != "" && hasFOSStructure(trimmed) {
+				if adoptableContinuation(trimmed) {
 					final = trimmed // deliverable-shaped continuation → adopt
 					noProgress = 0
 					repairFeedback = ""
@@ -1466,12 +1462,13 @@ func gateRunAudit(
 	auditor adk.Agent,
 	conv *conversation,
 	final string,
+	prechecks []string,
 	toolCallCounts map[string]int,
 ) (string, error) {
 	if auditor == nil {
 		return "", fmt.Errorf("agentic_rag: auditor unavailable")
 	}
-	payload := buildAuditPayload(final)
+	payload := buildAuditPayload(final, prechecks)
 	common.WarnCtx(ctx, "agentic_rag: gate-run audit start",
 		zap.String("payload", truncateForLog(payload, 2000)))
 	head := conv.head(ctx)
