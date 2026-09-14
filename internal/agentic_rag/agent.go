@@ -783,9 +783,40 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// PASSED. When the gate stopped on a stall, a budget or the clock, the
 	// claim is demoted to `Guessed Answer` - the value is untouched (that is
 	// what the judge scores), only the confidence claim is corrected.
-	if shouldDemoteFinalAnswer(in.GateAudit) {
-		if demoted, changed := demoteFinalAnswerLabel(final, "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"); changed {
-			common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer (audit did not pass)")
+	//
+	// A DECLARED TIE demotes too, and independently of the audit: the clause
+	// says the corpus could not settle the discriminating constraint, which is
+	// precisely what `Final Answer` claims it did. The audit may well have
+	// PASSED such a deliverable - being honest about an under-determined
+	// question is what ties are for, and the gate must not punish it - so
+	// keying the demotion off the audit verdict alone would ship the strongest
+	// label on the weakest claim.
+	ties := finalAnswerTies(final)
+	if len(ties) > 0 {
+		common.InfoCtx(ctx, "agentic_rag: delivery declares a tie",
+			zap.Strings("rivals", ties),
+			zap.Bool("audit_passed", in.GateAudit != nil && in.GateAudit.Passed))
+	}
+	demoteReason := ""
+	switch {
+	case len(ties) > 0:
+		// Every rival, not just the first: a deliverable that names three
+		// equally undiscriminated candidates is LESS certain than one that
+		// names a single rival, and the note is the only place a reader learns
+		// how wide the field really was.
+		quoted := make([]string, 0, len(ties))
+		for _, rival := range ties {
+			quoted = append(quoted, answerNoteSafe(`"`+rival+`"`))
+		}
+		demoteReason = "the run declares a tie with " + strings.Join(quoted, ", ") +
+			", so the discriminating constraint is not corpus-verified"
+	case shouldDemoteFinalAnswer(in.GateAudit):
+		demoteReason = "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"
+	}
+	if demoteReason != "" {
+		if demoted, changed := demoteFinalAnswerLabel(final, demoteReason); changed {
+			common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer",
+				zap.String("reason", demoteReason))
 			final = demoted
 		}
 	}

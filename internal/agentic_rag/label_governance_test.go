@@ -268,3 +268,30 @@ func TestAuditFindings(t *testing.T) {
 		t.Errorf("an unrecognised shape must say so, got %q", got)
 	}
 }
+
+// TestDemoteFinalAnswerKeepsTieParseable pins the interaction the whole tie
+// grammar exists for: when a deliverable declares a tie, the label governance
+// demotes it to `Guessed Answer` and APPENDS its own `(assumption: ...)` note —
+// after a clause that is already on the line. The rewritten line must still
+// parse, or the value is lost and the demotion (a label-only correction) turns
+// into a value-less deliverable.
+func TestDemoteFinalAnswerKeepsTieParseable(t *testing.T) {
+	final := "## Final Answer\n" +
+		`Final Answer: **In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines** (tie: "Opium: A Portrait of the Heavenly Demon" - no chunk discriminates the two)` + "\n"
+	got, changed := demoteFinalAnswerLabel(final, `the run declares a tie with "Opium: A Portrait of the Heavenly Demon", so the discriminating constraint is not corpus-verified`)
+	if !changed {
+		t.Fatal("a tie on a Final Answer line must be demoted to Guessed Answer")
+	}
+	if v := finalAnswerValue(got); v != "In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines" {
+		t.Errorf("value after demotion = %q, want the delivered title", v)
+	}
+	if ties := finalAnswerTies(got); len(ties) != 1 {
+		t.Errorf("the tie clause must survive the demotion's appended assumption note, got %v", ties)
+	}
+	if n := finalAnswerLineCount(got); n != 1 {
+		t.Errorf("answer lines after demotion = %d, want 1", n)
+	}
+	if !strings.Contains(got, "Guessed Answer") || !strings.Contains(got, "assumption:") {
+		t.Errorf("demoted deliverable must carry the Guessed label and the gate's reason:\n%s", got)
+	}
+}

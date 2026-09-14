@@ -59,11 +59,112 @@ func TestFinalAnswerValue(t *testing.T) {
 		{final: "Final Answer: **关羽共斩杀有名有姓之人 15 人（含\"过五关斩六将\"6人）**。", want: "关羽共斩杀有名有姓之人 15 人（含\"过五关斩六将\"6人）"},
 		{final: "Final Answer: **1897.**", want: "1897."},
 		{final: "Final Answer: **1897**\n\n", want: "1897"},
+		// A tie clause is part of the answer line's closed note vocabulary: it
+		// must not cost the run its value. Anything else left unparsed makes
+		// finalAnswerValue return "", which the gate reads as a VALUE-LESS
+		// deliverable — a rejection, a repair turn, and possibly finalizeAnswer.
+		{final: `Guessed Answer: **In the Arms of Morpheus** (assumption: two Hodgson opium books fit) (tie: "Opium: A Portrait of the Heavenly Demon" - no chunk settles it)`, want: "In the Arms of Morpheus"},
+		// Label governance appends its own assumption note, so a demoted tie
+		// line can carry the two clauses in this order.
+		{final: `Guessed Answer: **In the Arms of Morpheus** (tie: "Opium: A Portrait" - no chunk settles it) (assumption: the run declares a tie)`, want: "In the Arms of Morpheus"},
+		// The two-line shape tolerates them too.
+		{final: "Guessed Answer:\n**Bhowani Junction** (tie: \"Junction\" - same title family)", want: "Bhowani Junction"},
 	}
 	for _, tc := range cases {
 		if got := finalAnswerValue(tc.final); got != tc.want {
 			t.Errorf("finalAnswerValue(%q) = %q, want %q", tc.final, got, tc.want)
 		}
+	}
+}
+
+// TestFinalAnswerTie pins the extraction the label governance ACTS on: a tie on
+// the answer line forces `Guessed Answer` even when the audit passed (a tie
+// says the discriminating constraint is NOT corpus-verified, which is what the
+// `Final Answer` label claims), so a false positive — a `(tie: ...)` in prose —
+// would demote honest runs, and a false negative would ship the stronger label
+// on a tie.
+//
+// A tie is not limited to two candidates: one clause per rival, in order, and a
+// rival the deliverable names must never be dropped — the reader learns how wide
+// the field really was from this list alone.
+func TestFinalAnswerTie(t *testing.T) {
+	cases := []struct {
+		name  string
+		final string
+		want  string // rivals joined with " | "
+	}{
+		{
+			name:  "tie on a Guessed answer line",
+			final: "## Final Answer\nGuessed Answer: **A** (assumption: x) (tie: \"B\" - no chunk discriminates)",
+			want:  `"B" - no chunk discriminates`,
+		},
+		{
+			name:  "tie on a Final answer line (an over-claim the caller demotes)",
+			final: "Final Answer: **A** (tie: \"B\" - both fit)",
+			want:  `"B" - both fit`,
+		},
+		{
+			name:  "tie on the value line of the two-line shape",
+			final: "## Guessed Answer\n**A** (tie: \"B\" - both fit)",
+			want:  `"B" - both fit`,
+		},
+		{
+			// Three grounded candidates the corpus cannot separate: every rival
+			// is named, in order, because a comma-separated list could not be
+			// split back into candidates (titles carry commas).
+			name:  "three-way tie, one clause per rival",
+			final: "Guessed Answer: **A** (assumption: x) (tie: \"B\" - no chunk settles it) (tie: \"C, and D\" - equally supported)",
+			want:  `"B" - no chunk settles it | "C, and D" - equally supported`,
+		},
+		{
+			// A malformed clause must not read as "no tie declared": that is the
+			// one way a run could escape the Guessed label by writing it wrong.
+			name:  "a clause that names no rival still declares a tie",
+			final: "Guessed Answer: **A** (tie: )",
+			want:  unnamedTieRival,
+		},
+		{
+			name:  "no tie declared",
+			final: "Guessed Answer: **A** (assumption: x)",
+			want:  "",
+		},
+		{
+			// Prose may discuss rivals; only the answer line declares a tie.
+			name:  "a tie mentioned in prose is not a declared tie",
+			final: "## Reasoning Chain\n- Clue: this is a tie with (tie: \"B\") in the corpus (doc: a.md)\nGuessed Answer: **A** (assumption: x)",
+			want:  "",
+		},
+		{
+			name:  "rivals ride in the clauses, never as two answer lines",
+			final: "Guessed Answer: **A** (tie: \"B\" - both fit)",
+			want:  `"B" - both fit`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Join(finalAnswerTies(tc.final), " | ")
+			if got != tc.want {
+				t.Errorf("finalAnswerTies(%q) = %q, want %q", tc.final, got, tc.want)
+			}
+			if n := finalAnswerLineCount(tc.final); n > 1 {
+				t.Errorf("%d answer lines, want at most 1 — two answer lines is the degeneration shape, not a tie", n)
+			}
+		})
+	}
+}
+
+// TestAnswerNoteSafe pins the guard that keeps a dynamically built note (the
+// demotion reason lists rival TITLES) from breaking the line it is appended to:
+// the note regexes stop at the first ')', so an unsanitized ')' in a title would
+// truncate the note and cost the deliverable its value.
+func TestAnswerNoteSafe(t *testing.T) {
+	note := answerNoteSafe(`the run declares a tie with "A Book (Revised), vol. 2"`)
+	if strings.ContainsAny(note, "()") {
+		t.Errorf("note %q still carries a parenthesis — the note regex stops at the first ')'", note)
+	}
+	final := "Guessed Answer: **X** (assumption: " + note + ")"
+	if got := finalAnswerValue(final); got != "X" {
+		t.Errorf("finalAnswerValue = %q, want X — the sanitized note must keep the line parseable", got)
 	}
 }
 

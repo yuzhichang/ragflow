@@ -221,6 +221,22 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 			t.Errorf("the auditor must define the elimination ground %q", want)
 		}
 	}
+	// A declared tie is a first-class outcome, not something the auditor repairs
+	// away: every rival must be grounded, every clause must be checked (not just
+	// the first), and a tie can never ride on the `Final Answer` label it
+	// contradicts by definition.
+	for _, want := range []string{
+		"tie declares an ungrounded candidate",
+		"tie names no rival",
+		"tie declares no reason",
+		"tie contradicted by cited chunk",
+		"Final Answer claims a tie",
+		"tie written as two answers",
+	} {
+		if !strings.Contains(auditor.Content, want) {
+			t.Errorf("the auditor must define the tie defect %q", want)
+		}
+	}
 	for _, id := range []string{"smart-reasoning", "smart-grep", "smart-grep-bm25"} {
 		tmpl, err := resolveTemplateFor(id)
 		if err != nil {
@@ -229,7 +245,12 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		if tmpl.Temperature != nil {
 			t.Errorf("%s: temperature = %v, want nil — this knob is the auditor's, and pinning a producer's sampling from this file would silently take away the exploration its temperature buys", id, *tmpl.Temperature)
 		}
-		for _, want := range []string{"no corpus content describes it", "a named, grounded rival you cannot refute is RETAINED"} {
+		for _, want := range []string{
+			"no corpus content describes it",
+			"a named, grounded rival you cannot refute is RETAINED",
+			"once per rival",
+			"EVERY tied candidate must be GROUNDED",
+		} {
 			if !strings.Contains(tmpl.Content, want) {
 				t.Errorf("%s: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", id, want)
 			}

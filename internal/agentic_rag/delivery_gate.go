@@ -25,15 +25,22 @@ import (
 
 // finalAnswerValueRe extracts the value from the FOS-mandated answer line —
 // `Final Answer: **<value>**` or `Guessed Answer: **<value>** (assumption: ...)`
-// — tolerating heading markers, the bold tokens, and the Guessed variant's
-// trailing assumption note. Trailing sentence punctuation after the closing
+// — tolerating heading markers, the bold tokens, and the answer line's trailing
+// NOTE CLAUSES: `(assumption: ...)` and `(tie: "<rival>" — <reason>)`, in either
+// order and any combination, because label governance appends its own assumption
+// note and a declared tie may already be on the line. The tail is a closed
+// vocabulary on purpose: anything else after the value makes the whole line
+// unparseable, finalAnswerValue returns "", and the gate then reads a deliverable
+// that HAS an answer as a value-less one (a rejection plus a repair turn, and
+// possibly finalizeAnswer — whose synthesis once re-rendered the entire document
+// and shipped two answer lines). Trailing sentence punctuation after the closing
 // bold is ALSO tolerated: models routinely write `**...15 人**。`, and the
 // strict whitespace-only tail flipped finalAnswerValue to empty on the 关羽
 // run — which pushed a perfectly good deliverable into finalizeAnswer, whose
 // output re-rendered the whole document and shipped TWO Final Answer lines.
 var finalAnswerValueRe = regexp.MustCompile(
 	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer\s*:?\s*\*{2}([^*]+?)\*{2}` +
-		`(?:\s*\(assumption:[^)]*\))?[。．.，,；;！!？?\s]*$`)
+		`(?:\s*\((?:assumption|tie):[^)]*\))*[。．.，,；;！!？?\s]*$`)
 
 // finalAnswerTwoLineRe is the value-on-the-next-line variant models emit
 // routinely (`## Final Answer` then `**Bhowani Junction**`). q1228 shipped it
@@ -42,7 +49,83 @@ var finalAnswerValueRe = regexp.MustCompile(
 // gate's repair loop.
 var finalAnswerTwoLineRe = regexp.MustCompile(
 	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer\s*:?\s*\**\s*$` +
-		`\n[^\S\n]*\*{2}([^*\n][^\n]*?)\*{2}\s*$`)
+		`\n[^\S\n]*\*{2}([^*\n][^\n]*?)\*{2}(?:\s*\((?:assumption|tie):[^)]*\))*\s*$`)
+
+// finalAnswerTieRe extracts the rival named by one tie clause. A tie clause is
+// how a deliverable declares that the corpus cannot separate this rival from the
+// value it ships — the honest result on an under-determined question — while
+// still shipping exactly ONE value for the consumer to score (see
+// finalAnswerTies).
+var finalAnswerTieRe = regexp.MustCompile(`(?i)\(tie:\s*([^)]*)\)`)
+
+// unnamedTieRival stands in for a `(tie: )` clause that names nothing. It keeps
+// the declaration visible instead of letting a malformed clause read as "no tie
+// declared" — the one case where a run could otherwise escape the Guessed label
+// by writing the clause wrong.
+const unnamedTieRival = "(unnamed rival)"
+
+// finalAnswerTies returns the rivals the ANSWER LINE's tie clauses name, in the
+// order written, or nil when the deliverable declares none.
+//
+// One clause PER RIVAL, not a list inside one clause: the candidates are titles,
+// and titles carry commas — the q221 gold itself is "In the Arms of Morpheus:
+// The Tragic History of Laudanum, Morphine and Patent Medicines" — so a
+// comma-separated list could not be split back into candidates, while repeated
+// clauses parse exactly. A tie is not limited to two candidates either: a
+// question can be under-determined by the corpus with three or more grounded
+// candidates, and every one of them has to be named or the deliverable is
+// hiding a rival it could not rule out.
+//
+// It reads answer lines only, never the whole deliverable: a `(tie: ...)` in
+// narrative prose is not a declared tie, and this value is ACTED on — it forces
+// the `Guessed Answer` label even when the audit passed (see the label
+// governance in Run), because a tie is a statement that the discriminating
+// constraint is NOT corpus-verified, which is exactly what `Final Answer`
+// claims. Matching mid-prose would demote honest `Final Answer` runs.
+func finalAnswerTies(final string) []string {
+	lines := strings.Split(final, "\n")
+	for i, line := range lines {
+		if !answerLabelRe.MatchString(line) {
+			continue
+		}
+		// The notes ride the line that carries the VALUE, which is not always
+		// the line that carries the label: in the value-on-the-next-line shape
+		// (`## Guessed Answer` then `**A** (tie: "B" - ...)`) the value line has
+		// no label of its own, and reading only labelled lines missed its tie
+		// (the regression the two-line case in TestFinalAnswerTie pins).
+		carriers := []string{line}
+		if i+1 < len(lines) {
+			carriers = append(carriers, lines[i+1])
+		}
+		var rivals []string
+		for _, carrier := range carriers {
+			for _, m := range finalAnswerTieRe.FindAllStringSubmatch(carrier, -1) {
+				rival := strings.TrimSpace(m[1])
+				if rival == "" {
+					rival = unnamedTieRival
+				}
+				rivals = append(rivals, rival)
+			}
+		}
+		// A label line with no value (the `## Final Answer` heading above the
+		// value line) is not the answer line; keep looking.
+		if len(rivals) == 0 {
+			continue
+		}
+		return rivals
+	}
+	return nil
+}
+
+// answerNoteSafe makes text safe to append inside an answer line's
+// `(assumption: ...)` / `(tie: ...)` note. Both notes' regexes stop at the first
+// ')' — they are `[^)]*` — so a name carrying one (a title, a parenthetical, and
+// the tie clause lists rival TITLES) would truncate the note mid-way and cost
+// the line its value, which the gate then reads as a value-less deliverable. The
+// note is prose, not data: brackets read the same and cannot break the parse.
+func answerNoteSafe(s string) string {
+	return strings.NewReplacer("(", "[", ")", "]", "\n", " ", "\r", " ").Replace(s)
+}
 
 // finalAnswerValue returns the value shipped on the FOS answer line, or "" when
 // the reply carries none. It is FORMAT PRESENCE, not a correctness judgement —
