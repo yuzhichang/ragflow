@@ -38,8 +38,14 @@ import (
 // strict whitespace-only tail flipped finalAnswerValue to empty on the 关羽
 // run — which pushed a perfectly good deliverable into finalizeAnswer, whose
 // output re-rendered the whole document and shipped TWO Final Answer lines.
+// The whitespace between the label and its value is NEWLINE-FREE on purpose, on
+// both sides of the optional colon. With a newline-tolerant `\s*` there, a
+// `## Final Answer` heading followed by a whole-bold answer line matched as ONE
+// answer and the VALUE came back as `Guessed Answer: Boston` — the label itself,
+// not the answer (q775, where the gate then treated a correct delivery as
+// value-less). The newline-separated shape belongs to finalAnswerTwoLineRe.
 var finalAnswerValueRe = regexp.MustCompile(
-	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer\s*:?\s*\*{2}([^*]+?)\*{2}` +
+	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer[^\S\n]*:?[^\S\n]*\*{2}([^*]+?)\*{2}` +
 		`(?:\s*\((?:assumption|tie):[^)]*\))*[。．.，,；;！!？?\s]*$`)
 
 // finalAnswerTwoLineRe is the value-on-the-next-line variant models emit
@@ -50,6 +56,24 @@ var finalAnswerValueRe = regexp.MustCompile(
 var finalAnswerTwoLineRe = regexp.MustCompile(
 	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer\s*:?\s*\**\s*$` +
 		`\n[^\S\n]*\*{2}([^*\n][^\n]*?)\*{2}(?:\s*\((?:assumption|tie):[^)]*\))*\s*$`)
+
+// finalAnswerWholeBoldRe is the whole-line-bold variant models emit: the label AND
+// the value inside ONE pair of asterisks — `**Final Answer: Boston**`. q775 shipped
+// exactly that (gold `Boston`, and the judge scored it), but finalAnswerValueRe
+// requires the value's OWN opening `**` after the colon, so the gate read a
+// correct, PASS-shaped delivery as VALUE-LESS: none of the value-based checks ran
+// on it and the label governance then explained a demotion it could not attribute.
+// One extra matcher is cheaper than teaching every call site to tolerate a missing
+// marker — and the requirements stay: a label-ONLY bold line (`**Final Answer**`)
+// matches neither, so it still reads as the value-less shape it is.
+// The colon is REQUIRED here, and no `#` heading prefix is allowed: a heading
+// (`## Final Answer`) with the value on the next line would otherwise let the
+// optional colon join the two lines and capture `Guessed Answer: Boston` as the
+// value — the two-line matcher exists for that shape, this one is for one line
+// with everything inside one pair of asterisks.
+var finalAnswerWholeBoldRe = regexp.MustCompile(
+	`(?im)^[^\S\n]*\*{2}\s*(?:final|guessed)\s+answer\s*:\s*\**\s*` +
+		`([^*\n]+?)\s*\*{2}(?:\s*\((?:assumption|tie):[^)]*\))*[。．.，,；;！!？?\s]*$`)
 
 // finalAnswerTieRe extracts the rival named by one tie clause. A tie clause is
 // how a deliverable declares that the corpus cannot separate this rival from the
@@ -134,17 +158,40 @@ func answerNoteSafe(s string) string {
 // finalizeAnswer terminus. Whether the value is CORRECT is exclusively
 // answer_auditor's business.
 func finalAnswerValue(final string) string {
+	value := ""
 	m := finalAnswerValueRe.FindStringSubmatch(final)
-	if m == nil {
+	switch {
+	case m != nil:
+		value = strings.TrimSpace(m[1])
+	default:
+		// The whole-bold single-line shape is tried BEFORE the two-line shape,
+		// and the order is load-bearing: `**Guessed Answer: Boston** (…)` also
+		// satisfies the two-line matcher's value pattern (it opens with `**` after
+		// an empty line), which captured `Guessed Answer: Boston` as the VALUE —
+		// the whole label, not the answer. This matcher is anchored to one line
+		// and requires the colon, so it splits them correctly; the two-line
+		// matcher keeps owning the shape it was written for (a label line, then a
+		// bare bolded value under it).
+		if mb := finalAnswerWholeBoldRe.FindStringSubmatch(final); mb != nil {
+			value = strings.TrimSpace(strings.Trim(mb[1], "*"))
+			break
+		}
 		// Fall back to the two-line shape before declaring the answer line
 		// empty: `Final Answer:` alone on its line with the value under it is
 		// a formatting habit, not a missing answer.
 		if m2 := finalAnswerTwoLineRe.FindStringSubmatch(final); m2 != nil {
-			return strings.TrimSpace(strings.Trim(m2[1], "*"))
+			value = strings.TrimSpace(strings.Trim(m2[1], "*"))
 		}
+	}
+	if value == "" || answerLabelRe.MatchString(value) {
+		// A bolded LABEL is not a value: `## Final Answer` followed by
+		// `**Final Answer**` parses as one answer under the two-line matcher, and
+		// what it hands back is the label itself. The deliverable is then the
+		// value-less shape it really is, which the gate treats (and reports) as
+		// such rather than scoring "Final Answer" as the answer.
 		return ""
 	}
-	return strings.TrimSpace(m[1])
+	return value
 }
 
 // finalAnswerLineCount counts the FOS answer lines in s. The finalize

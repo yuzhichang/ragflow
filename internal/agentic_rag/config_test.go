@@ -253,6 +253,10 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		"gate_prechecks",
 		"gate precheck cleared",
 		"answer value appears in no cited evidence",
+		// The value's own FORM: a sentence/lyric is not a slot-filler, and a
+		// partial name is not a filled full-name slot (q521 and q253 passed both).
+		"answer value is not a single entity",
+		"answer value is a partial form",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)

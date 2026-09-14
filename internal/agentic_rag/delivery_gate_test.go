@@ -904,3 +904,56 @@ func TestAdoptableContinuation(t *testing.T) {
 		t.Error("an empty continuation is not a deliverable")
 	}
 }
+
+// TestFinalAnswerValueWholeBold pins the third answer-line shape, read off a real
+// delivery: q775 shipped `**Guessed Answer: Boston**` (gold `Boston`, and the judge
+// scored it), while the gate read it as VALUE-LESS because the single-line matcher
+// wants the value's own opening `**` after the colon. The cost was not cosmetic:
+// every value-based check keys off this string, so a correct delivery skipped them
+// and got a demotion note it could not attribute.
+func TestFinalAnswerValueWholeBold(t *testing.T) {
+	cases := []struct{ name, final, want string }{
+		{
+			name:  "value and label inside one bold run",
+			final: "## Final Answer\n\n**Guessed Answer: Boston** (assumption: the delivery gate did not conclude PASS, so this value is not fully corpus-verified)",
+			want:  "Boston",
+		},
+		{
+			name:  "unannotated whole-bold line",
+			final: "**Final Answer: In the Arms of Morpheus**",
+			want:  "In the Arms of Morpheus",
+		},
+		{
+			name:  "plain form still wins first",
+			final: "Guessed Answer: **KeSPA Cup 2019** (assumption: x)",
+			want:  "KeSPA Cup 2019",
+		},
+		{
+			name:  "two-line form still works",
+			final: "## Final Answer\n**Bhowani Junction**",
+			want:  "Bhowani Junction",
+		},
+		{
+			// A label with no value stays value-less under every matcher: this is
+			// the shape the gate must keep telling apart from an answer.
+			name:  "bold label with no value",
+			final: "## Final Answer\n\n**Final Answer**",
+			want:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := finalAnswerValue(tc.final); got != tc.want {
+				t.Errorf("finalAnswerValue(%q) = %q, want %q", tc.final, got, tc.want)
+			}
+		})
+	}
+	// The tie clause must survive the new shape too: it rides the same line.
+	whole := `**Final Answer: X** (tie: "Y" - both fit)`
+	if got := finalAnswerValue(whole); got != "X" {
+		t.Errorf("whole-bold line with a tie: value = %q, want X", got)
+	}
+	if ties := finalAnswerTies(whole); len(ties) != 1 {
+		t.Errorf("whole-bold line with a tie: ties = %v, want one rival", ties)
+	}
+}
