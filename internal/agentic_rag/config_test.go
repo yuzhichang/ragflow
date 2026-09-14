@@ -244,6 +244,10 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// grounded rival stands unrefuted and the discriminating constraint is
 		// unestablished for the retained candidate.
 		"grounded rival not refuted - declare a tie or refute it",
+		// The family check is corpus-side on purpose: the competitor rules are
+		// deliverable-relative, so a producer that never surfaces the family can
+		// pass with any member (x1: [0], PASS, a wrong sibling, 39s).
+		"sibling work named by a cited document never tested",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)
@@ -265,6 +269,7 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 			"asserting SUPPORT",
 			"elimination argument NEVER rides on a",
 			"THE TRIGGER: declare the tie as soon as a rival is GROUNDED",
+			"those siblings are CANDIDATES",
 		} {
 			if !strings.Contains(tmpl.Content, want) {
 				t.Errorf("%s: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", id, want)
