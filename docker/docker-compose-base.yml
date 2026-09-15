@@ -223,6 +223,16 @@ services:
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
+    # Ingestion throughput tuning. The ingestion sink commits per progress event,
+    # so the defaults (innodb_flush_log_at_trx_commit=1 + sync_binlog=1 on a 128MB
+    # buffer pool) spent 68ms of CPU and two fsyncs on every commit: 211k commits
+    # had burned 14.4k seconds of MySQL CPU and capped ingestion at ~23
+    # documents/minute, with mysqld the busiest process on the box. The settings
+    # below bring the same commit down to 1.6ms and ingestion to ~56
+    # documents/minute (measured, same load). Trade-off: a host-level crash (not a
+    # mysqld restart) can lose up to one second of committed transactions.
+    # Progress bookkeeping tolerates that; restore flush_log_at_trx_commit=1 and
+    # sync_binlog=1 if the database itself must be strictly durable.
     command:
       --max_connections=1000
       --character-set-server=utf8mb4
@@ -231,6 +241,12 @@ services:
       --tls_version="TLSv1.2,TLSv1.3"
       --init-file /data/application/init.sql
       --binlog_expire_logs_seconds=604800
+      --innodb-flush-log-at-trx-commit=2
+      --sync-binlog=0
+      --innodb-buffer-pool-size=4G
+      --innodb-io-capacity=2000
+      --innodb-io-capacity-max=4000
+      --innodb-redo-log-capacity=1G
     ports:
       - ${EXPOSE_MYSQL_PORT}:3306
     volumes:
