@@ -177,9 +177,17 @@ func TestFinalAnswerLineCount(t *testing.T) {
 	if got := finalAnswerLineCount(sane); got != 1 {
 		t.Errorf("sane synthesis answer lines = %d, want 1", got)
 	}
-	doubled := "Final Answer: **## A whole document\n\nFinal Answer: **1897**。**"
-	if got := finalAnswerLineCount(doubled); got != 0 {
-		t.Errorf("mega-value blob answer lines = %d, want 0 (the inner value spans lines so the line-anchored pattern cannot match it)", got)
+	// The mega-value blob: the first line opens a bold run it never closes, so it is
+	// NOT an answer line, while the inner `Final Answer: **1897**。` is well formed and
+	// counts. The reader can no longer produce a value that SPANS lines - the token it
+	// reads is line-local - which is what the old "0 lines" assertion was
+	// approximating with a whole-text pattern.
+	blob := "Final Answer: **## A whole document\n\nFinal Answer: **1897**。**"
+	if got := finalAnswerLineCount(blob); got != 1 {
+		t.Errorf("mega-value blob answer lines = %d, want 1 (the unterminated line is not one, the inner line is)", got)
+	}
+	if got := finalAnswerValue(blob); got != "1897" {
+		t.Errorf("mega-value blob value = %q, want the inner well-formed line's value", got)
 	}
 	lineBoundedDouble := "Final Answer: **1897**\nFinal Answer: **1900**"
 	if got := finalAnswerLineCount(lineBoundedDouble); got != 2 {
@@ -1024,5 +1032,104 @@ func TestLoggableSwitch(t *testing.T) {
 	}
 	if got := loggable("short", 2000); got != "short" {
 		t.Errorf("short input must pass through unchanged: %q", got)
+	}
+}
+
+// TestAnswerNoteToleratesNestedParens pins the two deliverable lines the debug-level
+// full-text log captured, and they are the reason that log exists: the gate reported
+// `answer_value_missing` while holding a perfectly well-formed answer line, because
+// the tail grammar read the notes with `[^)]*` and a note that CITES a document puts
+// a parenthesis inside the note. Both lines below are verbatim from q283 re-runs.
+func TestAnswerNoteToleratesNestedParens(t *testing.T) {
+	wikipedia := `Guessed Answer: **Zimri Eder** (assumption: the Wikipedia article (82489.md) attests the spelling "Zimri Eder" while the fan wiki and the review attest "Zimri Elder")`
+	goldForm := `Guessed Answer: **Zimri Elder** (assumption: the fan-wiki article 64640.md and the review article 55819.md both attest "Zimri Elder" in independent chunks, while the Wikipedia article 82489.md attests "Zimri Eder" in 1 chunk with 2 mentions; the better-attested variant by independent-chunk count is "Zimri Elder" and the corpus does not adjudicate which spelling is canonical) (tie: "Zimri Eder" — 82489.md attests this spelling in 1 chunk with 2 mentions, versus "Zimri Elder" in 2 independent chunks (64640.md, 55819.md); the count decides the form that ships but the question remains a tie because the corpus provides no source that adjudicates which is canonical)`
+
+	if got := finalAnswerValue(wikipedia); got != "Zimri Eder" {
+		t.Errorf("a note citing (82489.md): value = %q, want Zimri Eder", got)
+	}
+	if got := finalAnswerValue(goldForm); got != "Zimri Elder" {
+		t.Errorf("a tie note citing (64640.md, 55819.md): value = %q, want Zimri Elder", got)
+	}
+	// The tie clause must survive intact, inner parenthesis and all: the label
+	// governance demotes on it, and the note is what the reader is told.
+	ties := finalAnswerTies(goldForm)
+	if len(ties) != 1 {
+		t.Fatalf("ties = %v, want exactly one rival", ties)
+	}
+	if !strings.Contains(ties[0], "55819.md") {
+		t.Errorf("the tie note was truncated at the inner `)`: %q", ties[0])
+	}
+	// The answer line count must still see ONE line: the synthesis guard depends on it.
+	if got := finalAnswerLineCount(goldForm); got != 1 {
+		t.Errorf("answer lines = %d, want 1", got)
+	}
+	// The tail is NOT policed any more, and that is the point of the rewrite: the
+	// reader takes the value and leaves the delivery's shape to the auditor. Rejecting
+	// a line because of what followed the value is what produced false
+	// `answer_value_missing` suspicions on well-formed deliveries (the whole reason
+	// the tail whitelist is gone).
+	if got := finalAnswerValue(`Final Answer: **X** (assumption: y) and then some prose`); got != "X" {
+		t.Errorf("prose after the notes = %q, want X - the tail is the auditor's business", got)
+	}
+	if got := finalAnswerValue(`Final Answer: **X** (assumption: unbalanced (paren`); got != "X" {
+		t.Errorf("unbalanced note = %q, want X - a note cannot unmake a value", got)
+	}
+	// The ONE shape the reader must still refuse: an unterminated bold run, which is
+	// how a re-rendered document gets swallowed into a value.
+	if got := finalAnswerValue(`Final Answer: **X`); got != "" {
+		t.Errorf("unterminated bold run = %q, want empty", got)
+	}
+}
+
+// TestAnswerLineShapeZoo pins the WHOLE family of answer-line shapes against ONE
+// reader. The reader was a ladder of per-shape patterns until now, and every run that
+// produced a new shape cost a gate misreading (false `answer_value_missing`, value
+// checks skipped, a repair turn bought) before another pattern was added. This test is
+// the contract that replaces that ladder: any spelling of the same answer parses, and
+// the shapes below include ones no run has produced yet, because format drift is the
+// expected case rather than the exception.
+func TestAnswerLineShapeZoo(t *testing.T) {
+	cases := []struct {
+		name  string
+		final string
+		want  string
+	}{
+		{"plain", "Final Answer: **X**", "X"},
+		{"with note", "Guessed Answer: **X** (assumption: y)", "X"},
+		{"heading, blank line, value", "## Final Answer\n\n**X**", "X"},
+		{"heading, value on the next line", "## Final Answer\n**X**", "X"},
+		{"whole line bold", "**Final Answer: X**", "X"},
+		{"label bolded separately", "**Final Answer**: **X**", "X"},
+		{"space before the colon", "**Final Answer** : **X**", "X"},
+		{"blockquote and doubled space", "> **Guessed  Answer**: **X**", "X"},
+		{"list bullet", "- Final Answer: **X**", "X"},
+		{"full-width colon", "Final Answer：**X**", "X"},
+		{"un-bolded value", "Final Answer: X", "X"},
+		{"CRLF line ending", "Final Answer: **X**\r", "X"},
+		{"trailing spaces", "Final Answer: **X**   ", "X"},
+		{"note citing a document", "Final Answer: **X** (assumption: per (82489.md) it holds)", "X"},
+		{"whole-bold with a tie note", "**Guessed Answer: X** (tie: \"Y\" — both fit)", "X"},
+		{"heading and a bolded label line", "## Final Answer\n\n**Guessed Answer: X**", "X"},
+		{"CJK value with CJK note", "Final Answer: **关羽**（含\"过五关\"）", "关羽"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := finalAnswerValue(tc.final); got != tc.want {
+				t.Errorf("finalAnswerValue(%q) = %q, want %q", tc.final, got, tc.want)
+			}
+		})
+	}
+	// And the shapes that are NOT answer lines, for the same reason.
+	notAnswers := []string{
+		"## Final Answer",                       // a label with nothing under it
+		"## Final Answer\n\nA prose paragraph.", // prose is not a value
+		"Final Answer: **X",                     // unterminated bold run
+		"No answer line at all.",
+		"",
+	}
+	for _, text := range notAnswers {
+		if got := finalAnswerValue(text); got != "" {
+			t.Errorf("finalAnswerValue(%q) = %q, want empty", text, got)
+		}
 	}
 }

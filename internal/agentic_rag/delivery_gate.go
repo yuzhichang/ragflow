@@ -23,64 +23,248 @@ import (
 	"strings"
 )
 
-// finalAnswerValueRe extracts the value from the FOS-mandated answer line —
-// `Final Answer: **<value>**` or `Guessed Answer: **<value>** (assumption: ...)`
-// — tolerating heading markers, the bold tokens, and the answer line's trailing
-// NOTE CLAUSES: `(assumption: ...)` and `(tie: "<rival>" — <reason>)`, in either
-// order and any combination, because label governance appends its own assumption
-// note and a declared tie may already be on the line. The tail is a closed
-// vocabulary on purpose: anything else after the value makes the whole line
-// unparseable, finalAnswerValue returns "", and the gate then reads a deliverable
-// that HAS an answer as a value-less one (a rejection plus a repair turn, and
-// possibly finalizeAnswer — whose synthesis once re-rendered the entire document
-// and shipped two answer lines). Trailing sentence punctuation after the closing
-// bold is ALSO tolerated: models routinely write `**...15 人**。`, and the
-// strict whitespace-only tail flipped finalAnswerValue to empty on the 关羽
-// run — which pushed a perfectly good deliverable into finalizeAnswer, whose
-// output re-rendered the whole document and shipped TWO Final Answer lines.
-// The whitespace between the label and its value is NEWLINE-FREE on purpose, on
-// both sides of the optional colon. With a newline-tolerant `\s*` there, a
-// `## Final Answer` heading followed by a whole-bold answer line matched as ONE
-// answer and the VALUE came back as `Guessed Answer: Boston` — the label itself,
-// not the answer (q775, where the gate then treated a correct delivery as
-// value-less). The newline-separated shape belongs to finalAnswerTwoLineRe.
-var finalAnswerValueRe = regexp.MustCompile(
-	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer[^\S\n]*:?[^\S\n]*\*{2}([^*]+?)\*{2}` +
-		`(?:\s*\((?:assumption|tie):[^)]*\))*[。．.，,；;！!？?\s]*$`)
+// The answer line is READ, not matched. Five shapes have shown up in real runs —
+// plain (`Final Answer: **X**`), value-on-the-next-line (`## Final Answer` then
+// `**X**`), whole-line bold (`**Final Answer: X**`), the label bolded on its own
+// (`**Final Answer**: **X**`), and notes that CITE documents in parentheses
+// (`... 2 independent chunks (64640.md, 55819.md)`) — and each fix until now was one
+// more pattern for one more shape. That is a treadmill by construction: the tail
+// after the value is prose the model writes freely, so any whitelist of what may
+// follow a value will be wrong again. This parser keeps ONE pattern — the contract's
+// label vocabulary, which does not vary — and scans everything around it
+// tolerantly. The tail is not policed at all: an answer line is a line that carries
+// the label and a value, and what the notes say is the auditor's business.
+//
+// Cost of the old approach, measured: the tail whitelist rejected `(assumption:
+// ...(82489.md)...)` and the gate reported `answer_value_missing` while HOLDING a
+// well-formed line, skipping every value-based check and buying a repair turn.
 
-// finalAnswerTwoLineRe is the value-on-the-next-line variant models emit
-// routinely (`## Final Answer` then `**Bhowani Junction**`). q1228 shipped it
-// and the single-line matcher above read it as an EMPTY answer, which pushed a
-// perfectly retrievable deliverable into the recovery ladder instead of the
-// gate's repair loop.
-var finalAnswerTwoLineRe = regexp.MustCompile(
-	`(?im)^[^\S\n]*(?:#{1,4}\s*)?\**\s*(?:final|guessed)\s+answer\s*:?\s*\**\s*$` +
-		`\n[^\S\n]*\*{2}([^*\n][^\n]*?)\*{2}(?:\s*\((?:assumption|tie):[^)]*\))*\s*$`)
+// answerLineLabelRe recognises ONLY the label words, at the start of a line once the
+// markdown wrappers are stripped.
+var answerLineLabelRe = regexp.MustCompile(`(?i)^(final|guessed)\s+answer\b`)
 
-// finalAnswerWholeBoldRe is the whole-line-bold variant models emit: the label AND
-// the value inside ONE pair of asterisks — `**Final Answer: Boston**`. q775 shipped
-// exactly that (gold `Boston`, and the judge scored it), but finalAnswerValueRe
-// requires the value's OWN opening `**` after the colon, so the gate read a
-// correct, PASS-shaped delivery as VALUE-LESS: none of the value-based checks ran
-// on it and the label governance then explained a demotion it could not attribute.
-// One extra matcher is cheaper than teaching every call site to tolerate a missing
-// marker — and the requirements stay: a label-ONLY bold line (`**Final Answer**`)
-// matches neither, so it still reads as the value-less shape it is.
-// The colon is REQUIRED here, and no `#` heading prefix is allowed: a heading
-// (`## Final Answer`) with the value on the next line would otherwise let the
-// optional colon join the two lines and capture `Guessed Answer: Boston` as the
-// value — the two-line matcher exists for that shape, this one is for one line
-// with everything inside one pair of asterisks.
-var finalAnswerWholeBoldRe = regexp.MustCompile(
-	`(?im)^[^\S\n]*\*{2}\s*(?:final|guessed)\s+answer\s*:\s*\**\s*` +
-		`([^*\n]+?)\s*\*{2}(?:\s*\((?:assumption|tie):[^)]*\))*[。．.，,；;！!？?\s]*$`)
+// answerDecorations are the markdown wrappers a line may carry before its label:
+// indentation, blockquote, heading marks, emphasis, list bullets.
+const answerDecorations = " \t>*#_-–—"
 
-// finalAnswerTieRe extracts the rival named by one tie clause. A tie clause is
-// how a deliverable declares that the corpus cannot separate this rival from the
-// value it ships — the honest result on an under-determined question — while
-// still shipping exactly ONE value for the consumer to score (see
-// finalAnswerTies).
-var finalAnswerTieRe = regexp.MustCompile(`(?i)\(tie:\s*([^)]*)\)`)
+// answerValueDecorations is the same set WITHOUT the asterisk: on a line that carries
+// only a value, a leading `**` is the value's own bold marker, not a wrapper.
+const answerValueDecorations = " \t>#_-–—"
+
+// answerColons are the separators a label may carry: the ASCII colon and the
+// full-width one. Bilingual output is the norm here, and a full-width colon used to
+// survive into the value (`：X`), which the grounding check would then read as a
+// value that appears in no chunk.
+const answerColons = " \t:："
+
+// answerLine is the answer line as the gate READS it.
+type answerLine struct {
+	Label   string   // "final" or "guessed", lowercase
+	Value   string   // the answer's own text
+	Carrier []string // the line(s) that may carry notes and tie clauses
+	Lines   int      // how many lines the answer line spans (1 or 2)
+}
+
+// readAnswerLine returns the deliverable's answer line, or ok=false when there is
+// none. The FIRST line that parses wins; a deliverable that re-rendered itself ships
+// two answer lines and the gate still acts on a defined one (finalAnswerLineCount is
+// what flags the shape).
+func readAnswerLine(final string) (answerLine, bool) {
+	lines := strings.Split(final, "\n")
+	for i := range lines {
+		if al, ok := readAnswerLineAt(lines, i); ok {
+			return al, true
+		}
+	}
+	return answerLine{}, false
+}
+
+// readAnswerLineAt parses the answer line whose label sits on lines[i].
+func readAnswerLineAt(lines []string, i int) (answerLine, bool) {
+	rest, label, ok := stripAnswerLabel(lines[i])
+	if !ok {
+		return answerLine{}, false
+	}
+	al := answerLine{Label: label, Carrier: []string{lines[i]}, Lines: 1}
+	if value := answerValueToken(rest); value != "" {
+		al.Value = value
+		return al, true
+	}
+	// Nothing after the label: the value-on-the-next-line shape. Blank lines are
+	// skipped and the first non-blank line decides — if that is another label line,
+	// this heading carried no value and the caller keeps looking.
+	for j := i + 1; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) == "" {
+			continue
+		}
+		if _, _, isLabel := stripAnswerLabel(lines[j]); isLabel {
+			break
+		}
+		if value := answerBoldToken(lines[j]); value != "" {
+			al.Value = value
+			al.Carrier = append(al.Carrier, lines[j])
+			al.Lines = j - i + 1
+			return al, true
+		}
+		break
+	}
+	return answerLine{}, false
+}
+
+// stripAnswerLabel removes the markdown wrappers before a label and returns the text
+// after it. Only the label words are matched by a pattern; the wrappers are stripped
+// by character class, so `## Final Answer`, `**Guessed Answer**:` and
+// `> Guessed  Answer` all land on the same code path.
+func stripAnswerLabel(line string) (rest, label string, ok bool) {
+	trimmed := stripAnswerDecorations(line)
+	m := answerLineLabelRe.FindStringSubmatch(trimmed)
+	if m == nil {
+		return "", "", false
+	}
+	return trimmed[len(m[0]):], strings.ToLower(m[1]), true
+}
+
+// stripAnswerDecorations drops the leading markdown wrappers.
+func stripAnswerDecorations(line string) string {
+	return strings.TrimLeft(line, answerDecorations)
+}
+
+// answerValueToken reads the value that follows a label. Every shape lands here and
+// none of them needs its own pattern:
+//
+//   - `: **X**` or `**: **X**` — the bolded run after the colon;
+//   - `: X` — the plain text: a value the model forgot to bold is still the value,
+//     and the delivery's shape is the auditor's call, not the reader's;
+//   - `: X**` (whole-line bold) — the text up to the closing asterisks;
+//   - `: **<a whole document>` — "" — an UNTERMINATED bold run is the mega-value blob
+//     shape (a re-rendered document inside the value), never an answer.
+func answerValueToken(rest string) string {
+	rest = strings.TrimLeft(rest, " \t")
+	// The label may be bolded on its OWN, closing before the colon
+	// (`**Final Answer**: **X**`): that pair closes the label, not the value, and it
+	// has to be consumed before the value's opener is looked for - otherwise the
+	// opener is read as a decoration and an unterminated value slips through.
+	if strings.HasPrefix(rest, "**") {
+		rest = strings.TrimLeft(rest[2:], answerColons)
+	}
+	rest = strings.TrimLeft(rest, answerColons)
+	if strings.HasPrefix(rest, "**") {
+		body := rest[2:]
+		end := strings.Index(body, "**")
+		if end < 0 {
+			return ""
+		}
+		return strings.TrimSpace(body[:end])
+	}
+	if end := strings.Index(rest, "**"); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(strings.TrimRight(rest, " \t*"))
+}
+
+// answerBoldToken reads the bolded run that stands on its OWN line — the
+// value-on-the-next-line contract. A heading followed by a PARAGRAPH is a heading
+// (`## Final Answer` then prose is not an answer line; the old two-line matcher
+// required the bolded marker for exactly that reason), while the same-line form above
+// accepts a plain value because the label has already said what that line is.
+func answerBoldToken(line string) string {
+	rest := strings.TrimLeft(line, answerValueDecorations)
+	if !strings.HasPrefix(rest, "**") {
+		return ""
+	}
+	body := rest[2:]
+	end := strings.Index(body, "**")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(body[:end])
+}
+
+// answerNoteSafe strips the characters that would break the note they are wrapped
+// in: a newline would split the line the label governance rewrites, and brackets keep
+// a note from ending its own group on a reader's page.
+func answerNoteSafe(s string) string {
+	return strings.NewReplacer("(", "[", ")", "]", "\n", " ", "\r", " ").Replace(s)
+}
+
+// finalAnswerValue returns the value shipped on the FOS answer line, or "" when the
+// reply carries none. It is FORMAT PRESENCE, not a correctness judgement — the gate
+// uses it only to build the auditor payload, to decide whether a gate continuation may
+// replace the standing final, and to drive the grounding/list-only suspicions.
+// Whether the value is CORRECT is exclusively answer_auditor's business.
+func finalAnswerValue(final string) string {
+	al, ok := readAnswerLine(final)
+	if !ok {
+		return ""
+	}
+	if al.Value == "" || answerLabelRe.MatchString(al.Value) {
+		// A bolded LABEL is not a value: `## Final Answer` followed by
+		// `**Final Answer**` must keep reading as the value-less shape it is.
+		return ""
+	}
+	return al.Value
+}
+
+// finalAnswerLineCount counts the deliverable's answer lines. The finalize synthesis
+// must produce exactly ONE; zero means the answer line lost its shape and two-plus
+// means the model re-rendered the whole deliverable (the two-answer-line failure, or
+// the mega-value blob that swallows one), and either marks the synthesis degenerate.
+func finalAnswerLineCount(s string) int {
+	lines := strings.Split(s, "\n")
+	count := 0
+	for i := 0; i < len(lines); {
+		al, ok := readAnswerLineAt(lines, i)
+		if !ok {
+			i++
+			continue
+		}
+		count++
+		i += al.Lines
+	}
+	return count
+}
+
+// balancedParenEnd returns the index of the `)` closing the group that opens at
+// start, or -1 when the group never closes. Notes and tie clauses CITE documents
+// inside their parentheses — `... 2 independent chunks (64640.md, 55819.md)` — so the
+// body cannot be read with a `[^)]*` class, which is what made such an answer line
+// read as value-less.
+func balancedParenEnd(s string, start int) int {
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// answerTieNotes returns the bodies of the `(tie: ...)` clauses on one line, with
+// balanced nesting inside a body.
+func answerTieNotes(line string) []string {
+	var out []string
+	for i := 0; i < len(line); i++ {
+		if line[i] != '(' {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(line[i+1:]), "tie:") {
+			continue
+		}
+		end := balancedParenEnd(line, i)
+		if end < 0 {
+			break
+		}
+		out = append(out, strings.TrimSpace(line[i+len("(tie:"):end]))
+		i = end
+	}
+	return out
+}
 
 // unnamedTieRival stands in for a `(tie: )` clause that names nothing. It keeps
 // the declaration visible instead of letting a malformed clause read as "no tie
@@ -107,100 +291,21 @@ const unnamedTieRival = "(unnamed rival)"
 // constraint is NOT corpus-verified, which is exactly what `Final Answer`
 // claims. Matching mid-prose would demote honest `Final Answer` runs.
 func finalAnswerTies(final string) []string {
-	lines := strings.Split(final, "\n")
-	for i, line := range lines {
-		if !answerLabelRe.MatchString(line) {
-			continue
-		}
-		// The notes ride the line that carries the VALUE, which is not always
-		// the line that carries the label: in the value-on-the-next-line shape
-		// (`## Guessed Answer` then `**A** (tie: "B" - ...)`) the value line has
-		// no label of its own, and reading only labelled lines missed its tie
-		// (the regression the two-line case in TestFinalAnswerTie pins).
-		carriers := []string{line}
-		if i+1 < len(lines) {
-			carriers = append(carriers, lines[i+1])
-		}
-		var rivals []string
-		for _, carrier := range carriers {
-			for _, m := range finalAnswerTieRe.FindAllStringSubmatch(carrier, -1) {
-				rival := strings.TrimSpace(m[1])
-				if rival == "" {
-					rival = unnamedTieRival
-				}
-				rivals = append(rivals, rival)
+	al, ok := readAnswerLine(final)
+	if !ok {
+		return nil
+	}
+	var rivals []string
+	for _, carrier := range al.Carrier {
+		for _, note := range answerTieNotes(carrier) {
+			rival := strings.TrimSpace(note)
+			if rival == "" {
+				rival = unnamedTieRival
 			}
-		}
-		// A label line with no value (the `## Final Answer` heading above the
-		// value line) is not the answer line; keep looking.
-		if len(rivals) == 0 {
-			continue
-		}
-		return rivals
-	}
-	return nil
-}
-
-// answerNoteSafe makes text safe to append inside an answer line's
-// `(assumption: ...)` / `(tie: ...)` note. Both notes' regexes stop at the first
-// ')' — they are `[^)]*` — so a name carrying one (a title, a parenthetical, and
-// the tie clause lists rival TITLES) would truncate the note mid-way and cost
-// the line its value, which the gate then reads as a value-less deliverable. The
-// note is prose, not data: brackets read the same and cannot break the parse.
-func answerNoteSafe(s string) string {
-	return strings.NewReplacer("(", "[", ")", "]", "\n", " ", "\r", " ").Replace(s)
-}
-
-// finalAnswerValue returns the value shipped on the FOS answer line, or "" when
-// the reply carries none. It is FORMAT PRESENCE, not a correctness judgement —
-// the gate uses it only to build the auditor payload, to decide whether a gate
-// continuation may replace the standing final, and to trigger the
-// finalizeAnswer terminus. Whether the value is CORRECT is exclusively
-// answer_auditor's business.
-func finalAnswerValue(final string) string {
-	value := ""
-	m := finalAnswerValueRe.FindStringSubmatch(final)
-	switch {
-	case m != nil:
-		value = strings.TrimSpace(m[1])
-	default:
-		// The whole-bold single-line shape is tried BEFORE the two-line shape,
-		// and the order is load-bearing: `**Guessed Answer: Boston** (…)` also
-		// satisfies the two-line matcher's value pattern (it opens with `**` after
-		// an empty line), which captured `Guessed Answer: Boston` as the VALUE —
-		// the whole label, not the answer. This matcher is anchored to one line
-		// and requires the colon, so it splits them correctly; the two-line
-		// matcher keeps owning the shape it was written for (a label line, then a
-		// bare bolded value under it).
-		if mb := finalAnswerWholeBoldRe.FindStringSubmatch(final); mb != nil {
-			value = strings.TrimSpace(strings.Trim(mb[1], "*"))
-			break
-		}
-		// Fall back to the two-line shape before declaring the answer line
-		// empty: `Final Answer:` alone on its line with the value under it is
-		// a formatting habit, not a missing answer.
-		if m2 := finalAnswerTwoLineRe.FindStringSubmatch(final); m2 != nil {
-			value = strings.TrimSpace(strings.Trim(m2[1], "*"))
+			rivals = append(rivals, rival)
 		}
 	}
-	if value == "" || answerLabelRe.MatchString(value) {
-		// A bolded LABEL is not a value: `## Final Answer` followed by
-		// `**Final Answer**` parses as one answer under the two-line matcher, and
-		// what it hands back is the label itself. The deliverable is then the
-		// value-less shape it really is, which the gate treats (and reports) as
-		// such rather than scoring "Final Answer" as the answer.
-		return ""
-	}
-	return value
-}
-
-// finalAnswerLineCount counts the FOS answer lines in s. The finalize
-// synthesis must produce exactly ONE; zero (the answer line lost its shape)
-// or two-plus (the model re-rendered the deliverable inside an answer line)
-// marks the synthesis degenerate, and the caller ships the standing
-// deliverable instead.
-func finalAnswerLineCount(s string) int {
-	return len(finalAnswerValueRe.FindAllString(s, -1))
+	return rivals
 }
 
 // fosSectionRe matches the structural headings of the FOS deliverable.
