@@ -264,6 +264,10 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// tie path: three q283 re-runs picked a spelling silently (no tie clause
 		// at all), so a tie-only rule never fires.
 		"the better-attested form is the one that ships",
+		// A variant tie is STILL a tie: the count orders WHICH form ships and
+		// never the label (q283 run 1 shipped the single-source spelling under a
+		// bare `Final Answer` and the audit PASSed it).
+		"the count decides WHICH form ships and never the label",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)
