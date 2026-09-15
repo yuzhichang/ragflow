@@ -159,7 +159,31 @@ func (e *Engine) CreateChunkStore(ctx context.Context, baseName, datasetID strin
 
 // InsertChunks inserts chunks into a chunk index
 // If a chunk with the same id + doc_id + kb_id already exists, it will be updated with the new value
+//
+// It waits for an index refresh before returning, so a caller that reads the
+// chunks straight back (the chunk APIs, the debug endpoints) sees them right
+// away. Ingestion must use InsertChunksNoRefresh instead - see that method for
+// why the wait is the wrong trade there.
 func (e *Engine) InsertChunks(ctx context.Context, chunks []map[string]interface{}, baseName string, datasetID string) ([]string, error) {
+	return e.insertChunks(ctx, chunks, baseName, datasetID, "wait_for")
+}
+
+// InsertChunksNoRefresh inserts chunks without waiting for an index refresh:
+// they become visible on the index's normal refresh cycle (the KB index ships
+// with refresh_interval=1000ms), so the difference is at most a second of
+// visibility - against a measured ~0.5s median (1.0s p90, 5.0s max) of pure
+// latency per write when waiting.
+//
+// This is the ingestion path's contract, and it matches Python's: the Python
+// ingestion inserts chunks with refresh=False (rag/svr/task_executor_refactor/
+// chunk_service.py:386 and :423), while its API default stays "wait_for".
+func (e *Engine) InsertChunksNoRefresh(ctx context.Context, chunks []map[string]interface{}, baseName string, datasetID string) ([]string, error) {
+	return e.insertChunks(ctx, chunks, baseName, datasetID, "")
+}
+
+// insertChunks is the shared bulk-insert body. An empty refresh omits the
+// parameter, which leaves the decision to the index (no forced refresh).
+func (e *Engine) insertChunks(ctx context.Context, chunks []map[string]interface{}, baseName string, datasetID string, refresh string) ([]string, error) {
 	common.Info("ElasticsearchConnection.InsertChunks called", zap.String("index_name", baseName), zap.Int("chunkCount", len(chunks)))
 
 	if len(chunks) == 0 {
@@ -193,7 +217,7 @@ func (e *Engine) InsertChunks(ctx context.Context, chunks []map[string]interface
 		}
 		req := esapi.BulkRequest{
 			Body:    bytes.NewReader(buf.Bytes()),
-			Refresh: "wait_for",
+			Refresh: refresh,
 		}
 		res, err := req.Do(ctx, e.client)
 		if err != nil {
