@@ -110,6 +110,35 @@ def trigger(api: str, token: str, kb: str, doc_ids: list[str]) -> tuple[bool, st
     return True, "success"
 
 
+def _queue(args, state: dict, doc_ids: list[str], label: str) -> list[str]:
+    if not doc_ids:
+        log(f"{label}: nothing to queue")
+        return []
+    batches = [doc_ids[i : i + args.batch] for i in range(0, len(doc_ids), args.batch)]
+    queued = 0
+    for i, batch in enumerate(batches, 1):
+        if args.dry_run:
+            log(f"dry-run {label} batch {i}/{len(batches)}: {len(batch)} docs (e.g. {batch[:3]})")
+            queued += len(batch)
+            continue
+        for attempt in range(1, args.retries + 1):
+            ok, detail = trigger(args.api, args.token, args.kb, batch)
+            if ok:
+                break
+            log(f"{label} batch {i}/{len(batches)} attempt {attempt} failed: {detail}")
+            time.sleep(min(30, 3 * attempt))
+        else:
+            log(f"{label} batch {i}/{len(batches)} GIVING UP; rerun the script to resume")
+            break
+        state["triggered"].extend(batch)
+        save_state(args.state, state)
+        queued += len(batch)
+        if i % 5 == 0 or i == len(batches):
+            log(f"{label} batch {i}/{len(batches)} queued ({queued}/{len(doc_ids)} docs this run)")
+        time.sleep(args.gap)
+    return doc_ids[:queued]
+
+
 def queue_all(args, state: dict) -> list[str]:
     stems = load_stems(args)
     log(f"targets in list: {len(stems)}")
@@ -120,62 +149,72 @@ def queue_all(args, state: dict) -> list[str]:
     if missing:
         log(f"WARNING: {len(missing)} stems have no document row (first 5: {missing[:5]})")
 
-    done = set(state["triggered"])
-    todo = [docs[f"{s}.md"]["id"] for s in stems if f"{s}.md" in docs and docs[f"{s}.md"]["id"] not in done]
-    log(f"already queued in an earlier run: {len(done)}; to queue now: {len(todo)}")
-    if not todo:
-        return []
-
     for stem in stems:
         row = docs.get(f"{stem}.md")
         if row and row["id"] not in state["before"]:
             state["before"][row["id"]] = row["chunk_num"]
 
-    batches = [todo[i : i + args.batch] for i in range(0, len(todo), args.batch)]
-    queued = 0
-    for i, batch in enumerate(batches, 1):
-        if args.dry_run:
-            log(f"dry-run batch {i}/{len(batches)}: {len(batch)} docs (e.g. {batch[:3]})")
-            queued += len(batch)
-            continue
-        for attempt in range(1, args.retries + 1):
-            ok, detail = trigger(args.api, args.token, args.kb, batch)
-            if ok:
-                break
-            log(f"batch {i}/{len(batches)} attempt {attempt} failed: {detail}")
-            time.sleep(min(30, 3 * attempt))
-        else:
-            log(f"batch {i}/{len(batches)} GIVING UP; rerun the script to resume")
-            break
-        state["triggered"].extend(batch)
-        save_state(args.state, state)
-        queued += len(batch)
-        if i % 5 == 0 or i == len(batches):
-            log(f"batch {i}/{len(batches)} queued ({queued}/{len(todo)} docs this run)")
-        time.sleep(args.gap)
-    return todo
+    todo = [docs[f"{s}.md"]["id"] for s in stems if f"{s}.md" in docs and docs[f"{s}.md"]["id"] not in set(state["triggered"])]
+    log(f"already queued in an earlier run: {len(state['triggered'])}; to queue now: {len(todo)}")
+    return _queue(args, state, todo, "queue")
+
+
+def retry_failed(args, state: dict) -> list[str]:
+    """Re-queue documents whose latest ingestion task FAILED.
+
+    A re-parse deletes the old chunks before parsing, so a document that failed
+    afterwards (typically the embedding backend answering 429 Too Many Requests
+    once a very large document needed thousands of embeddings) is left with
+    nothing. document.chunk_num cannot be used as the failure signal: a document
+    that is merely queued also sits at chunk_num=0, so retrying on that would
+    re-queue the whole backlog over and over. The ingestion task status is the
+    honest signal.
+    """
+    failed = sorted(failed_documents(args.kb))
+    log(f"retry: {len(failed)} documents in kb {args.kb} have a FAILED latest task")
+    return _queue(args, state, failed, "retry")
+
+
+def failed_documents(kb: str) -> set[str]:
+    """Document ids whose latest ingestion task FAILED."""
+    rows = mysql(
+        "SELECT t.document_id FROM ingestion_task t "
+        "JOIN (SELECT document_id, MAX(create_time) AS mx FROM ingestion_task "
+        f"WHERE dataset_id='{kb}' GROUP BY document_id) x "
+        "ON x.document_id = t.document_id AND x.mx = t.create_time "
+        "WHERE t.status='FAILED';"
+    )
+    return {r[0] for r in rows}
 
 
 def wait_for(args, doc_ids: list[str]) -> None:
-    """Poll until every queued document leaves UNSTART/RUNNING, then summarise."""
+    """Poll until no queued document is still waiting for chunks, then summarise.
+
+    Completion is measured by chunk_num, not by document.run: a re-parse deletes
+    the chunks first, and a document that is merely queued already reads run=3
+    with chunk_num=0, so run alone cannot tell "queued" from "finished". A
+    document whose latest task FAILED is not pending either - it needs the retry
+    pass, not more waiting.
+    """
     ids = set(doc_ids)
+    state_by_id: dict[str, tuple[str, int]] = {}
+    failed: set[str] = set()
     while True:
         rows = mysql(f"SELECT id, run, chunk_num FROM document WHERE kb_id='{args.kb}';")
         state_by_id = {r[0]: (r[1], int(r[2] or 0)) for r in rows if r[0] in ids}
-        pending = sum(1 for v in state_by_id.values() if v[0] in ("0", "1"))
-        failed = [i for i, v in state_by_id.items() if v[0] == "4"]
-        empty = [i for i, v in state_by_id.items() if v[0] == "3" and v[1] == 0]
-        log(f"queued={len(state_by_id)} pending={pending} failed={len(failed)} done_but_empty={len(empty)}")
+        failed = failed_documents(args.kb) & ids
+        pending = sum(1 for i, v in state_by_id.items() if v[1] == 0 and i not in failed)
+        with_chunks = sum(1 for v in state_by_id.values() if v[1] > 0)
+        log(f"queued={len(state_by_id)} with_chunks={with_chunks} pending={pending} failed={len(failed)}")
         if pending == 0:
             break
         time.sleep(args.poll)
 
     # Post-run verification: how many documents gained chunks (the fix recovered
     # text, so the chunker emits more chunks than the damaged parse did).
-    state = load_state(args.state)
-    before = state.get("before", {})
+    before = load_state(args.state).get("before", {})
     improved = same = 0
-    for doc_id, (run, chunk_num) in state_by_id.items():
+    for doc_id, (_run, chunk_num) in state_by_id.items():
         was = before.get(doc_id)
         if was is None:
             continue
@@ -183,9 +222,9 @@ def wait_for(args, doc_ids: list[str]) -> None:
             improved += 1
         else:
             same += 1
-    log(f"RESULT: {improved} documents gained chunks, {same} unchanged, {len(failed)} failed, {len(empty)} done-but-empty")
+    log(f"RESULT: {improved} documents gained chunks, {same} unchanged, {len(failed)} failed")
     if failed:
-        log(f"failed ids (rerun with --docs): {','.join(failed[:20])}{' ...' if len(failed) > 20 else ''}")
+        log(f"failed ids: {','.join(sorted(failed)[:20])}{' ...' if len(failed) > 20 else ''}")
 
 
 def main() -> None:
@@ -201,15 +240,20 @@ def main() -> None:
     ap.add_argument("--state", default=STATE_DEFAULT)
     ap.add_argument("--wait", action="store_true", help="poll until the queued documents finish")
     ap.add_argument("--poll", type=int, default=60, help="seconds between status polls with --wait")
+    ap.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="instead of queueing new work, re-queue target documents that ended up with zero chunks",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     args.list = os.path.abspath(args.list)
     state = load_state(args.state)
-    queued = queue_all(args, state)
+    queued = retry_failed(args, state) if args.retry_failed else queue_all(args, state)
     log(f"queued {len(queued)} documents this run")
-    if args.wait and queued and not args.dry_run:
-        wait_for(args, queued + state["triggered"])
+    if args.wait and not args.dry_run and state["triggered"]:
+        wait_for(args, state["triggered"])
 
 
 if __name__ == "__main__":

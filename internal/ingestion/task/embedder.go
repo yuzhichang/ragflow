@@ -18,8 +18,14 @@ package task
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"math"
+	"math/rand"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ragflow/internal/dao"
@@ -53,16 +59,22 @@ func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.E
 	config := &models.EmbeddingConfig{Dimension: 0}
 	req := models.EmbedRequest{Texts: texts}
 
-	// Retry on rate-limit (HTTP 429 / TPM exceeded) with bounded exponential
-	// backoff. With multiple ingestor workers embedding concurrently, the shared
-	// upstream TPM quota is frequently exceeded transiently; a short retry turns
-	// a hard failure into a successful parse instead of marking the doc FAILED.
-	const maxAttempts = 5
 	var (
 		embeds []models.EmbeddingData
 		err    error
 	)
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	// The cooldown is scoped to this provider instance: workers embedding
+	// through the same credentials+endpoint back off together, everything else
+	// keeps running.
+	quota := e.quotaKey()
+	for attempt := 1; attempt <= maxEncodeAttempts; attempt++ {
+		// Sit out any cooldown that another worker's 429 started. The provider
+		// quota is shared, so a worker that keeps firing while the window is
+		// exhausted only earns more 429s - and the whole point of the cooldown
+		// is that one worker's rejection damps all of them.
+		if cerr := waitOutCooldown(ctx, quota); cerr != nil {
+			return nil, cerr
+		}
 		embeds, err = e.model.ModelDriver.Embed(ctx, e.model.ModelName, req, e.model.APIConfig, config, nil)
 		if err == nil {
 			break
@@ -70,11 +82,11 @@ func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.E
 		if !isRateLimitErr(err) {
 			return nil, err
 		}
-		if attempt == maxAttempts {
+		if attempt == maxEncodeAttempts {
 			return nil, err
 		}
-		// Exponential backoff: 2s, 4s, 8s, 16s. Honor ctx cancellation.
-		wait := time.Duration(1<<uint(attempt)) * time.Second
+		wait := encodeBackoff(attempt, err)
+		startCooldown(quota, wait)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -90,6 +102,163 @@ func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.E
 		vecs[i] = componentpkg.EmbeddingResult{Vector: v.Embedding, TokenCount: v.TokenCount}
 	}
 	return vecs, nil
+}
+
+// Retry policy for rate-limited embedding calls.
+//
+// A TPM-limited provider (SiliconFlow bge-m3 answers "429 ... TPM limit
+// reached") refills its quota on a one-minute window, so a retry schedule that
+// exhausts itself inside a single window cannot succeed: the 2s/4s/8s/16s of the
+// original implementation always ran out while the quota was still spent, and
+// every concurrent worker kept hammering the same exhausted quota, turning a
+// transient throttle into a FAILED document whose chunks had already been
+// deleted. The schedule below spans roughly two and a half windows, and the
+// shared cooldown makes the workers back off together instead of independently.
+//
+// These are variables rather than constants so tests can shrink them.
+var (
+	maxEncodeAttempts   = 6
+	encodeBackoffBase   = 5 * time.Second
+	encodeBackoffMax    = 120 * time.Second
+	encodeBackoffJitter = 0.2
+)
+
+// providerQuotaKey identifies the thing a TPM quota actually belongs to: one
+// provider instance (endpoint + credentials + model). See quotaKey.
+type providerQuotaKey string
+
+// rateLimitCooldowns parks callers per provider instance - and only per provider
+// instance.
+//
+// The unit is the provider instance, not the process: a TPM quota is owned by
+// the credentials, so a worker that got throttled on provider A must not stall
+// ingestion that talks to provider B, and must not stall a different dataset
+// embedding through a different model. It cannot be the embedder value either:
+// newEmbedderResolver builds a fresh embedder for every tokenizer invocation
+// (one per document), so state hung off the value would never be shared by the
+// workers that are actually competing for the same quota. A keyed registry
+// gives exactly the required scope - all workers embedding through the same
+// provider instance back off together, everyone else is untouched.
+var rateLimitCooldowns = struct {
+	sync.Mutex
+	until map[providerQuotaKey]time.Time
+}{until: make(map[providerQuotaKey]time.Time)}
+
+// startCooldown parks callers sharing `key` for at least d, extending an active
+// cooldown but never shortening it.
+func startCooldown(key providerQuotaKey, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	deadline := time.Now().Add(d)
+	rateLimitCooldowns.Lock()
+	defer rateLimitCooldowns.Unlock()
+	if existing, ok := rateLimitCooldowns.until[key]; !ok || deadline.After(existing) {
+		rateLimitCooldowns.until[key] = deadline
+	}
+	// Keys are bounded by the number of configured provider instances, so this
+	// is housekeeping rather than a leak fix.
+	if len(rateLimitCooldowns.until) > 64 {
+		for k, until := range rateLimitCooldowns.until {
+			if !until.After(time.Now()) {
+				delete(rateLimitCooldowns.until, k)
+			}
+		}
+	}
+}
+
+// cooldownRemaining reports how long the cooldown for `key` still has to run.
+func cooldownRemaining(key providerQuotaKey) time.Duration {
+	rateLimitCooldowns.Lock()
+	defer rateLimitCooldowns.Unlock()
+	return time.Until(rateLimitCooldowns.until[key])
+}
+
+// waitOutCooldown blocks until the cooldown for `key` expires, honoring ctx.
+func waitOutCooldown(ctx context.Context, key providerQuotaKey) error {
+	remaining := cooldownRemaining(key)
+	if remaining <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// quotaKey derives the provider-instance key the cooldown is scoped to. The API
+// key decides who owns the quota, so it is part of the key but hashed: the key
+// must never carry a plaintext secret.
+func (e *embedder) quotaKey() providerQuotaKey {
+	if e == nil || e.model == nil {
+		return providerQuotaKey("embedder:unknown")
+	}
+	var baseURL, region, apiKey string
+	if cfg := e.model.APIConfig; cfg != nil {
+		baseURL = derefString(cfg.BaseURL)
+		region = derefString(cfg.Region)
+		apiKey = derefString(cfg.ApiKey)
+	}
+	sum := sha256.Sum256([]byte(apiKey))
+	return providerQuotaKey(fmt.Sprintf("%s|%s|%s|%x", baseURL, region, derefString(e.model.ModelName), sum[:8]))
+}
+
+// derefString safely dereferences an optional string.
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// encodeBackoff returns how long to wait before retry `attempt` (1-based) of a
+// call that failed with `err`. A provider-supplied Retry-After wins; otherwise
+// the delay grows exponentially with jitter so concurrent workers spread out
+// instead of retrying in lockstep.
+func encodeBackoff(attempt int, err error) time.Duration {
+	if hint, ok := retryAfterFromError(err); ok {
+		if hint > encodeBackoffMax {
+			return encodeBackoffMax
+		}
+		return hint
+	}
+	delay := float64(encodeBackoffBase) * math.Pow(2, float64(attempt-1))
+	if delay > float64(encodeBackoffMax) {
+		delay = float64(encodeBackoffMax)
+	}
+	if encodeBackoffJitter > 0 {
+		spread := delay * encodeBackoffJitter
+		delay += (rand.Float64()*2 - 1) * spread
+	}
+	if delay < float64(time.Second) {
+		delay = float64(time.Second)
+	}
+	return time.Duration(delay)
+}
+
+// retryAfterPattern matches the seconds form of Retry-After surfaced by the
+// model drivers ("retry-after: 30", "retry_after=30", "retry after 30 seconds").
+var retryAfterPattern = regexp.MustCompile(`(?i)retry[-_ ]?after["'\s:=]+(\d+(\.\d+)?)`)
+
+// retryAfterFromError extracts a Retry-After hint in seconds from an error
+// message, if the driver carried one.
+func retryAfterFromError(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	m := retryAfterPattern.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0, false
+	}
+	seconds, perr := strconv.ParseFloat(m[1], 64)
+	if perr != nil || seconds <= 0 {
+		return 0, false
+	}
+	return time.Duration(seconds * float64(time.Second)), true
 }
 
 // isRateLimitErr reports whether err is an HTTP 429 / rate-limit / quota error

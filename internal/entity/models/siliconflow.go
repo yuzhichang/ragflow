@@ -211,6 +211,14 @@ func (s *SiliconflowModel) Embed(ctx context.Context, modelName *string, request
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Carry Retry-After in the message when the provider sends one: a
+		// TPM-limited provider knows when the quota window refills, and the
+		// retry layer in internal/ingestion/task/embedder.go would otherwise
+		// have to guess a delay that is either too short (another 429) or far
+		// longer than necessary.
+		if retryAfter := strings.TrimSpace(resp.Header.Get("Retry-After")); retryAfter != "" {
+			return nil, fmt.Errorf("SILICONFLOW API error: %s, retry-after: %s, body: %s", resp.Status, retryAfter, string(body))
+		}
 		return nil, fmt.Errorf("SILICONFLOW API error: %s, body: %s", resp.Status, string(body))
 	}
 
