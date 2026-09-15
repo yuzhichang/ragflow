@@ -135,10 +135,15 @@ def probe_row(
         "gold_answer": (question or {}).get("gold_answer") or row.get("gold_answer"),
         "expected_docs": [str(x) for x in ((question or {}).get("expected_doc_ids") or row.get("expected_doc_ids") or [])],
     }
-    # The ledger's own accounting should agree with the counts the backend has
-    # been emitting all along; a mismatch means the ids and the totals describe
-    # different populations, which would silently invalidate every rate below.
-    out["counts_agree"] = (not deep) or (isinstance(row.get("deep_read_chunks"), int) and row["deep_read_chunks"] == len(deep))
+    # The two accounts are different populations on purpose: `deep_read_chunks`
+    # counts RENDERS (the same chunk read twice counts twice, which is what its
+    # docstring has always said) while the id list dedupes. The invariant the
+    # ledger can be checked against is therefore ⊆, not =. A unique-id count
+    # ABOVE the render count would mean the ledger records something the counter
+    # never saw, which would invalidate every rate below.
+    renders = row.get("deep_read_chunks")
+    out["deep_read_renders"] = renders
+    out["counts_agree"] = (not deep) or (isinstance(renders, int) and len(deep) <= renders)
 
     gold = str(out["gold_answer"] or "").strip().lower()
     gold_chunks: list[dict[str, Any]] = []
