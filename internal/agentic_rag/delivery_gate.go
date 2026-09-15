@@ -340,15 +340,22 @@ func recordAuditVerdict(audit *GateAuditRecord, verdict string) {
 }
 
 // auditPayload is the ONE JSON object answer_auditor audits: the producer's
-// complete FINAL message, verbatim, plus the gate's own mechanical suspicions
-// about it. The question under audit is pinned into the auditor's system prompt
-// at construction time and never re-sent.
+// complete FINAL message, verbatim, plus the gate's own reading of its LABEL.
+// The question under audit is pinned into the auditor's system prompt at
+// construction time and never re-sent.
+//
+// The gate's mechanical suspicions used to ride here as `gate_prechecks`. They
+// are gone. The one reading the gate still has mechanically is "the deliverable
+// carries no answer label", which the auditor reads off final_message itself
+// (its contract fails a missing answer) — and every other reading the gate ever
+// carried there was a bet on phrasing that lost: a missed pattern read a
+// well-formed deliverable as value-less, skipped the checks built on it and
+// bought a whole repair turn (q775, twice on q283). What survives is the fact
+// the gate establishes without reading content and the auditor cannot
+// reconstruct from the text it is handed: the label that text was shipped
+// under.
 type auditPayload struct {
 	FinalMessage string `json:"final_message"`
-	// GatePrechecks carries the gate's text-only reading of the deliverable (see
-	// collectGatePrechecks) as EVIDENCE for the auditor, not as a verdict: the
-	// auditor must rule on every entry, and what ships follows from its verdict.
-	GatePrechecks []string `json:"gate_prechecks,omitempty"`
 	// GateAnswerLabel is the gate's label reading ("final"/"guessed"), sent as evidence
 	// for the label-consistency rules the auditor owns: a declared tie must ship as
 	// `Guessed Answer`, and a `Final Answer` that contradicts its own evidence is a
@@ -361,57 +368,11 @@ type auditPayload struct {
 // extraction: the auditor reads the FINAL message's own md structure (##
 // Candidate Matrix, ## Reasoning Chain, the Final/Guessed Answer line) and echoes
 // it back with audit opinions, so the gate must not reshape or truncate it.
-func buildAuditPayload(final string, prechecks []string) string {
-	b, err := json.Marshal(auditPayload{FinalMessage: final, GatePrechecks: prechecks, GateAnswerLabel: answerLabel(final)})
+func buildAuditPayload(final string) string {
+	b, err := json.Marshal(auditPayload{FinalMessage: final, GateAnswerLabel: answerLabel(final)})
 	if err != nil {
 		// json.Marshal of plain strings cannot fail.
 		return ""
 	}
 	return string(b)
-}
-
-// precheckNoAnswerLine is the gate's own reading, and it is a LABEL reading: a
-// deliverable without an answer label has no answer to audit. It is record vocabulary,
-// so it is a stable identifier rather than prose.
-// precheckNoAnswerLine is the gate's ONLY precheck kind: the deliverable does not
-// contain the answer label. Everything else about the text - whether the value fills
-// the slot, whether a line merely cites a document, whether a tie is real - is
-// answer_auditor's judgement, and its contract carries those defects.
-const precheckNoAnswerLine = "answer_line_missing"
-
-// collectGatePrechecks returns the gate's text-only reading of a deliverable that is
-// about to be audited, as EVIDENCE for the auditor rather than a verdict. Two readings
-// survive, and neither one has to understand the answer:
-//
-//   - the answer LABEL is missing (the gate's own reading, always available);
-//   - the citation-only grounding of the matrix lines (a structural reading of the
-//     deliverable's own lines, not of the answer).
-//
-// The text-based readings are gone with the content reader: the value checks needed
-// the value STRING, and the citation check read the matrix lines. The auditor's own
-// contract covers all of them - and more strictly, since it reads the CITED evidence
-// rather than "anywhere in what the run read".
-func collectGatePrechecks(final string) []string {
-	if strings.TrimSpace(final) == "" {
-		return nil // nothing to audit; the caller asks for a deliverable
-	}
-	var prechecks []string
-	// ONE reading, and it does not parse the answer: the phrase's presence.
-	if !hasAnswerLine(final) {
-		prechecks = append(prechecks, precheckNoAnswerLine+
-			": the deliverable does not contain `Final Answer` / `Guessed Answer`; the contract"+
-			" requires the label as its LAST line")
-	}
-	return prechecks
-}
-
-// precheckKinds extracts each precheck's kind (its text before the first colon)
-// so the record can count them per kind rather than as one lump.
-func precheckKinds(prechecks []string) []string {
-	kinds := make([]string, 0, len(prechecks))
-	for _, p := range prechecks {
-		kind, _, _ := strings.Cut(p, ":")
-		kinds = append(kinds, strings.TrimSpace(kind))
-	}
-	return kinds
 }

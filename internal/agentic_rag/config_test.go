@@ -248,10 +248,6 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// deliverable-relative, so a producer that never surfaces the family can
 		// pass with any member (x1: [0], PASS, a wrong sibling, 39s).
 		"sibling work named by a cited document never tested",
-		// The gate's own mechanical reading is EVIDENCE for the auditor, never a
-		// verdict: the checks that used to skip the audit ride the payload now.
-		"gate_prechecks",
-		"gate precheck cleared",
 		"answer value appears in no cited evidence",
 		// The value's own FORM: a sentence/lyric is not a slot-filler, and a
 		// partial name is not a filled full-name slot (q521 and q253 passed both).
@@ -276,6 +272,24 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)
+		}
+	}
+	// The gate sends no prechecks any more, and the prompt must not describe
+	// them: a stale paragraph re-teaches the auditor to wait for a field the
+	// payload never carries, and its absence then reads as "the gate found
+	// nothing wrong" instead of "the gate no longer looks". The payload's own
+	// shape is pinned in delivery_gate_test.
+	for _, gone := range []string{
+		"gate_prechecks",
+		"gate precheck cleared",
+		"answer_line_missing",
+		"ungrounded_answer_value",
+		"list_only_answer_value",
+		"answer_value_missing",
+		"citation_only_grounding",
+	} {
+		if strings.Contains(auditor.Content, gone) {
+			t.Errorf("the auditor prompt must not describe the retired precheck machinery (%q)", gone)
 		}
 	}
 	for _, id := range []string{"smart-reasoning", "smart-grep", "smart-grep-bm25"} {

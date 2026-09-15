@@ -165,12 +165,6 @@ type GateAuditRecord struct {
 	// separately from Rejections so a benchmark can tell a citation-only matrix from
 	// a missing-value one.
 	CitationGroundings int `json:"citation_groundings,omitempty"`
-	// PrecheckCounts counts, per kind, the rounds in which the gate's own
-	// mechanical checks disagreed with the deliverable (see
-	// collectGatePrechecks). Kept apart from Rejections because those rounds do
-	// get AUDITED now: the numbers must show how often the gate's regex
-	// disagreed, not how often it managed to block the audit.
-	PrecheckCounts map[string]int `json:"precheck_counts,omitempty"`
 	// AuditVerdicts holds an excerpt of EVERY audit verdict, oldest first, in
 	// step with Suspects. The counts alone say a curve moved 5→3→1→0 but never
 	// WHAT was contested, so a failure could only be explained by re-reading the
@@ -1005,20 +999,6 @@ func Run(ctx context.Context, in Input) (string, error) {
 // GateAuditRecord.AuditFailures.
 // countCitationGrounding records a deliverable refused for grounding candidates on
 // citations only. See GateAuditRecord.CitationGroundings.
-// countGatePrechecks records the kinds of the gate's mechanical suspicions for
-// one round. A precheck round still gets audited, so its outcome is in Suspects
-// too; this map is what tells an operator WHICH reading disagreed.
-func countGatePrechecks(audit *GateAuditRecord, kinds []string) {
-	if audit == nil || len(kinds) == 0 {
-		return
-	}
-	if audit.PrecheckCounts == nil {
-		audit.PrecheckCounts = make(map[string]int, len(kinds))
-	}
-	for _, kind := range kinds {
-		audit.PrecheckCounts[kind]++
-	}
-}
 
 // adoptableContinuation reports whether a repair continuation may replace the
 // standing deliverable: it must carry the FOS SECTIONS. An answer line alone may
@@ -1217,49 +1197,31 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		// answerLabel). The label rides into the payload as evidence for the
 		// label-consistency rules.
 		answerLbl := answerLabel(final)
-		// The gate's own checks are SUSPICIONS, not verdicts (see collectGatePrechecks):
-		// they ride into the audit payload and the auditor rules on them, so a mechanical
-		// reading never costs a pass by itself — which, over 24 hard benchmark questions,
-		// is exactly what it cost (62 rejections, 11 short-circuits, and no audit at all
-		// on more than half the set).
-		prechecks := collectGatePrechecks(final)
-		if len(prechecks) > 0 {
-			// NOT countGateRejection: the gate does not refuse here any more, the
-			// auditor rules on these suspicions in the same pass. Counting them as
-			// refusals made every archived row claim the gate refused deliverables it
-			// audited - q323's row read `rejections=7` against seven precheck rounds
-			// and no refusal at all, and q350/q223 the same (3 and 8). The kinds are
-			// recorded separately, which is what the number was being read for.
-			countGatePrechecks(in.audit, precheckKinds(prechecks))
-			// Full deliverable at DEBUG, untruncated. The question that produced this
-			// line was "did the gate hold the text that was archived?", and the
-			// answer is the text itself - a 2000-char head cannot show an answer
-			// line, which is always the LAST line. Info/Warn lines stay capped:
-			// they are what a normal run prints, and the payload's head is enough
-			// to see which pass is talking.
-			common.DebugCtx(ctx, "agentic_rag: delivery gate hold (full)",
-				zap.Int("pass", pass+1), zap.String("answer_label", answerLbl),
-				zap.String("deliverable", final))
-			common.InfoCtx(ctx, "agentic_rag: delivery gate prechecks (the audit decides)",
-				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks),
-				// The gate's OWN reading, plus the deliverable's last line. Without
-				// these two the log cannot answer "did the gate hold the text that
-				// was archived?" - the audit payload is truncated at 2000 chars FROM
-				// THE START, so the answer line (the last line) never reaches the
-				// log, and a precheck round whose archived delivery is well formed is
-				// indistinguishable from a stale-read bug. Measured on q283: two such
-				// rounds, and the archived text does carry a well-formed answer line.
-				zap.String("gate_answer_label", answerLbl),
-				zap.String("deliverable_tail", truncateForLog(lastNonBlankLine(final), 200)))
-		}
 		if strings.TrimSpace(final) != "" {
 			// The gate audits the deliverable it actually holds — audit-target
 			// freshness is structural, not tracked. The question lives in the
 			// auditor's system prompt, so the payload carries the deliverable
 			// plus the gate's own reading of it.
 			auditedFinal = final
+			// The hold log: the full deliverable at DEBUG, plus ONE capped INFO line
+			// carrying the gate's own label reading and the deliverable's last line.
+			// The question it answers is "did the gate hold the text that was
+			// archived?", and only the text itself can — the audit payload is
+			// truncated at 2000 chars FROM THE START, so the answer line (always the
+			// LAST line) never reaches the log, and a round whose archived delivery is
+			// well formed was indistinguishable from a stale-read bug (measured on
+			// q283: two such rounds, and the archived text does carry a well-formed
+			// answer line). It used to fire only when the gate raised a precheck;
+			// prechecks are gone, and this record is the part of them worth keeping.
+			common.DebugCtx(ctx, "agentic_rag: delivery gate hold (full)",
+				zap.Int("pass", pass+1), zap.String("answer_label", answerLbl),
+				zap.String("deliverable", final))
+			common.InfoCtx(ctx, "agentic_rag: delivery gate hold",
+				zap.Int("pass", pass+1),
+				zap.String("gate_answer_label", answerLbl),
+				zap.String("deliverable_tail", truncateForLog(lastNonBlankLine(final), 200)))
 			var err error
-			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, prechecks, in.toolCallCounts)
+			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts)
 			if err != nil {
 				// The auditor itself failed (LLM timeout, tool outage).
 				// Retrying inside this request rarely helps; fall through to
@@ -1601,13 +1563,12 @@ func gateRunAudit(
 	auditor adk.Agent,
 	conv *conversation,
 	final string,
-	prechecks []string,
 	toolCallCounts map[string]int,
 ) (string, error) {
 	if auditor == nil {
 		return "", fmt.Errorf("agentic_rag: auditor unavailable")
 	}
-	payload := buildAuditPayload(final, prechecks)
+	payload := buildAuditPayload(final)
 	common.WarnCtx(ctx, "agentic_rag: gate-run audit start",
 		zap.String("payload", truncateForLog(payload, 2000)))
 	// The auditor's INPUT and OUTPUT at full length, debug only: the tail of both is
@@ -1943,8 +1904,8 @@ func loggable(s string, max int) string {
 // lastNonBlankLine returns the deliverable's last non-empty line - the answer
 // line, when the deliverable is well formed. It exists to make the gate's own
 // reading auditable: the audit payload is logged truncated FROM THE START, so the
-// answer line never reaches the log, and a precheck round that reports a missing
-// value cannot be checked against the text the run shipped.
+// answer line never reaches the log, and a round whose report says a value is
+// missing cannot be checked against the text the run shipped.
 func lastNonBlankLine(s string) string {
 	lines := strings.Split(s, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

@@ -70,7 +70,7 @@ func TestBuildAuditPayload(t *testing.T) {
 		"- Clue: Bob signed in 1897 (doc: a.md, doc_id: d1, chunk_id: c1, snippet: \"...\")\n" +
 		"Final Answer: **1897**\n"
 
-	p := buildAuditPayload(final, nil)
+	p := buildAuditPayload(final)
 	var decoded auditPayload
 	if err := json.Unmarshal([]byte(p), &decoded); err != nil {
 		t.Fatalf("buildAuditPayload produced invalid JSON: %v\n%s", err, p)
@@ -80,25 +80,44 @@ func TestBuildAuditPayload(t *testing.T) {
 	if decoded.FinalMessage != final {
 		t.Errorf("final_message not verbatim:\n got %q\nwant %q", decoded.FinalMessage, final)
 	}
-
-	// The gate's own reading rides the SAME payload when it has one, and is
-	// absent when it does not: evidence for the auditor's verdict, never a
-	// verdict of its own.
-	if decoded.GatePrechecks != nil {
-		t.Errorf("a clean deliverable must not carry an empty precheck list: %v", decoded.GatePrechecks)
+	// The label is the ONE thing the gate still states about the deliverable:
+	// everything else about the text is the auditor's judgement.
+	if decoded.GateAnswerLabel != "final" {
+		t.Errorf("gate_answer_label = %q, want %q", decoded.GateAnswerLabel, "final")
 	}
-	withPre := buildAuditPayload(final, []string{"answer_line_missing: no label"})
-	var decodedPre auditPayload
-	if err := json.Unmarshal([]byte(withPre), &decodedPre); err != nil {
-		t.Fatalf("buildAuditPayload produced invalid JSON: %v", err)
+	// The payload's KEY SET is the contract. A field added here without the
+	// auditor's prompt learning about it is exactly the drift that left
+	// gate_prechecks documented as evidence the gate could no longer send, so
+	// pin the shape: the deliverable, and the label.
+	keys := payloadKeys(t, p)
+	if len(keys) != 2 || !keys["final_message"] || !keys["gate_answer_label"] {
+		t.Errorf("payload fields = %v, want final_message + gate_answer_label only", keys)
 	}
-	if len(decodedPre.GatePrechecks) != 1 || decodedPre.GatePrechecks[0] != "answer_line_missing: no label" {
-		t.Errorf("prechecks must ride the payload, got %v", decodedPre.GatePrechecks)
+	// A deliverable with no label states that by OMITTING the label, not by
+	// carrying a separate "there is no answer line" field: the auditor reads
+	// the answer's absence off final_message itself.
+	bare := buildAuditPayload("just prose, with no answer line at all")
+	if keys := payloadKeys(t, bare); len(keys) != 1 || !keys["final_message"] {
+		t.Errorf("an unlabelled deliverable must carry final_message alone, got %v", keys)
 	}
 }
 
+// payloadKeys decodes a payload's top-level field names.
+func payloadKeys(t *testing.T, payload string) map[string]bool {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		t.Fatalf("payload is not a JSON object: %v\n%s", err, payload)
+	}
+	keys := make(map[string]bool, len(raw))
+	for key := range raw {
+		keys[key] = true
+	}
+	return keys
+}
+
 func TestBuildAuditPayloadEmptyFinal(t *testing.T) {
-	p := buildAuditPayload("", nil)
+	p := buildAuditPayload("")
 	var decoded auditPayload
 	if err := json.Unmarshal([]byte(p), &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
@@ -186,7 +205,7 @@ func TestGateRunAuditReturnsVerdict(t *testing.T) {
 	fake := &fakeAuditorAgent{verdict: "## Reasoning Chain\n- Clue: x\n  - audit: pass\nFinal Answer: **1**\n  - audit: pass\nAudit Result: PASS"}
 
 	verdict, err := gateRunAudit(context.Background(), fake, newTestConversation(),
-		"Final Answer: **1897**", nil, nil)
+		"Final Answer: **1897**", nil)
 	if err != nil {
 		t.Fatalf("gateRunAudit error: %v", err)
 	}
@@ -661,7 +680,7 @@ func TestRunDeliveryGateRejectsBareAnswerLine(t *testing.T) {
 func TestGateRunAuditNilAuditorErrors(t *testing.T) {
 	// Must return an error (not panic) when the auditor is unavailable.
 	if _, err := gateRunAudit(context.Background(), nil, newTestConversation(),
-		"Final Answer: **1897**", nil, nil); err == nil {
+		"Final Answer: **1897**", nil); err == nil {
 		t.Fatal("gateRunAudit with a nil auditor should error")
 	}
 }
@@ -794,27 +813,7 @@ func TestAnswerLineCountLabelOnly(t *testing.T) {
 	}
 }
 
-// TestCollectGatePrechecksLabelOnly pins that the gate's own reading is a LABEL
-// reading: two shapes of "there is no answer here" (no label at all, and a heading
-// with nothing under it), and silence otherwise. The value-based readings
-// (`ungrounded_answer_value`, `list_only_answer_value`) are gone with the value reader;
-// the auditor's contract covers both more strictly.
-func TestCollectGatePrechecksLabelOnly(t *testing.T) {
-	deliverable := "## Candidate Matrix\n- **Searched**: `grep_chunks(\"x\")`\n\n## Reasoning Chain\n- Clue: y\n\nFinal Answer: **X**"
-	if got := collectGatePrechecks(deliverable); len(got) != 0 {
-		t.Errorf("a well-formed deliverable needs no precheck, got %v", got)
-	}
-	if got := collectGatePrechecks("## Candidate Matrix\n...\nno answer line here"); len(got) != 1 ||
-		!strings.Contains(got[0], precheckNoAnswerLine) {
-		t.Errorf("a deliverable with no answer line must be flagged, got %v", got)
-	}
-	// A bare heading is NOT flagged: the phrase is present, and whether the answer LINE
-	// is complete (a value, not just a heading) is the auditor's judgement - its
-	// contract has `schema integrity: answer is missing` for exactly that shape.
-	if got := collectGatePrechecks("## Candidate Matrix\n...\n## Final Answer"); len(got) != 0 {
-		t.Errorf("a bare heading still contains the phrase, got %v", got)
-	}
-	if got := collectGatePrechecks("   "); got != nil {
-		t.Errorf("nothing to audit must return nil, got %v", got)
-	}
-}
+// TestCollectGatePrechecksLabelOnly is gone with the prechecks: the gate's one
+// mechanical reading, "the deliverable carries no answer label", is one the
+// auditor makes itself off final_message, and the payload no longer has a field
+// to carry it. TestBuildAuditPayload pins the payload's key set instead.
