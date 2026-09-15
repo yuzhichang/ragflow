@@ -1572,6 +1572,19 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
         if value is not None:
             stats[key] = value
 
+    # And WHICH chunks those counts counted. A total says how much context the
+    # reading cost; only the ids can answer whether a passage the deliverable
+    # needed was ever in front of the model — the difference between a chunk
+    # that was read and silently dropped and one that was never read, which is
+    # the whole diagnosis for the evidence_in_hand failures. Recorded as raw
+    # facts, unfiltered against what the run cited: drawing that difference is
+    # the reader's job, and a threshold chosen before the data exists would
+    # only bake in a guess.
+    for key in ("deep_read_chunk_ids", "shallow_read_chunk_ids"):
+        value = _unique_ids(source.get(key))
+        if value:
+            stats[key] = value
+
     gate_audit = source.get("gate_audit")
     if isinstance(gate_audit, dict):
         suspects = gate_audit.get("suspects")
@@ -1969,6 +1982,27 @@ def _unique_doc_ids(values: Any) -> list[str]:
         seen.add(normalized)
         doc_ids.append(normalized)
     return doc_ids
+
+
+def _unique_ids(values: Any) -> list[str]:
+    """Deduplicate opaque identifiers, preserving the backend's own order.
+
+    Unlike `_unique_doc_ids` this applies NO document-name normalization: chunk
+    ids are opaque tokens, and trimming a ".md" or a path segment off one would
+    be reading document semantics into a value that has none. A payload that is
+    not a list is treated as absent rather than guessed at.
+    """
+    if not isinstance(values, list):
+        return []
+    seen: set[str] = set()
+    ids: list[str] = []
+    for value in values:
+        text = str(value).strip() if value is not None else ""
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids
 
 
 def _normalize_benchmark_doc_id(value: Any) -> str | None:

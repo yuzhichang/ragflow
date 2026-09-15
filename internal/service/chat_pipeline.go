@@ -132,6 +132,14 @@ type AsyncChatResult struct {
 	// population rule as ToolCallCounts.
 	DeepReadChunks    int `json:"deep_read_chunks,omitempty"`
 	ShallowReadChunks int `json:"shallow_read_chunks,omitempty"`
+	// DeepReadChunkIDs / ShallowReadChunkIDs name the chunks behind those two
+	// counts, sorted. The counts say how MUCH a run read; the ids say WHICH —
+	// and the difference between a chunk that was read and never cited and one
+	// that was never read at all is the one a total cannot make. Reported as
+	// raw facts: whether an uncited read chunk matters is the auditor's
+	// judgement, not the ledger's.
+	DeepReadChunkIDs    []string `json:"deep_read_chunk_ids,omitempty"`
+	ShallowReadChunkIDs []string `json:"shallow_read_chunk_ids,omitempty"`
 	// Usage is the turn's token accounting (agentic runs only). A benchmark
 	// reports cost per question, and only the pipeline sees every LLM call the
 	// ReAct loop and its delivery gate made — the response's own token counts
@@ -2538,19 +2546,22 @@ func (s *ChatPipelineService) agenticRag(
 		// have finished, so they ride on the final result (and nowhere else,
 		// to keep the intermediate deltas small).
 		deepRead, shallowRead := chunkReads.Snapshot()
+		deepReadIDs, shallowReadIDs := chunkReads.ChunkIDs()
 		out <- AsyncChatResult{
-			Answer:            final,
-			Reference:         reference,
-			Final:             true,
-			ToolCallCounts:    toolCounts,
-			ToolCallErrors:    toolErrors,
-			ToolErrorSamples:  toolErrorSamples,
-			RetrievedDocIDs:   retrievedDocs.Snapshot(),
-			GateAudit:         gateAudit,
-			Usage:             turnUsage,
-			ElapsedSeconds:    elapsed.Seconds(),
-			DeepReadChunks:    deepRead,
-			ShallowReadChunks: shallowRead,
+			Answer:              final,
+			Reference:           reference,
+			Final:               true,
+			ToolCallCounts:      toolCounts,
+			ToolCallErrors:      toolErrors,
+			ToolErrorSamples:    toolErrorSamples,
+			RetrievedDocIDs:     retrievedDocs.Snapshot(),
+			GateAudit:           gateAudit,
+			Usage:               turnUsage,
+			ElapsedSeconds:      elapsed.Seconds(),
+			DeepReadChunks:      deepRead,
+			ShallowReadChunks:   shallowRead,
+			DeepReadChunkIDs:    deepReadIDs,
+			ShallowReadChunkIDs: shallowReadIDs,
 		}
 	}()
 

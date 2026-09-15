@@ -1734,6 +1734,12 @@ func (s *ChatSessionService) ChatCompletions(
 						if result.ShallowReadChunks > 0 {
 							ans["shallow_read_chunks"] = result.ShallowReadChunks
 						}
+						if len(result.DeepReadChunkIDs) > 0 {
+							ans["deep_read_chunk_ids"] = result.DeepReadChunkIDs
+						}
+						if len(result.ShallowReadChunkIDs) > 0 {
+							ans["shallow_read_chunk_ids"] = result.ShallowReadChunkIDs
+						}
 						if result.Usage != nil {
 							ans["usage"] = result.Usage
 						}
@@ -1853,6 +1859,7 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	var retrievedDocIDs []string
 	var gateAudit *agentic_rag.GateAuditRecord
 	var deepReadChunks, shallowReadChunks int
+	var deepReadChunkIDs, shallowReadChunkIDs []string
 	var usage *TurnUsage
 	var elapsedSeconds float64
 	for result := range resultChan {
@@ -1873,6 +1880,8 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 			gateAudit = result.GateAudit
 			deepReadChunks = result.DeepReadChunks
 			shallowReadChunks = result.ShallowReadChunks
+			deepReadChunkIDs = result.DeepReadChunkIDs
+			shallowReadChunkIDs = result.ShallowReadChunkIDs
 			usage = result.Usage
 			elapsedSeconds = result.ElapsedSeconds
 		} else if result.Answer != "" {
@@ -1916,6 +1925,15 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	}
 	if shallowReadChunks > 0 {
 		ans["shallow_read_chunks"] = shallowReadChunks
+	}
+	// The chunk identifiers behind those counts: the counts say how much the
+	// run read, the ids say which chunks — the one fact that separates a
+	// passage read and never used from a passage never read.
+	if len(deepReadChunkIDs) > 0 {
+		ans["deep_read_chunk_ids"] = deepReadChunkIDs
+	}
+	if len(shallowReadChunkIDs) > 0 {
+		ans["shallow_read_chunk_ids"] = shallowReadChunkIDs
 	}
 	if usage != nil {
 		ans["usage"] = usage

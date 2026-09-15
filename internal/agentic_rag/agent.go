@@ -388,11 +388,26 @@ type chunkReadLedger struct {
 	mu      sync.Mutex
 	deep    int
 	shallow int
+	// deepIDs / shallowIDs record WHICH chunks the two counts refer to.
+	//
+	// The counts alone cannot answer the question a failed run actually poses:
+	// did the passage that holds the answer ever reach the model? Measured on
+	// the browsecomp retry batch, 13 of the 20 evidence_in_hand failures had a
+	// gold-bearing document served to the run, only 6 of those cited it and 0
+	// shipped it — the difference between "read and silently dropped" and
+	// "never read", which a total (q1021: 458 chunks) cannot make. The
+	// identifiers are the raw fact; whether an uncited read chunk MATTERS is
+	// the auditor's judgement, not this ledger's.
+	deepIDs    map[string]struct{}
+	shallowIDs map[string]struct{}
 }
 
 // NewChunkReadLedger returns an empty chunk-read ledger for one run.
 func NewChunkReadLedger() *chunkReadLedger {
-	return &chunkReadLedger{}
+	return &chunkReadLedger{
+		deepIDs:    make(map[string]struct{}),
+		shallowIDs: make(map[string]struct{}),
+	}
 }
 
 // AddDeep records n deep-read chunks (full chunk content).
@@ -415,6 +430,43 @@ func (l *chunkReadLedger) AddShallow(n int) {
 	l.shallow += n
 }
 
+// AddDeepIDs records the identifiers of deep-read chunks. Empty values are
+// dropped and repeats collapse (the same chunk read twice is one read), so
+// callers can pass raw tool-output matches as-is.
+func (l *chunkReadLedger) AddDeepIDs(ids ...string) {
+	l.addIDs(true, ids)
+}
+
+// AddShallowIDs records the identifiers of shallow-read chunks, same contract
+// as AddDeepIDs.
+func (l *chunkReadLedger) AddShallowIDs(ids ...string) {
+	l.addIDs(false, ids)
+}
+
+// addIDs records one tool result's chunk identifiers under the lock, creating
+// the id set on first use — so a bare &chunkReadLedger{} records ids too, not
+// only one built by the constructor. deep selects which of the two sets.
+func (l *chunkReadLedger) addIDs(deep bool, ids []string) {
+	if l == nil || len(ids) == 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	set := &l.shallowIDs
+	if deep {
+		set = &l.deepIDs
+	}
+	if *set == nil {
+		*set = make(map[string]struct{})
+	}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		(*set)[id] = struct{}{}
+	}
+}
+
 // Snapshot returns (deepReadChunks, shallowReadChunks) accumulated so far.
 func (l *chunkReadLedger) Snapshot() (deep, shallow int) {
 	if l == nil {
@@ -423,6 +475,37 @@ func (l *chunkReadLedger) Snapshot() (deep, shallow int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.deep, l.shallow
+}
+
+// ChunkIDs returns the identifiers of the chunks the run read, split by read
+// depth and sorted so the payload a benchmark archives is byte-stable across
+// runs (same rule as docIDLedger.Snapshot).
+//
+// A deep-read id means the chunk's FULL content was put in front of the model;
+// a shallow one means it appeared as a <match_snippet> window during triage.
+// The split mirrors the counts, and neither list is filtered against what the
+// deliverable ended up citing: the difference between the two is exactly the
+// measurement this exists for, and it is the caller's to draw.
+func (l *chunkReadLedger) ChunkIDs() (deep, shallow []string) {
+	if l == nil {
+		return nil, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return sortedIDSet(l.deepIDs), sortedIDSet(l.shallowIDs)
+}
+
+// sortedIDSet flattens an id set into a sorted slice.
+func sortedIDSet(ids map[string]struct{}) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // instrumentedTool decorates a tool.InvokableTool, accumulating the total
@@ -515,6 +598,29 @@ func recordedDocIDs(out string) []string {
 	return ids
 }
 
+// chunkIDRe pulls the chunk identifiers out of the XML every retrieval tool
+// renders. Each `<chunk ...>` element carries exactly one `chunk_id` and the
+// `<chunks ...>` wrapper carries none, so matching the attribute is equivalent
+// to walking the elements countChunkElements counts — one wrapper covers the
+// whole toolset, no element parsing, no per-tool implementation touched.
+var chunkIDRe = regexp.MustCompile(`chunk_id="([^"]+)"`)
+
+// recordedChunkIDs returns the chunk identifiers a tool's output put in front
+// of the model, in the tool's own order. Duplicates are left in — the ledger
+// collapses them, so raw matches pass through as-is.
+func recordedChunkIDs(out string) []string {
+	if out == "" {
+		return nil
+	}
+	ids := make([]string, 0, 8)
+	for _, match := range chunkIDRe.FindAllStringSubmatch(out, -1) {
+		if id := strings.TrimSpace(match[1]); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
 	start := time.Now()
 	out, err := t.InvokableTool.InvokableRun(ctx, args, opts...)
@@ -531,12 +637,18 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 		// Chunk-read accounting: one <chunk> element per chunk the tool put
 		// in front of the model, split by read depth (full content vs
 		// snippet window). Only the four corpus retrieval tools render
-		// <chunk> elements; web_search renders url/title instead.
+		// <chunk> elements; web_search renders url/title instead. The ids of
+		// those chunks ride along with the counts: the count says how much
+		// was read, the ids say WHICH — and only the ids can answer whether a
+		// passage the run needed was ever in front of the model.
 		if n := countChunkElements(out); n > 0 {
+			ids := recordedChunkIDs(out)
 			if _, deep := deepReadChunkTools[name]; deep {
 				t.chunks.AddDeep(n)
+				t.chunks.AddDeepIDs(ids...)
 			} else if _, shallow := shallowReadChunkTools[name]; shallow {
 				t.chunks.AddShallow(n)
+				t.chunks.AddShallowIDs(ids...)
 			}
 		}
 	}
