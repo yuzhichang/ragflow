@@ -1159,7 +1159,16 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			// recorded separately, which is what the number was being read for.
 			countGatePrechecks(in.audit, precheckKinds(prechecks))
 			common.InfoCtx(ctx, "agentic_rag: delivery gate prechecks (the audit decides)",
-				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks))
+				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks),
+				// The gate's OWN reading, plus the deliverable's last line. Without
+				// these two the log cannot answer "did the gate hold the text that
+				// was archived?" - the audit payload is truncated at 2000 chars FROM
+				// THE START, so the answer line (the last line) never reaches the
+				// log, and a `answer_value_missing` round whose archived delivery
+				// parses fine is indistinguishable from a stale-read bug. Measured
+				// on q283: two such rounds, the archived text parses to `Zimri Eder`.
+				zap.String("gate_shipped", shipped),
+				zap.String("deliverable_tail", truncateForLog(lastNonBlankLine(final), 200)))
 		}
 		if strings.TrimSpace(final) != "" {
 			// The gate audits the deliverable it actually holds — audit-target
@@ -1805,6 +1814,21 @@ func lastUserQuestion(messages []*schema.Message) string {
 
 // truncateForLog caps a string for log lines so a huge tool output or argument
 // payload cannot blow up the log volume.
+// lastNonBlankLine returns the deliverable's last non-empty line - the answer
+// line, when the deliverable is well formed. It exists to make the gate's own
+// reading auditable: the audit payload is logged truncated FROM THE START, so the
+// answer line never reaches the log, and a precheck round that reports a missing
+// value cannot be checked against the text the run shipped.
+func lastNonBlankLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 func truncateForLog(s string, max int) string {
 	if len(s) <= max {
 		return s

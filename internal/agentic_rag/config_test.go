@@ -260,6 +260,10 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// A variant tie the corpus can actually weigh: the better-attested
 		// spelling ships (q283 shipped the single-source one and lost the point).
 		"the better-attested variant was not preferred",
+		// The counting rule must sit where the VALUE is formed, not only on the
+		// tie path: three q283 re-runs picked a spelling silently (no tie clause
+		// at all), so a tie-only rule never fires.
+		"the better-attested form is the one that ships",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)
