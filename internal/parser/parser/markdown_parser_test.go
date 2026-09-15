@@ -137,6 +137,97 @@ func TestMarkdownParser_ParseWithResult_RendersTableInline(t *testing.T) {
 	}
 }
 
+// TestMarkdownParser_ParseWithResult_DollarIsCurrencyNotMath guards the
+// regression that made a 13.8k-character billing report parse into 1.4k
+// characters: CommonExtensions enables MathJax, so `$...$` spans became
+// ast.Math nodes whose payload is not a Text child, and the text walker
+// dropped them. With two far-apart `$` that deletes everything in between.
+// A `$` in an ingested document is far more often a price than it is math, so
+// the text must survive verbatim, dollar signs included.
+func TestMarkdownParser_ParseWithResult_DollarIsCurrencyNotMath(t *testing.T) {
+	ctx := t.Context()
+	p, _ := NewMarkdownParser(GoMarkdown)
+	md := "# Report\n\nFunding was provided by a $4,800 grant from the Sanctuary.\n\n" +
+		"Costs: 224.50 theodolite, 48.70 binoculars, $3.75 internet.\n\n" +
+		"Remaining funds for Winter 2002: $193.92\n"
+	res := p.ParseWithResult(ctx, "report.md", []byte(md))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	var sb strings.Builder
+	for _, item := range res.JSON {
+		text, _ := item["text"].(string)
+		sb.WriteString(text)
+		sb.WriteString("\n")
+	}
+	got := sb.String()
+	// Every sentence of the source has to survive; the price table sentence is
+	// the one sitting between two '$' and used to be deleted whole.
+	for _, want := range []string{
+		"Funding was provided by a $4,800 grant from the Sanctuary.",
+		"Costs: 224.50 theodolite, 48.70 binoculars, $3.75 internet.",
+		"Remaining funds for Winter 2002: $193.92",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("parsed text lost %q\n--- got ---\n%s", want, got)
+		}
+	}
+	// `$$...$$` display math must stay literal text as well.
+	mdDisplay := "Totals are shown as $$4,606.17 in the audit.\n"
+	resDisplay := p.ParseWithResult(ctx, "totals.md", []byte(mdDisplay))
+	if resDisplay.Err != nil {
+		t.Fatalf("ParseWithResult: %v", resDisplay.Err)
+	}
+	var sbDisplay strings.Builder
+	for _, item := range resDisplay.JSON {
+		text, _ := item["text"].(string)
+		sbDisplay.WriteString(text)
+	}
+	if !strings.Contains(sbDisplay.String(), "4,606.17 in the audit") {
+		t.Errorf("display math span was dropped: %q", sbDisplay.String())
+	}
+}
+
+// TestMarkdownParser_ParseWithResult_InlineRawHTMLSurvives guards the second
+// text-loss mechanism found in the same walker: inline raw HTML is an
+// ast.HTMLSpan whose payload (markup and the text inside it) lives on the node
+// literal, with no child Text nodes. A 664k-character report lost 397k
+// characters across 14 such spans.
+func TestMarkdownParser_ParseWithResult_InlineRawHTMLSurvives(t *testing.T) {
+	ctx := t.Context()
+	p, _ := NewMarkdownParser(GoMarkdown)
+	// No blank line around the <table>, so gomarkdown keeps it inline inside
+	// the paragraph (an HTMLSpan) instead of a block-level HTMLBlock.
+	md := "Lead-in sentence before the table. " +
+		"<table><tr><td>theodolite</td><td>224.50</td></tr>" +
+		"<tr><td>binoculars</td><td>48.70</td></tr></table> " +
+		"Trailing sentence after the table.\n"
+	res := p.ParseWithResult(ctx, "report.md", []byte(md))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	var sb strings.Builder
+	for _, item := range res.JSON {
+		text, _ := item["text"].(string)
+		sb.WriteString(text)
+		sb.WriteString("\n")
+	}
+	got := sb.String()
+	for _, want := range []string{
+		"Lead-in sentence before the table.",
+		"Trailing sentence after the table.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("parsed text lost %q\n--- got ---\n%s", want, got)
+		}
+	}
+	// The inline HTML payload must not vanish either: the walker emits the raw
+	// markup, exactly as it stands in the source.
+	if !strings.Contains(got, "binoculars") {
+		t.Errorf("inline raw HTML payload was dropped: %q", got)
+	}
+}
+
 func TestMarkdownParser_ConfigureFromSetup(t *testing.T) {
 	p, _ := NewMarkdownParser(GoMarkdown)
 	p.ConfigureFromSetup(map[string]any{

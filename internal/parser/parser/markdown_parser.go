@@ -123,7 +123,17 @@ func (p *MarkdownParser) String() string {
 // markdownNew is a thin constructor so the extension set is owned
 // in one place (both Parse and ParseWithResult consume it).
 func markdownNew() *mdparser.Parser {
-	extensions := mdparser.CommonExtensions | mdparser.AutoHeadingIDs | mdparser.NoEmptyLineBeforeBlock
+	// MathJax is masked out on purpose. CommonExtensions enables `$...$`
+	// inline math, whose payload lives on ast.Math rather than on a Text
+	// child; a real-world document that uses `$` as a currency symbol (a
+	// billing report, a price list) therefore had every span between two
+	// `$` silently deleted from the parsed text - with two far-apart `$`
+	// the whole middle of the document disappears. Python's markdown
+	// library has no math extension, so masking it also keeps the Go and
+	// Python parsers in parity. walkLeaf still handles ast.Math /
+	// ast.MathBlock defensively so that turning the extension back on
+	// cannot lose text again.
+	extensions := mdparser.CommonExtensions&^mdparser.MathJax | mdparser.AutoHeadingIDs | mdparser.NoEmptyLineBeforeBlock
 	return mdparser.NewWithExtensions(extensions)
 }
 
@@ -569,6 +579,26 @@ func walkLeaf(n ast.Node, buf *bytes.Buffer) {
 	case *ast.HTMLBlock:
 		// Inlined tables are HTML blocks. The generic parser path stores the
 		// markup in Content, the markdown-block path in Literal. Emit both.
+		buf.Write(t.Literal)
+		buf.Write(t.Content)
+	case *ast.Math:
+		// Inline math (`$...$`) keeps its payload on the node literal, not in a
+		// child Text node, so an unhandled ast.Math silently drops the whole
+		// span. Emit the literal so the text can never be lost, even if the
+		// MathJax extension is re-enabled (markdownNew masks it off because
+		// `$` is currency in real documents far more often than it is math).
+		buf.Write(t.Literal)
+	case *ast.MathBlock:
+		// Display math (`$$...$$`) stores its payload the same way.
+		buf.Write(t.Literal)
+	case *ast.HTMLSpan:
+		// Inline raw HTML (a <table> that is glued to surrounding prose with no
+		// blank line around it, <sub>/<sup>, <div>, …) is an HTMLSpan: the
+		// markup AND the text inside it live on the node literal, with no child
+		// Text nodes. Dropping it deleted whole regions of a document - a 664k
+		// character CDC report lost 397k characters across 14 such spans. Emit
+		// the literal (and Content for the paths that use it) so the text
+		// survives verbatim, exactly as the source file spells it.
 		buf.Write(t.Literal)
 		buf.Write(t.Content)
 	default:
