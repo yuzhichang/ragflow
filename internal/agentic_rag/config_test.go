@@ -268,6 +268,11 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// never the label (q283 run 1 shipped the single-source spelling under a
 		// bare `Final Answer` and the audit PASSed it).
 		"the count decides WHICH form ships and never the label",
+		// The gate reads labels only, so the value-level judgements it used to
+		// approximate with text heuristics are the auditor's: grounding in the CITED
+		// evidence, and a value resting on a listing entry.
+		"answer value rests on a listing entry",
+		"The GATE READS LABELS ONLY",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)

@@ -759,7 +759,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		runErr = nil
 	}
 	final = gateFinal
-	if finalAnswerValue(final) == "" {
+	if !answerLineText(final) {
 		// Recovery ladder, cheapest and most faithful first. A run that ends
 		// on a narration tail or on a bare tool call still holds an answer
 		// somewhere in its own turns, and that answer is the model's own
@@ -769,7 +769,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// may not even reach a provider (it would be short-circuited with the
 		// stale error that tripped the cooldown).
 		carried := sess.explorer.lastAssistant(ctx, func(m *schema.Message) bool {
-			return strings.TrimSpace(m.Content) != "" && finalAnswerValue(m.Content) != ""
+			return strings.TrimSpace(m.Content) != "" && answerLineText(m.Content)
 		})
 		switch {
 		case hasFOSStructure(auditedFinal):
@@ -806,7 +806,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// FOS deliverable. Synthesize one deterministically from the question,
 	// whatever partial output exists, and the evidence gathered so far — the
 	// turn must never end on narration or a blank.
-	if final == "" || runErr != nil || finalAnswerValue(final) == "" {
+	if final == "" || runErr != nil || !answerLineText(final) {
 		// Detach from the run's cancellation entirely: the fallback fires most
 		// often BECAUSE the shared wall-clock budget expired, and a deadline
 		// expiry and a client hang-up are indistinguishable to the derived
@@ -829,7 +829,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 			common.WarnCtx(ctx, "agentic_rag: finalizeAnswer returned an empty answer")
 		}
 		switch {
-		case synthErr == nil && synth != "" && finalAnswerLineCount(synth) == 1:
+		case synthErr == nil && synth != "" && answerLineCount(synth) == 1:
 			// Replace rather than append: appending leaves the reader with a
 			// narration paragraph followed by the real answer. The single
 			// answer emission at the end of Run carries it.
@@ -843,7 +843,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 			// structured work and ships instead of the blob.
 			common.WarnCtx(ctx, "agentic_rag: finalizeAnswer degenerated, keeping the standing deliverable",
 				zap.Int("synth_bytes", len(synth)),
-				zap.Int("answer_lines", finalAnswerLineCount(synth)))
+				zap.Int("answer_lines", answerLineCount(synth)))
 			if final != "" {
 				runErr = nil
 			}
@@ -854,16 +854,13 @@ func Run(ctx context.Context, in Input) (string, error) {
 	}
 
 	// Label governance (lever 1): `Final Answer` claims every discriminating constraint
-	// is corpus-verified, so it may only survive an audit that PASSED; a declared TIE
-	// demotes too, independently of the audit, because the clause says the corpus could
-	// not settle the discriminating constraint. This runs LAST - the text it governs has
-	// to be the text that ships, and the synthesizer above renders a FRESH deliverable
-	// with its own label. The value is untouched (that is what the judge scores).
-	if ties := finalAnswerTies(final); len(ties) > 0 {
-		common.InfoCtx(ctx, "agentic_rag: delivery declares a tie",
-			zap.Strings("rivals", ties),
-			zap.Bool("audit_passed", in.GateAudit != nil && in.GateAudit.Passed))
-	}
+	// is corpus-verified, so it may only survive an audit that PASSED. A declared TIE is
+	// the auditor's defect now ("Final Answer claims a tie") rather than the gate's
+	// regex: the auditor reads the clause, the gate reads labels, and a run that keeps
+	// its tie ships `Guessed Answer` because the audit does not PASS with one. This runs
+	// LAST - the text it governs has to be the text that ships, and the synthesizer above
+	// renders a FRESH deliverable with its own label. The value is untouched (that is
+	// what the judge scores).
 	if governed, reason := governAnswerLabel(final, in.GateAudit); reason != "" {
 		common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer",
 			zap.String("reason", reason))
@@ -918,19 +915,11 @@ func Run(ctx context.Context, in Input) (string, error) {
 // demotion on the draft it had just replaced).
 func governAnswerLabel(final string, audit *GateAuditRecord) (string, string) {
 	reason := ""
-	switch ties := finalAnswerTies(final); {
-	case len(ties) > 0:
-		// Every rival, not just the first: a deliverable that names three equally
-		// undiscriminated candidates is LESS certain than one that names a single
-		// rival, and the note is the only place a reader learns how wide the field
-		// really was.
-		quoted := make([]string, 0, len(ties))
-		for _, rival := range ties {
-			quoted = append(quoted, answerNoteSafe(`"`+rival+`"`))
-		}
-		reason = "the run declares a tie with " + strings.Join(quoted, ", ") +
-			", so the discriminating constraint is not corpus-verified"
-	case shouldDemoteFinalAnswer(audit):
+	// One reason, and it is a STATE, not a reading of the answer: the gate did not
+	// conclude PASS. Whether the deliverable declares a tie is the auditor's judgement
+	// now — it has the clause and the defect vocabulary for it — and a tie that the
+	// auditor accepts still does not PASS, so the label follows the same rule.
+	if shouldDemoteFinalAnswer(audit) {
 		reason = "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"
 	}
 	if reason == "" {
@@ -1114,9 +1103,6 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 	// behaved: a count that fell 15→11→6→5 before freezing reads very
 	// differently from one that never moved. The stall check reads its tail.
 	suspectHist := make([]int, 0, in.auditMaxPass)
-	// Everything the run's tools actually returned: the grounding check below
-	// tests the shipped value against it, so it is collected once.
-	groundingHaystack := in.sess.explorer.toolResultText(ctx)
 	// repairFeedback: why the last attempt was discarded, appended to the
 	// next attempt's directive — a silently discarded attempt leaves the
 	// model repeating the same narration (observed on q716).
@@ -1143,14 +1129,17 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		// audits as soon as a deliverable exists.
 		verdict := ""
 		directive := ""
-		shipped := finalAnswerValue(final)
-		question := lastUserQuestion(in.baseMessages)
-		// The gate's own checks are SUSPICIONS, not verdicts (see
-		// collectGatePrechecks): they ride into the audit payload and the auditor rules
-		// on them, so a mechanical reading never costs a pass by itself — which, over
-		// 24 hard benchmark questions, is exactly what it cost (62 rejections, 11
-		// short-circuits, and no audit at all on more than half the set).
-		prechecks := collectGatePrechecks(question, shipped, final, groundingHaystack)
+		// The gate reads the answer LABEL, not the answer: `hasAnswerLine` is what it
+		// knows without guessing at content, and the auditor owns the rest (see
+		// answerLabel). The label rides into the payload as evidence for the
+		// label-consistency rules.
+		answerLbl := answerLabel(final)
+		// The gate's own checks are SUSPICIONS, not verdicts (see collectGatePrechecks):
+		// they ride into the audit payload and the auditor rules on them, so a mechanical
+		// reading never costs a pass by itself — which, over 24 hard benchmark questions,
+		// is exactly what it cost (62 rejections, 11 short-circuits, and no audit at all
+		// on more than half the set).
+		prechecks := collectGatePrechecks(final)
 		if len(prechecks) > 0 {
 			// NOT countGateRejection: the gate does not refuse here any more, the
 			// auditor rules on these suspicions in the same pass. Counting them as
@@ -1166,7 +1155,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			// they are what a normal run prints, and the payload's head is enough
 			// to see which pass is talking.
 			common.DebugCtx(ctx, "agentic_rag: delivery gate hold (full)",
-				zap.Int("pass", pass+1), zap.String("shipped", shipped),
+				zap.Int("pass", pass+1), zap.String("answer_label", answerLbl),
 				zap.String("deliverable", final))
 			common.InfoCtx(ctx, "agentic_rag: delivery gate prechecks (the audit decides)",
 				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks),
@@ -1174,10 +1163,10 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				// these two the log cannot answer "did the gate hold the text that
 				// was archived?" - the audit payload is truncated at 2000 chars FROM
 				// THE START, so the answer line (the last line) never reaches the
-				// log, and a `answer_value_missing` round whose archived delivery
-				// parses fine is indistinguishable from a stale-read bug. Measured
-				// on q283: two such rounds, the archived text parses to `Zimri Eder`.
-				zap.String("gate_shipped", shipped),
+				// log, and a precheck round whose archived delivery is well formed is
+				// indistinguishable from a stale-read bug. Measured on q283: two such
+				// rounds, and the archived text does carry a well-formed answer line.
+				zap.String("gate_answer_label", answerLbl),
 				zap.String("deliverable_tail", truncateForLog(lastNonBlankLine(final), 200)))
 		}
 		if strings.TrimSpace(final) != "" {
@@ -1814,7 +1803,7 @@ func finalizeAnswer(
 		// Safety net: the re-render dropped the structure. Graft the bare
 		// answer onto the audited partial instead of shipping it alone, so
 		// the reasoning chain survives even a non-compliant synthesis call.
-		if finalAnswerValue(synth) != "" {
+		if answerLineText(synth) {
 			return strings.TrimSpace(partial) + "\n\n" + synth + "\n", nil
 		}
 		return strings.TrimSpace(partial) + "\n\nFinal Answer: **" + synth + "**\n", nil

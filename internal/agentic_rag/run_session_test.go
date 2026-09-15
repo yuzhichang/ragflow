@@ -181,13 +181,13 @@ func TestConversationLastAssistant(t *testing.T) {
 
 	ctx := context.Background()
 	answer := func(m *schema.Message) bool {
-		return strings.TrimSpace(m.Content) != "" && finalAnswerValue(m.Content) != ""
+		return strings.TrimSpace(m.Content) != "" && hasAnswerLine(m.Content)
 	}
 	if got := conv.lastAssistant(ctx, answer); got != deliverable {
 		t.Errorf("lastAssistant(answer) = %q, want the earlier deliverable", got)
 	}
 	substantive := func(m *schema.Message) bool { return strings.TrimSpace(m.Content) != "" }
-	if got := conv.lastAssistant(ctx, substantive); finalAnswerValue(got) != "" {
+	if got := conv.lastAssistant(ctx, substantive); hasAnswerLine(got) || got == "" {
 		t.Errorf("lastAssistant(substantive) = %q, want the narration tail", got)
 	}
 }

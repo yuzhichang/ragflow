@@ -5,22 +5,6 @@ import (
 	"testing"
 )
 
-func TestFinalAnswerValueTwoLineForm(t *testing.T) {
-	// q1228's shape: the heading alone on its line, the value under it.
-	final := "## Reasoning Chain\n...\n## Final Answer\n**Bhowani Junction**\n"
-	if got := finalAnswerValue(final); got != "Bhowani Junction" {
-		t.Fatalf("two-line value = %q, want Bhowani Junction", got)
-	}
-	// Single-line form keeps working.
-	if got := finalAnswerValue("Final Answer: **Casey Means**"); got != "Casey Means" {
-		t.Fatalf("single-line value = %q", got)
-	}
-	// A heading with a non-answer body under it is NOT a value.
-	if got := finalAnswerValue("## Final Answer\nSome prose paragraph without bold markers"); got != "" {
-		t.Fatalf("prose under the heading must not parse as a value, got %q", got)
-	}
-}
-
 func TestDemoteFinalAnswerLabel(t *testing.T) {
 	final := "## Candidate Matrix\n...\n## Reasoning Chain\n...\nFinal Answer: **Boston**"
 	out, changed := demoteFinalAnswerLabel(final, "the gate did not conclude PASS")
@@ -106,34 +90,6 @@ func TestReconcileAnswerLabels(t *testing.T) {
 	guessedOnly := "## Guessed Answer\n**Guessed Answer: Boston** (assumption: x)"
 	if got := reconcileAnswerLabels(guessedOnly); got != guessedOnly {
 		t.Fatalf("Guessed-only deliverable must pass through: %q", got)
-	}
-}
-
-func TestAnswerValueIsGrounded(t *testing.T) {
-	hay := "<chunk chunk_id=\"c1\">Boston is the capital of Massachusetts.</chunk>\n" +
-		"<chunk chunk_id=\"c2\">The Wexford Ballast Bank is a landmark.</chunk>"
-	cases := []struct {
-		value string
-		want  bool
-	}{
-		{"Boston", true},                   // verbatim
-		{"**Boston**", true},               // emphasis folded
-		{"the Wexford Ballast Bank", true}, // case/whitespace folded
-		{"Joe Ricketts", false},            // synthesized name
-		{"Campion School, Mumbai", false},  // wrong entity
-		{"27", true},                       // numeric: exempt from the check
-		{"109", true},                      // numeric: exempt
-		{"", true},                         // empty: nothing to check
-	}
-	for _, tc := range cases {
-		if got := answerValueIsGrounded(tc.value, hay); got != tc.want {
-			t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
-		}
-	}
-	// An empty haystack SKIPS the check (no tool results recorded → the gate
-	// cannot tell grounded from synthesized, so it must not fail the answer).
-	if !answerValueIsGrounded("Boston", "") {
-		t.Fatal("empty haystack must skip the grounding check")
 	}
 }
 
@@ -269,33 +225,6 @@ func TestAuditFindings(t *testing.T) {
 	}
 }
 
-// TestDemoteFinalAnswerKeepsTieParseable pins the interaction the whole tie
-// grammar exists for: when a deliverable declares a tie, the label governance
-// demotes it to `Guessed Answer` and APPENDS its own `(assumption: ...)` note —
-// after a clause that is already on the line. The rewritten line must still
-// parse, or the value is lost and the demotion (a label-only correction) turns
-// into a value-less deliverable.
-func TestDemoteFinalAnswerKeepsTieParseable(t *testing.T) {
-	final := "## Final Answer\n" +
-		`Final Answer: **In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines** (tie: "Opium: A Portrait of the Heavenly Demon" - no chunk discriminates the two)` + "\n"
-	got, changed := demoteFinalAnswerLabel(final, `the run declares a tie with "Opium: A Portrait of the Heavenly Demon", so the discriminating constraint is not corpus-verified`)
-	if !changed {
-		t.Fatal("a tie on a Final Answer line must be demoted to Guessed Answer")
-	}
-	if v := finalAnswerValue(got); v != "In the Arms of Morpheus: The Tragic History of Laudanum, Morphine and Patent Medicines" {
-		t.Errorf("value after demotion = %q, want the delivered title", v)
-	}
-	if ties := finalAnswerTies(got); len(ties) != 1 {
-		t.Errorf("the tie clause must survive the demotion's appended assumption note, got %v", ties)
-	}
-	if n := finalAnswerLineCount(got); n != 1 {
-		t.Errorf("answer lines after demotion = %d, want 1", n)
-	}
-	if !strings.Contains(got, "Guessed Answer") || !strings.Contains(got, "assumption:") {
-		t.Errorf("demoted deliverable must carry the Guessed label and the gate's reason:\n%s", got)
-	}
-}
-
 // TestAuditRepairDirective pins the instruction the gate hands the producer after
 // an audit FAIL. Two rules ride in it, and both cost a whole pass when they are
 // missing:
@@ -366,13 +295,14 @@ func TestGovernAnswerLabel(t *testing.T) {
 			wantDemote: false,
 		},
 		{
-			// The tie demotes independently of the verdict: the clause says the
-			// discriminating constraint is NOT verified, which is what the label
-			// claims it is.
-			name:       "a tie demotes even when the audit passed",
+			// A tie does NOT demote here any more: the gate reads labels, and whether a
+			// clause is a real tie is the auditor's judgement (its contract carries
+			// `Final Answer claims a tie`). A tie the auditor rejects keeps the audit
+			// from PASSing, and the case below is what that looks like.
+			name:       "a tie alone is not the gate's demotion reason",
 			final:      `Final Answer: **X** (tie: "Y" - both fit)`,
 			audit:      &GateAuditRecord{Suspects: []int{0}, Passed: true},
-			wantDemote: true,
+			wantDemote: false,
 		},
 		{
 			name:       "no audit record at all",
@@ -390,10 +320,13 @@ func TestGovernAnswerLabel(t *testing.T) {
 			if (reason != "") != tc.wantDemote {
 				t.Errorf("reason = %q, want a reason only when it rewrote", reason)
 			}
-			// The value is never touched by label governance — and the appended
-			// note must leave the line parseable (the note regex stops at ')').
-			if v := finalAnswerValue(got); v != "X" {
-				t.Errorf("value = %q, want X", v)
+			// The value is never touched by label governance, and the label still
+			// reads: the note rides the same line as the value without hiding it.
+			if !hasAnswerLine(got) {
+				t.Errorf("governance lost the answer line: %q", got)
+			}
+			if !strings.Contains(got, "**X**") {
+				t.Errorf("governance touched the value: %q", got)
 			}
 			if tc.wantDemote && !strings.Contains(got, "assumption:") {
 				t.Errorf("a demotion must carry its reason: %q", got)
@@ -407,8 +340,8 @@ func TestGovernAnswerLabel(t *testing.T) {
 	if reason != "" {
 		t.Errorf("reason = %q, want none — the label was already Guessed", reason)
 	}
-	if ties := finalAnswerTies(got); len(ties) != 1 {
-		t.Errorf("the tie must survive governance untouched, got %v", ties)
+	if !strings.Contains(got, "tie:") {
+		t.Errorf("the clause must survive governance untouched: %q", got)
 	}
 }
 

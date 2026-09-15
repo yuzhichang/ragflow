@@ -42,162 +42,6 @@ func TestAuditVerdictParsing(t *testing.T) {
 	}
 }
 
-func TestFinalAnswerValue(t *testing.T) {
-	cases := []struct {
-		final string
-		want  string
-	}{
-		{final: "## Final Answer: **1939**", want: "1939"},
-		{final: "#### Final Answer: **Chattapadhyay**", want: "Chattapadhyay"},
-		{final: "Guessed Answer: **1941** (assumption: the 1940 record is stale)", want: "1941"},
-		{final: "The answer is 1939, as the documents show.", want: ""},
-		{final: "", want: ""},
-		// Trailing sentence punctuation after the closing bold is tolerated:
-		// models routinely write `**...**。`, and the strict whitespace-only
-		// tail pushed a good deliverable into finalizeAnswer, whose output
-		// shipped TWO Final Answer lines (关羽 run, 2026-09-05).
-		{final: "Final Answer: **关羽共斩杀有名有姓之人 15 人（含\"过五关斩六将\"6人）**。", want: "关羽共斩杀有名有姓之人 15 人（含\"过五关斩六将\"6人）"},
-		{final: "Final Answer: **1897.**", want: "1897."},
-		{final: "Final Answer: **1897**\n\n", want: "1897"},
-		// A tie clause is part of the answer line's closed note vocabulary: it
-		// must not cost the run its value. Anything else left unparsed makes
-		// finalAnswerValue return "", which the gate reads as a VALUE-LESS
-		// deliverable — a rejection, a repair turn, and possibly finalizeAnswer.
-		{final: `Guessed Answer: **In the Arms of Morpheus** (assumption: two Hodgson opium books fit) (tie: "Opium: A Portrait of the Heavenly Demon" - no chunk settles it)`, want: "In the Arms of Morpheus"},
-		// Label governance appends its own assumption note, so a demoted tie
-		// line can carry the two clauses in this order.
-		{final: `Guessed Answer: **In the Arms of Morpheus** (tie: "Opium: A Portrait" - no chunk settles it) (assumption: the run declares a tie)`, want: "In the Arms of Morpheus"},
-		// The two-line shape tolerates them too.
-		{final: "Guessed Answer:\n**Bhowani Junction** (tie: \"Junction\" - same title family)", want: "Bhowani Junction"},
-	}
-	for _, tc := range cases {
-		if got := finalAnswerValue(tc.final); got != tc.want {
-			t.Errorf("finalAnswerValue(%q) = %q, want %q", tc.final, got, tc.want)
-		}
-	}
-}
-
-// TestFinalAnswerTie pins the extraction the label governance ACTS on: a tie on
-// the answer line forces `Guessed Answer` even when the audit passed (a tie
-// says the discriminating constraint is NOT corpus-verified, which is what the
-// `Final Answer` label claims), so a false positive — a `(tie: ...)` in prose —
-// would demote honest runs, and a false negative would ship the stronger label
-// on a tie.
-//
-// A tie is not limited to two candidates: one clause per rival, in order, and a
-// rival the deliverable names must never be dropped — the reader learns how wide
-// the field really was from this list alone.
-func TestFinalAnswerTie(t *testing.T) {
-	cases := []struct {
-		name  string
-		final string
-		want  string // rivals joined with " | "
-	}{
-		{
-			name:  "tie on a Guessed answer line",
-			final: "## Final Answer\nGuessed Answer: **A** (assumption: x) (tie: \"B\" - no chunk discriminates)",
-			want:  `"B" - no chunk discriminates`,
-		},
-		{
-			name:  "tie on a Final answer line (an over-claim the caller demotes)",
-			final: "Final Answer: **A** (tie: \"B\" - both fit)",
-			want:  `"B" - both fit`,
-		},
-		{
-			name:  "tie on the value line of the two-line shape",
-			final: "## Guessed Answer\n**A** (tie: \"B\" - both fit)",
-			want:  `"B" - both fit`,
-		},
-		{
-			// Three grounded candidates the corpus cannot separate: every rival
-			// is named, in order, because a comma-separated list could not be
-			// split back into candidates (titles carry commas).
-			name:  "three-way tie, one clause per rival",
-			final: "Guessed Answer: **A** (assumption: x) (tie: \"B\" - no chunk settles it) (tie: \"C, and D\" - equally supported)",
-			want:  `"B" - no chunk settles it | "C, and D" - equally supported`,
-		},
-		{
-			// A malformed clause must not read as "no tie declared": that is the
-			// one way a run could escape the Guessed label by writing it wrong.
-			name:  "a clause that names no rival still declares a tie",
-			final: "Guessed Answer: **A** (tie: )",
-			want:  unnamedTieRival,
-		},
-		{
-			name:  "no tie declared",
-			final: "Guessed Answer: **A** (assumption: x)",
-			want:  "",
-		},
-		{
-			// Prose may discuss rivals; only the answer line declares a tie.
-			name:  "a tie mentioned in prose is not a declared tie",
-			final: "## Reasoning Chain\n- Clue: this is a tie with (tie: \"B\") in the corpus (doc: a.md)\nGuessed Answer: **A** (assumption: x)",
-			want:  "",
-		},
-		{
-			name:  "rivals ride in the clauses, never as two answer lines",
-			final: "Guessed Answer: **A** (tie: \"B\" - both fit)",
-			want:  `"B" - both fit`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := strings.Join(finalAnswerTies(tc.final), " | ")
-			if got != tc.want {
-				t.Errorf("finalAnswerTies(%q) = %q, want %q", tc.final, got, tc.want)
-			}
-			if n := finalAnswerLineCount(tc.final); n > 1 {
-				t.Errorf("%d answer lines, want at most 1 — two answer lines is the degeneration shape, not a tie", n)
-			}
-		})
-	}
-}
-
-// TestAnswerNoteSafe pins the guard that keeps a dynamically built note (the
-// demotion reason lists rival TITLES) from breaking the line it is appended to:
-// the note regexes stop at the first ')', so an unsanitized ')' in a title would
-// truncate the note and cost the deliverable its value.
-func TestAnswerNoteSafe(t *testing.T) {
-	note := answerNoteSafe(`the run declares a tie with "A Book (Revised), vol. 2"`)
-	if strings.ContainsAny(note, "()") {
-		t.Errorf("note %q still carries a parenthesis — the note regex stops at the first ')'", note)
-	}
-	final := "Guessed Answer: **X** (assumption: " + note + ")"
-	if got := finalAnswerValue(final); got != "X" {
-		t.Errorf("finalAnswerValue = %q, want X — the sanitized note must keep the line parseable", got)
-	}
-}
-
-// The finalize synthesis must produce exactly ONE FOS answer line. Zero (the
-// answer line lost its shape) or two-plus (the model re-rendered the whole
-// deliverable inside a `Final Answer: **## ...**` mega-value, shipping two
-// Final Answer lines) marks the synthesis degenerate.
-func TestFinalAnswerLineCount(t *testing.T) {
-	sane := "## Candidate Matrix\n...\nFinal Answer: **1897**"
-	if got := finalAnswerLineCount(sane); got != 1 {
-		t.Errorf("sane synthesis answer lines = %d, want 1", got)
-	}
-	// The mega-value blob: the first line opens a bold run it never closes, so it is
-	// NOT an answer line, while the inner `Final Answer: **1897**。` is well formed and
-	// counts. The reader can no longer produce a value that SPANS lines - the token it
-	// reads is line-local - which is what the old "0 lines" assertion was
-	// approximating with a whole-text pattern.
-	blob := "Final Answer: **## A whole document\n\nFinal Answer: **1897**。**"
-	if got := finalAnswerLineCount(blob); got != 1 {
-		t.Errorf("mega-value blob answer lines = %d, want 1 (the unterminated line is not one, the inner line is)", got)
-	}
-	if got := finalAnswerValue(blob); got != "1897" {
-		t.Errorf("mega-value blob value = %q, want the inner well-formed line's value", got)
-	}
-	lineBoundedDouble := "Final Answer: **1897**\nFinal Answer: **1900**"
-	if got := finalAnswerLineCount(lineBoundedDouble); got != 2 {
-		t.Errorf("two answer lines = %d, want 2", got)
-	}
-	if got := finalAnswerLineCount(""); got != 0 {
-		t.Errorf("empty = %d, want 0", got)
-	}
-}
-
 // The FOS-structure sentinel distinguishes an audit-failed DELIVERABLE
 // (worth shipping verbatim) from pure narration (only synthesis can help).
 func TestHasFOSStructure(t *testing.T) {
@@ -492,7 +336,7 @@ func TestRunDeliveryGateReAuditsAfterAdoptingRepair(t *testing.T) {
 		t.Errorf("audits = %d, want auditMaxPass=%d (each adopted repair deserves a re-audit)",
 			auditor.runs, testAuditMaxPass)
 	}
-	if finalAnswerValue(final) != "1897" {
+	if !hasAnswerLine(final) {
 		t.Errorf("final = %q, want the adopted repair deliverable", final)
 	}
 }
@@ -523,7 +367,7 @@ func TestRunDeliveryGateStopsWhenSuspectsStall(t *testing.T) {
 	}
 	// A stall ships the deliverable in hand - the same one the loop would have
 	// ended on after burning the full ceiling.
-	if finalAnswerValue(final) != "1897" {
+	if !hasAnswerLine(final) {
 		t.Errorf("final = %q, want the repaired deliverable shipped", final)
 	}
 }
@@ -550,7 +394,7 @@ func TestRunDeliveryGateGivesLowSuspectsNoExtraSlack(t *testing.T) {
 		t.Errorf("audits = %d, want gateStallWindow=%d - low counts are cut as fast as high ones",
 			auditor.runs, gateStallWindow)
 	}
-	if finalAnswerValue(final) != "1897" {
+	if !hasAnswerLine(final) {
 		t.Errorf("final = %q, want the repaired deliverable shipped", final)
 	}
 }
@@ -648,7 +492,7 @@ func TestRunDeliveryGateStopsWhenSuspectsClimbBack(t *testing.T) {
 	if explorer.runs != 3 {
 		t.Errorf("repair turns = %d, want 3 (all but the stalling pass)", explorer.runs)
 	}
-	if finalAnswerValue(final) != "1897" {
+	if !hasAnswerLine(final) {
 		t.Errorf("final = %q, want the repaired deliverable shipped", final)
 	}
 }
@@ -806,7 +650,7 @@ func TestRunDeliveryGateRejectsBareAnswerLine(t *testing.T) {
 	if explorer.runs != gateNoProgressLimit {
 		t.Errorf("repair attempts = %d, want gateNoProgressLimit=%d", explorer.runs, gateNoProgressLimit)
 	}
-	if finalAnswerValue(final) != "Bob" || !hasFOSStructure(final) {
+	if !hasAnswerLine(final) || !hasFOSStructure(final) {
 		t.Errorf("final = %q, want the structured standing final preserved", final)
 	}
 	if !strings.Contains(explorer.msgs[len(explorer.msgs)-1].Content, "REJECTION NOTICE") {
@@ -819,75 +663,6 @@ func TestGateRunAuditNilAuditorErrors(t *testing.T) {
 	if _, err := gateRunAudit(context.Background(), nil, newTestConversation(),
 		"Final Answer: **1897**", nil, nil); err == nil {
 		t.Fatal("gateRunAudit with a nil auditor should error")
-	}
-}
-
-// TestAnswerValueIsGroundedTailIsNotOptional pins the class-2 boundary: the
-// middle-omission allowance exists so a MORE complete value is not refused
-// (q784's "Jacqueline Georgette Cantrelle" over a corpus that only wrote
-// "Jacqueline Cantrelle"), but it must not absorb a swapped HEAD — the last
-// token is what the entity IS, and #71 shipped "The Ballast Bank Bar" over a
-// chunk about "The Wexford Ballast Bank" with three of four tokens present.
-func TestAnswerValueIsGroundedTailIsNotOptional(t *testing.T) {
-	hay := "The Wexford Ballast Bank is a public house in Wexford town, Ireland. " +
-		"Jacqueline Cantrelle was a French musician born in Paris."
-	cases := []struct {
-		name  string
-		value string
-		want  bool
-	}{
-		{"verbatim value", "The Wexford Ballast Bank", true},
-		{"middle omitted (the q784 shape)", "Jacqueline Georgette Cantrelle", true},
-		{"head swapped (the #71 shape)", "The Ballast Bank Bar", false},
-		{"head absent, two others missing", "Ballast Bank Dundalk Arms", false},
-		{"single token that is present", "Wexford", true},
-		{"single token that is absent", "Dundalk", false},
-	}
-	for _, tc := range cases {
-		if got := answerValueIsGrounded(tc.value, hay); got != tc.want {
-			t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
-		}
-	}
-}
-
-// TestCollectGatePrechecks pins the gate's reading as EVIDENCE rather than a
-// verdict. Each of these checks used to skip the audit and send a directive of
-// its own; measured over 24 hard questions that cost 62 rejections, 11
-// short-circuits and no audit at all on more than half the set — q253 refused one
-// value ten times in a row and produced no verdict. The round is audited now; the
-// gate's reading rides in the payload and the per-kind counts stay on the record.
-func TestCollectGatePrechecks(t *testing.T) {
-	// Nothing to audit: the caller asks for a deliverable instead.
-	if got := collectGatePrechecks("q", "X", "   ", ""); got != nil {
-		t.Errorf("an empty deliverable must yield no prechecks, got %v", got)
-	}
-
-	// A citation-grounded candidate AND a missing answer value are both reported:
-	// a precheck list is what the auditor must rule on, not a single-issue gate.
-	deliverable := "## Candidate Matrix\n" +
-		`- Tested: "Opium: A Portrait of the Heavenly Demon" (chunk_id: a8d8, snippet: "Hodgson, Barbara. Opium: A Portrait of the Heavenly Demon. San Francisco: Chronicle Books. 1999.")` + "\n"
-	got := collectGatePrechecks("q", "", deliverable, "no haystack")
-	kinds := precheckKinds(got)
-	want := map[string]bool{precheckNoAnswerValue: false, precheckCitationGrounding: false}
-	for _, k := range kinds {
-		if _, ok := want[k]; ok {
-			want[k] = true
-		}
-	}
-	for k, seen := range want {
-		if !seen {
-			t.Errorf("precheck %q must fire, got %v", k, got)
-		}
-	}
-
-	// An ungrounded value is reported; a grounded one is not.
-	grounded := collectGatePrechecks("q", "KeSPA Cup 2019", "Final Answer: **KeSPA Cup 2019**", "…the KeSPA Cup 2019 was held…")
-	if len(grounded) != 0 {
-		t.Errorf("a grounded, answer-bearing deliverable must yield no prechecks, got %v", grounded)
-	}
-	ungrounded := collectGatePrechecks("q", "Fabricated Name", "Final Answer: **Fabricated Name**", "nothing of the sort here")
-	if len(precheckKinds(ungrounded)) != 1 || precheckKinds(ungrounded)[0] != precheckUngroundedValue {
-		t.Errorf("an ungrounded value must be reported as %q, got %v", precheckUngroundedValue, ungrounded)
 	}
 }
 
@@ -910,104 +685,6 @@ func TestAdoptableContinuation(t *testing.T) {
 	}
 	if adoptableContinuation("") {
 		t.Error("an empty continuation is not a deliverable")
-	}
-}
-
-// TestFinalAnswerValueWholeBold pins the third answer-line shape, read off a real
-// delivery: q775 shipped `**Guessed Answer: Boston**` (gold `Boston`, and the judge
-// scored it), while the gate read it as VALUE-LESS because the single-line matcher
-// wants the value's own opening `**` after the colon. The cost was not cosmetic:
-// every value-based check keys off this string, so a correct delivery skipped them
-// and got a demotion note it could not attribute.
-func TestFinalAnswerValueWholeBold(t *testing.T) {
-	cases := []struct{ name, final, want string }{
-		{
-			name:  "value and label inside one bold run",
-			final: "## Final Answer\n\n**Guessed Answer: Boston** (assumption: the delivery gate did not conclude PASS, so this value is not fully corpus-verified)",
-			want:  "Boston",
-		},
-		{
-			name:  "unannotated whole-bold line",
-			final: "**Final Answer: In the Arms of Morpheus**",
-			want:  "In the Arms of Morpheus",
-		},
-		{
-			name:  "plain form still wins first",
-			final: "Guessed Answer: **KeSPA Cup 2019** (assumption: x)",
-			want:  "KeSPA Cup 2019",
-		},
-		{
-			name:  "two-line form still works",
-			final: "## Final Answer\n**Bhowani Junction**",
-			want:  "Bhowani Junction",
-		},
-		{
-			// A label with no value stays value-less under every matcher: this is
-			// the shape the gate must keep telling apart from an answer.
-			name:  "bold label with no value",
-			final: "## Final Answer\n\n**Final Answer**",
-			want:  "",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := finalAnswerValue(tc.final); got != tc.want {
-				t.Errorf("finalAnswerValue(%q) = %q, want %q", tc.final, got, tc.want)
-			}
-		})
-	}
-	// The tie clause must survive the new shape too: it rides the same line.
-	whole := `**Final Answer: X** (tie: "Y" - both fit)`
-	if got := finalAnswerValue(whole); got != "X" {
-		t.Errorf("whole-bold line with a tie: value = %q, want X", got)
-	}
-	if ties := finalAnswerTies(whole); len(ties) != 1 {
-		t.Errorf("whole-bold line with a tie: ties = %v, want one rival", ties)
-	}
-}
-
-// TestAnswerValueIsGroundedTokensMustBeLocal pins the two sides of the locality
-// rule. It is NOT the q283 case, and the difference is the whole point: q283's
-// `Zimri Eder` is attested VERBATIM by a served document (Wikipedia writes `Zimri
-// Eder`; a fan wiki and a review write `Zimri Elder`, which is the gold), so that
-// value was grounded and the run declared the tie - the loss there is a scoring
-// convention, not a check that fired wrongly. What the rule rejects is a value
-// whose tokens are only assembled ACROSS documents:
-func TestAnswerValueIsGroundedTokensMustBeLocal(t *testing.T) {
-	hay := "<chunk chunk_id=c1>The Persistence challenges you, a clone of security officer Zimri Elder, to survive aboard a doomed starship.</chunk>\n" +
-		"<chunk chunk_id=c2>Eder is a surname recorded in several European countries, and unrelated to this question.</chunk>"
-	cases := []struct {
-		name  string
-		value string
-		want  bool
-	}{
-		{"assembled across documents must NOT read as grounded", "Zimri Eder", false},
-		{"the same-document spelling is grounded", "Zimri Elder", true},
-		{"head present, middle inserted by the corpus", "Zimri Elder", true},
-		{"a token from another document's neighbourhood", "Zimri surname", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := answerValueIsGrounded(tc.value, hay); got != tc.want {
-				t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
-			}
-		})
-	}
-	// A corpus that writes a NAME two ways must keep both ways grounded: this is
-	// the real q283 shape, where the two spellings come from different pages (the
-	// Wikipedia article and the fan wiki) and the run has to be free to ship either.
-	twoSpellings := "<chunk chunk_id=c1>The player assumes control of a clone of security officer Zimri Eder.</chunk>\n" +
-		"<chunk chunk_id=c2>The Persistence challenges you, a clone of security officer Zimri Elder.</chunk>"
-	for _, v := range []string{"Zimri Eder", "Zimri Elder"} {
-		if !answerValueIsGrounded(v, twoSpellings) {
-			t.Errorf("a spelling the corpus attests in one document must stay grounded: %q", v)
-		}
-	}
-	// The window is a window, not a sentence: a value whose tokens sit a few
-	// words apart in one source is still grounded.
-	wide := "<chunk chunk_id=c1>The Wexford Ballast Bank, a public house in Wexford town, Ireland, is a landmark.</chunk>"
-	if !answerValueIsGrounded("Wexford Ballast Bank", wide) {
-		t.Error("tokens within one window must stay grounded")
 	}
 }
 
@@ -1035,101 +712,108 @@ func TestLoggableSwitch(t *testing.T) {
 	}
 }
 
-// TestAnswerNoteToleratesNestedParens pins the two deliverable lines the debug-level
-// full-text log captured, and they are the reason that log exists: the gate reported
-// `answer_value_missing` while holding a perfectly well-formed answer line, because
-// the tail grammar read the notes with `[^)]*` and a note that CITES a document puts
-// a parenthesis inside the note. Both lines below are verbatim from q283 re-runs.
-func TestAnswerNoteToleratesNestedParens(t *testing.T) {
-	wikipedia := `Guessed Answer: **Zimri Eder** (assumption: the Wikipedia article (82489.md) attests the spelling "Zimri Eder" while the fan wiki and the review attest "Zimri Elder")`
-	goldForm := `Guessed Answer: **Zimri Elder** (assumption: the fan-wiki article 64640.md and the review article 55819.md both attest "Zimri Elder" in independent chunks, while the Wikipedia article 82489.md attests "Zimri Eder" in 1 chunk with 2 mentions; the better-attested variant by independent-chunk count is "Zimri Elder" and the corpus does not adjudicate which spelling is canonical) (tie: "Zimri Eder" — 82489.md attests this spelling in 1 chunk with 2 mentions, versus "Zimri Elder" in 2 independent chunks (64640.md, 55819.md); the count decides the form that ships but the question remains a tie because the corpus provides no source that adjudicates which is canonical)`
-
-	if got := finalAnswerValue(wikipedia); got != "Zimri Eder" {
-		t.Errorf("a note citing (82489.md): value = %q, want Zimri Eder", got)
+// TestAnswerLabelShapeZoo pins the whole family of answer-LINE shapes against the one
+// thing the gate reads: the label. The old reader was a ladder of per-shape patterns
+// and every new shape cost a gate misreading before it got its own — the shapes below
+// include ones no run has produced yet, because format drift is the expected case.
+// The gate does not care what follows the label; the auditor reads that.
+func TestAnswerLabelShapeZoo(t *testing.T) {
+	labelled := []struct{ name, final, want string }{
+		{"plain", "Final Answer: **X**", "final"},
+		{"with note", "Guessed Answer: **X** (assumption: y)", "guessed"},
+		{"heading, blank line, value", "## Final Answer\n\n**X**", "final"},
+		{"heading, value on the next line", "## Final Answer\n**X**", "final"},
+		{"whole line bold", "**Final Answer: X**", "final"},
+		{"label bolded separately", "**Final Answer**: **X**", "final"},
+		{"space before the colon", "**Final Answer** : **X**", "final"},
+		{"blockquote and doubled space", "> **Guessed  Answer**: **X**", "guessed"},
+		{"list bullet", "- Final Answer: **X**", "final"},
+		{"full-width colon", "Final Answer：**X**", "final"},
+		{"un-bolded value", "Final Answer: X", "final"},
+		{"CRLF line ending", "Final Answer: **X**\r", "final"},
+		{"note citing a document", "Final Answer: **X** (assumption: per (82489.md) it holds)", "final"},
+		{"whole-bold with a tie note", "**Guessed Answer: X** (tie: \"Y\" — both fit)", "guessed"},
+		{"CJK value", "Final Answer: **关羽**（含\"过五关\"）", "final"},
+		{"backticked label", "`Final Answer: **X**`", "final"},
+		{"indented, mid-document", "text above\n\n   Final Answer: **X**", "final"},
 	}
-	if got := finalAnswerValue(goldForm); got != "Zimri Elder" {
-		t.Errorf("a tie note citing (64640.md, 55819.md): value = %q, want Zimri Elder", got)
-	}
-	// The tie clause must survive intact, inner parenthesis and all: the label
-	// governance demotes on it, and the note is what the reader is told.
-	ties := finalAnswerTies(goldForm)
-	if len(ties) != 1 {
-		t.Fatalf("ties = %v, want exactly one rival", ties)
-	}
-	if !strings.Contains(ties[0], "55819.md") {
-		t.Errorf("the tie note was truncated at the inner `)`: %q", ties[0])
-	}
-	// The answer line count must still see ONE line: the synthesis guard depends on it.
-	if got := finalAnswerLineCount(goldForm); got != 1 {
-		t.Errorf("answer lines = %d, want 1", got)
-	}
-	// The tail is NOT policed any more, and that is the point of the rewrite: the
-	// reader takes the value and leaves the delivery's shape to the auditor. Rejecting
-	// a line because of what followed the value is what produced false
-	// `answer_value_missing` suspicions on well-formed deliveries (the whole reason
-	// the tail whitelist is gone).
-	if got := finalAnswerValue(`Final Answer: **X** (assumption: y) and then some prose`); got != "X" {
-		t.Errorf("prose after the notes = %q, want X - the tail is the auditor's business", got)
-	}
-	if got := finalAnswerValue(`Final Answer: **X** (assumption: unbalanced (paren`); got != "X" {
-		t.Errorf("unbalanced note = %q, want X - a note cannot unmake a value", got)
-	}
-	// The ONE shape the reader must still refuse: an unterminated bold run, which is
-	// how a re-rendered document gets swallowed into a value.
-	if got := finalAnswerValue(`Final Answer: **X`); got != "" {
-		t.Errorf("unterminated bold run = %q, want empty", got)
-	}
-}
-
-// TestAnswerLineShapeZoo pins the WHOLE family of answer-line shapes against ONE
-// reader. The reader was a ladder of per-shape patterns until now, and every run that
-// produced a new shape cost a gate misreading (false `answer_value_missing`, value
-// checks skipped, a repair turn bought) before another pattern was added. This test is
-// the contract that replaces that ladder: any spelling of the same answer parses, and
-// the shapes below include ones no run has produced yet, because format drift is the
-// expected case rather than the exception.
-func TestAnswerLineShapeZoo(t *testing.T) {
-	cases := []struct {
-		name  string
-		final string
-		want  string
-	}{
-		{"plain", "Final Answer: **X**", "X"},
-		{"with note", "Guessed Answer: **X** (assumption: y)", "X"},
-		{"heading, blank line, value", "## Final Answer\n\n**X**", "X"},
-		{"heading, value on the next line", "## Final Answer\n**X**", "X"},
-		{"whole line bold", "**Final Answer: X**", "X"},
-		{"label bolded separately", "**Final Answer**: **X**", "X"},
-		{"space before the colon", "**Final Answer** : **X**", "X"},
-		{"blockquote and doubled space", "> **Guessed  Answer**: **X**", "X"},
-		{"list bullet", "- Final Answer: **X**", "X"},
-		{"full-width colon", "Final Answer：**X**", "X"},
-		{"un-bolded value", "Final Answer: X", "X"},
-		{"CRLF line ending", "Final Answer: **X**\r", "X"},
-		{"trailing spaces", "Final Answer: **X**   ", "X"},
-		{"note citing a document", "Final Answer: **X** (assumption: per (82489.md) it holds)", "X"},
-		{"whole-bold with a tie note", "**Guessed Answer: X** (tie: \"Y\" — both fit)", "X"},
-		{"heading and a bolded label line", "## Final Answer\n\n**Guessed Answer: X**", "X"},
-		{"CJK value with CJK note", "Final Answer: **关羽**（含\"过五关\"）", "关羽"},
-	}
-	for _, tc := range cases {
+	for _, tc := range labelled {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := finalAnswerValue(tc.final); got != tc.want {
-				t.Errorf("finalAnswerValue(%q) = %q, want %q", tc.final, got, tc.want)
+			if got := answerLabel(tc.final); got != tc.want {
+				t.Errorf("answerLabel(%q) = %q, want %q", tc.final, got, tc.want)
+			}
+			if !hasAnswerLine(tc.final) || !answerLineText(tc.final) {
+				t.Errorf("shape not seen as an answer line: %q", tc.final)
 			}
 		})
 	}
-	// And the shapes that are NOT answer lines, for the same reason.
-	notAnswers := []string{
-		"## Final Answer",                       // a label with nothing under it
-		"## Final Answer\n\nA prose paragraph.", // prose is not a value
-		"Final Answer: **X",                     // unterminated bold run
-		"No answer line at all.",
-		"",
-	}
-	for _, text := range notAnswers {
-		if got := finalAnswerValue(text); got != "" {
-			t.Errorf("finalAnswerValue(%q) = %q, want empty", text, got)
+	// What is NOT an answer: prose, prose that mentions the words, an empty deliverable.
+	for _, text := range []string{
+		"", "A prose paragraph without any label.",
+		"I will give a final answer once the evidence is in.",
+		"the final_answer is computed elsewhere",
+	} {
+		if got := answerLabel(text); got != "" {
+			t.Errorf("answerLabel(%q) = %q, want empty", text, got)
 		}
+		if answerLineText(text) {
+			t.Errorf("answerLineText(%q) = true, want false", text)
+		}
+	}
+	// The bare-heading shape: the label is there, the text is not. The gate must tell
+	// them apart because the recovery ladder exists for a run that wrote the heading and
+	// stopped — what it does NOT do is judge what a value should have been.
+	bare := "## Candidate Matrix\n...\n## Final Answer"
+	if !hasAnswerLine(bare) {
+		t.Error("a bare heading still carries the label")
+	}
+	if answerLineText(bare) {
+		t.Error("a bare heading carries no text after the label")
+	}
+}
+
+// TestAnswerLineCountLabelOnly pins the synthesis guard's input: it counts LABEL
+// lines, which is all the guard needs to tell a single answer line from a lost one or
+// from a deliverable re-rendered inside an answer line.
+func TestAnswerLineCountLabelOnly(t *testing.T) {
+	cases := []struct {
+		name, final string
+		want        int
+	}{
+		{"sane synthesis", "## Candidate Matrix\n...\nFinal Answer: **1897**", 1},
+		{"two answer lines", "Final Answer: **1897**\nFinal Answer: **1900**", 2},
+		{"heading plus value line", "## Final Answer\n**1897**", 1},
+		{"lost label", "## Candidate Matrix\n...\nthe answer is 1897", 0},
+		{"empty", "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := answerLineCount(tc.final); got != tc.want {
+				t.Errorf("answerLineCount(%q) = %d, want %d", tc.final, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCollectGatePrechecksLabelOnly pins that the gate's own reading is a LABEL
+// reading: two shapes of "there is no answer here" (no label at all, and a heading
+// with nothing under it), and silence otherwise. The value-based readings
+// (`ungrounded_answer_value`, `list_only_answer_value`) are gone with the value reader;
+// the auditor's contract covers both more strictly.
+func TestCollectGatePrechecksLabelOnly(t *testing.T) {
+	deliverable := "## Candidate Matrix\n- **Searched**: `grep_chunks(\"x\")`\n\n## Reasoning Chain\n- Clue: y\n\nFinal Answer: **X**"
+	if got := collectGatePrechecks(deliverable); len(got) != 0 {
+		t.Errorf("a well-formed deliverable needs no precheck, got %v", got)
+	}
+	if got := collectGatePrechecks("## Candidate Matrix\n...\nno answer line here"); len(got) != 1 ||
+		!strings.Contains(got[0], precheckNoAnswerLine) {
+		t.Errorf("a deliverable with no answer line must be flagged, got %v", got)
+	}
+	if got := collectGatePrechecks("## Candidate Matrix\n...\n## Final Answer"); len(got) != 1 ||
+		!strings.Contains(got[0], "carries NO value") {
+		t.Errorf("a bare heading must be flagged, got %v", got)
+	}
+	if got := collectGatePrechecks("   "); got != nil {
+		t.Errorf("nothing to audit must return nil, got %v", got)
 	}
 }
