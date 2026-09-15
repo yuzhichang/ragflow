@@ -234,19 +234,27 @@ services:
     # Progress bookkeeping tolerates that; restore flush_log_at_trx_commit=1 and
     # sync_binlog=1 if the database itself must be strictly durable.
     command:
-      --max_connections=1000
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --default-authentication-plugin=mysql_native_password
-      --tls_version="TLSv1.2,TLSv1.3"
-      --init-file /data/application/init.sql
-      --binlog_expire_logs_seconds=604800
-      --innodb-flush-log-at-trx-commit=2
-      --sync-binlog=0
-      --innodb-buffer-pool-size=4G
-      --innodb-io-capacity=2000
-      --innodb-io-capacity-max=4000
-      --innodb-redo-log-capacity=1G
+      - --max_connections=1000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --tls_version=TLSv1.2,TLSv1.3
+      - --init-file=/data/application/init.sql
+      - --binlog_expire_logs_seconds=604800
+      - --innodb-flush-log-at-trx-commit=2
+      - --sync-binlog=0
+      # 1G, not 4G. The database is 3.6G but its hot working set is under 1G
+      # (document/file/file2document/ingestion_task_log sum to ~880M), and 2.66G
+      # of the 3.6G is pipeline_operation_log, a log table that is written but
+      # not re-read. Ingestion is embedding-bound, not database-bound: the
+      # per-stage database cost is 0.03-0.10s, unchanged when the pool was
+      # shrunk from 4G to 1G online. The 4G pool simply wasted 3G of a box with
+      # no swap. Restart mysqld after changing this (an online shrink returns
+      # only part of the memory to the OS).
+      - --innodb-buffer-pool-size=1G
+      - --innodb-io-capacity=2000
+      - --innodb-io-capacity-max=4000
+      - --innodb-redo-log-capacity=1G
     ports:
       - ${EXPOSE_MYSQL_PORT}:3306
     volumes:
