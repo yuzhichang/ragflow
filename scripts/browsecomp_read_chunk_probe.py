@@ -94,6 +94,23 @@ def load_questions(path: str) -> dict[str, dict[str, Any]]:
     return {str(q.get("id")): q for q in load_jsonl(path)}
 
 
+def load_grades(path: str) -> dict[str, bool]:
+    """question id -> graded outcome, from a run's own leaderboard.json."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            board = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, bool] = {}
+    for metric in board.get("per_query_metrics") or []:
+        correct = metric.get("correct")
+        if isinstance(correct, bool):
+            out[str(metric.get("query_id"))] = correct
+    return out
+
+
 def doc_chunks(es: str, auth: str, index: str, kb_id: str, stem: str, cache: dict[str, list[dict[str, str]]]) -> list[dict[str, str]]:
     """Every chunk of one corpus document, as {"id", "text"}.
 
@@ -414,6 +431,10 @@ def main() -> None:
     ap.add_argument("--index", help="override the auto-discovered ES index")
     ap.add_argument("--kb-id", help="override the auto-discovered knowledge-base id")
     ap.add_argument("--out", default="outputs/read_chunk_probe", help="output directory")
+    ap.add_argument(
+        "--leaderboard",
+        help="the run's leaderboard.json: joins each row's grade onto its verdict, so the mechanism can be cross-tabulated against the outcome (default: sibling of --answers)",
+    )
     ap.add_argument("--no-es", action="store_true", help="skip the gold-chunk lookup (ledger arithmetic only)")
     args = ap.parse_args()
 
@@ -433,11 +454,37 @@ def main() -> None:
         qid = str(row.get("question_id"))
         out_rows.append(probe_row(row, questions.get(qid), args, cache))
 
+    # The grade, when the run's own leaderboard is available: the verdict's value
+    # is that it can be checked against an outcome, so a run whose grade is absent
+    # (still being judged) says so rather than silently reporting a mechanism.
+    grades = load_grades(args.leaderboard or os.path.join(os.path.dirname(args.answers), "leaderboard.json"))
+    for r in out_rows:
+        r["correct"] = grades.get(r["id"])
+    graded = [r for r in out_rows if r["correct"] is not None]
+
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "probe.jsonl"), "w", encoding="utf-8") as fh:
         fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in out_rows)
 
-    print(f"{'id':>6} {'deep':>5} {'cited':>6} {'uncited':>8} {'goldCk':>7} {'goldRead':>9} {'goldCited':>10}  verdict")
+    print(f"{'id':>6} {'deep':>5} {'cited':>6} {'uncited':>8} {'goldCk':>7} {'goldRead':>9} {'goldCited':>10}  {'grade':<5} verdict")
+    for r in out_rows:
+        grade = "-" if r["correct"] is None else ("PASS" if r["correct"] else "FAIL")
+        print(f"{r['id']:>6} {r['deep_read']:>5} {r['cited']:>6} {r['uncited_deep']:>8} {r['gold_chunks_total']:>7} {r['gold_chunks_read']:>9} {r['gold_chunks_cited']:>10}  {grade:<5} {r['verdict']}")
+
+    verdict_x_grade: dict[str, dict[str, int]] = {}
+    verdict_mismatch: list[str] = []
+    if graded:
+        print("\nverdict x grade (the check that decides whether the mechanism is a finding):")
+        for r in graded:
+            bucket = verdict_x_grade.setdefault(r["verdict"], {"PASS": 0, "FAIL": 0})
+            bucket["PASS" if r["correct"] else "FAIL"] += 1
+        for verdict in sorted(verdict_x_grade, key=lambda v: -(verdict_x_grade[v]["PASS"] + verdict_x_grade[v]["FAIL"])):
+            bucket = verdict_x_grade[verdict]
+            print(f"  {verdict:<50} PASS={bucket['PASS']:<3} FAIL={bucket['FAIL']}")
+        verdict_mismatch = [r["id"] for r in graded if r["verdict"].startswith("gold_read_and_cited") != bool(r["correct"])]
+        print(f"  rows where verdict and grade DISAGREE: {verdict_mismatch or 'none'}")
+    else:
+        print("\n(no grades yet: the run's leaderboard.json is missing or still being judged)")
     for r in out_rows:
         print(f"{r['id']:>6} {r['deep_read']:>5} {r['cited']:>6} {r['uncited_deep']:>8} {r['gold_chunks_total']:>7} {r['gold_chunks_read']:>9} {r['gold_chunks_cited']:>10}  {r['verdict']}")
 
@@ -464,6 +511,8 @@ def main() -> None:
         "verdicts": {v: sum(1 for r in out_rows if r["verdict"] == v) for v in sorted({r["verdict"] for r in out_rows})},
         "median_deep_read": sorted(r["deep_read"] for r in out_rows)[len(out_rows) // 2] if out_rows else None,
         "median_uncited_deep": sorted(r["uncited_deep"] for r in out_rows)[len(out_rows) // 2] if out_rows else None,
+        "verdict_x_grade": verdict_x_grade,
+        "verdict_grade_mismatch": verdict_mismatch,
         "median_uncited_with_gold": _median([r["uncited_deep_with_gold"] for r in out_rows]),
         "median_uncited_with_anchor": _median([r["uncited_deep_with_anchor"] for r in out_rows]),
         "median_uncited_with_novel_name": _median([r["uncited_deep_with_novel_name"] for r in out_rows]),
