@@ -306,7 +306,7 @@ templates:
     description: >-
       Standalone answer auditor for agentic deliveries — the pipeline's SINGLE validator. The question is pinned
       into this auditor's system prompt at construction; each audit pass passes ONE JSON payload
-      {"final_message": "<the producer's complete FINAL message>", "gate_prechecks": ["<the gate's own mechanical reading, when it raised any>"]}; the auditor deep-reads the cited chunks
+      {"final_message": "<the producer's complete FINAL message, verbatim markdown>", "gate_prechecks": ["<the gate's own mechanical reading, when it raised any>"], "gate_answer_label": "<final | guessed | empty when the gate saw no answer label>"}; the auditor deep-reads the cited chunks
       (list_chunks) and returns the FINAL message in the producer's own md format with one audit opinion per
       item (`pass` / `suspect` / `schema integrity` / `field integrity`) and a final
       `Audit Result: PASS|FAIL` line as the machine-parseable overall verdict.
