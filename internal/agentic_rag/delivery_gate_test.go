@@ -958,12 +958,13 @@ func TestFinalAnswerValueWholeBold(t *testing.T) {
 	}
 }
 
-// TestAnswerValueIsGroundedTokensMustBeLocal pins the q283 shape, which is the
-// one the token-coverage rule could not see: the delivered value's tokens were
-// each present in the haystack, but in DIFFERENT documents. The run had the page
-// that says "a clone of security officer Zimri Elder" and shipped `Zimri Eder` -
-// one letter off the gold - and the precheck read it as grounded, so the audit
-// never had a reason to send it back.
+// TestAnswerValueIsGroundedTokensMustBeLocal pins the two sides of the locality
+// rule. It is NOT the q283 case, and the difference is the whole point: q283's
+// `Zimri Eder` is attested VERBATIM by a served document (Wikipedia writes `Zimri
+// Eder`; a fan wiki and a review write `Zimri Elder`, which is the gold), so that
+// value was grounded and the run declared the tie - the loss there is a scoring
+// convention, not a check that fired wrongly. What the rule rejects is a value
+// whose tokens are only assembled ACROSS documents:
 func TestAnswerValueIsGroundedTokensMustBeLocal(t *testing.T) {
 	hay := "<chunk chunk_id=c1>The Persistence challenges you, a clone of security officer Zimri Elder, to survive aboard a doomed starship.</chunk>\n" +
 		"<chunk chunk_id=c2>Eder is a surname recorded in several European countries, and unrelated to this question.</chunk>"
@@ -972,8 +973,8 @@ func TestAnswerValueIsGroundedTokensMustBeLocal(t *testing.T) {
 		value string
 		want  bool
 	}{
-		{"the misspelled gold must NOT read as grounded", "Zimri Eder", false},
-		{"the corpus spelling is grounded", "Zimri Elder", true},
+		{"assembled across documents must NOT read as grounded", "Zimri Eder", false},
+		{"the same-document spelling is grounded", "Zimri Elder", true},
 		{"head present, middle inserted by the corpus", "Zimri Elder", true},
 		{"a token from another document's neighbourhood", "Zimri surname", false},
 	}
@@ -983,6 +984,16 @@ func TestAnswerValueIsGroundedTokensMustBeLocal(t *testing.T) {
 				t.Errorf("answerValueIsGrounded(%q) = %v, want %v", tc.value, got, tc.want)
 			}
 		})
+	}
+	// A corpus that writes a NAME two ways must keep both ways grounded: this is
+	// the real q283 shape, where the two spellings come from different pages (the
+	// Wikipedia article and the fan wiki) and the run has to be free to ship either.
+	twoSpellings := "<chunk chunk_id=c1>The player assumes control of a clone of security officer Zimri Eder.</chunk>\n" +
+		"<chunk chunk_id=c2>The Persistence challenges you, a clone of security officer Zimri Elder.</chunk>"
+	for _, v := range []string{"Zimri Eder", "Zimri Elder"} {
+		if !answerValueIsGrounded(v, twoSpellings) {
+			t.Errorf("a spelling the corpus attests in one document must stay grounded: %q", v)
+		}
 	}
 	// The window is a window, not a sentence: a value whose tokens sit a few
 	// words apart in one source is still grounded.

@@ -257,6 +257,9 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 		// partial name is not a filled full-name slot (q521 and q253 passed both).
 		"answer value is not a single entity",
 		"answer value is a partial form",
+		// A variant tie the corpus can actually weigh: the better-attested
+		// spelling ships (q283 shipped the single-source one and lost the point).
+		"the better-attested variant was not preferred",
 	} {
 		if !strings.Contains(auditor.Content, want) {
 			t.Errorf("the auditor must define the tie defect %q", want)

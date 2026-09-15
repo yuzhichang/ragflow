@@ -488,17 +488,20 @@ func answerValueIsGrounded(value, haystack string) bool {
 	if len(tokens) < 2 {
 		return false
 	}
-	// Locality, not just token coverage. The rule above asks whether each token
+	// Locality, not just token coverage: the rule above asks whether each token
 	// appears SOMEWHERE in the haystack, and the haystack is every chunk the run
-	// read - so a value can be assembled from tokens that never share a document.
-	// q283 shipped `Zimri Eder` for the gold `Zimri Elder` WITH the right page in
-	// hand ("a clone of security officer Zimri Elder"): "Zimri" came from that
-	// page and "Eder" from somewhere else in the haystack, both were "grounded",
-	// and the audit PASSed a misspelled gold. The tokens must therefore occur IN
-	// ORDER inside one window, the head (the last token - what the entity IS) may
-	// never be the missing one, and at most ONE non-final token may be missing,
-	// which keeps the middle-omission allowance intact (q784's "Jacqueline
-	// Georgette Cantrelle" over the corpus's "Jacqueline Cantrelle").
+	// read - so a value whose tokens never share a document can read as grounded.
+	// The window is deliberately generous for the opposite reason, and q283 is the
+	// case that must STAY grounded: `Zimri Eder` is the WIKIPEDIA spelling of the
+	// protagonist (doc 82489, served) while a fan wiki and a review write `Zimri
+	// Elder` (the gold), so the run shipped a spelling the corpus attests verbatim
+	// and declared the tie between the two. An earlier note here blamed that value
+	// on cross-document assembly, which the corpus does not support - a matcher
+	// keyed to the gold's spelling would fail a value that IS attested.
+	// So: the tokens must occur IN ORDER inside one window, the head (the last
+	// token - what the entity IS) may never be the missing one, and at most ONE
+	// non-final token may be missing, which keeps the middle-omission allowance
+	// intact (q784's "Jacqueline Georgette Cantrelle" over "Jacqueline Cantrelle").
 	return valueTokensAppearNearby(strings.Fields(normalizeForMatch(haystack)), tokens)
 }
 
