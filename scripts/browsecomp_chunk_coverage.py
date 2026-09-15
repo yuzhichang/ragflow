@@ -289,6 +289,10 @@ def discover_scope() -> tuple[str, str]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ids", default="failed", help="'failed' (every id in a failed_* bucket) or a comma list")
+    ap.add_argument(
+        "--docs",
+        help="document stems (e.g. '33637,34297'), checked directly instead of via questions - used to re-verify specific documents after a re-parse",
+    )
     ap.add_argument("--config", default="scripts/browsecompplus_retry_conf.json")
     ap.add_argument("--questions", default=QUESTIONS, help="override the questions jsonl (expected docs)")
     ap.add_argument("--es", default="http://localhost:1200")
@@ -304,9 +308,13 @@ def main() -> None:
     if not (args.index and args.kb_id):
         args.index, args.kb_id = discover_scope()
 
-    ids = failed_ids(args.config) if args.ids == "failed" else [x.strip() for x in args.ids.split(",") if x.strip()]
-    per_question = expected_docs(ids, args.questions)
-    docs = sorted({d for ds in per_question.values() for d in ds})
+    if args.docs:
+        docs = sorted({d.strip() for d in args.docs.split(",") if d.strip()})
+        per_question = {"_docs": docs}
+    else:
+        ids = failed_ids(args.config) if args.ids == "failed" else [x.strip() for x in args.ids.split(",") if x.strip()]
+        per_question = expected_docs(ids, args.questions)
+        docs = sorted({d for ds in per_question.values() for d in ds})
     print(f"questions={len(per_question)} reference documents={len(docs)} workers={args.workers}")
     print("scope = every chunk for the doc; visible = list_chunks' own filter (available_int:1, no compile_kwd)")
     print(f"metric = word {NGRAM}-grams, one every {STRIDE_TOKENS} tokens")
