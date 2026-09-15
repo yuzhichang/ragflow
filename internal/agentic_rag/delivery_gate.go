@@ -40,15 +40,20 @@ import (
 // documents in parentheses, CJK punctuation), and a miss read a well-formed delivery as
 // value-less — skipping the checks built on it and buying a repair turn (measured on
 // q775 and twice on q283).
-var answerLineLabelRe = regexp.MustCompile(`(?i)^[^\p{L}\p{N}]*(final|guessed)[^\S\n]+answer\b`)
+// The contract's label is the phrase `Final Answer` / `Guessed Answer`, and the
+// gate asks exactly ONE question about a deliverable: does that phrase occur?
+// Nothing else about the text is read - not the emphasis markers, not the
+// parentheses, not the colons, not a `tie` clause - so the pattern is the phrase
+// itself, anchored to nothing. The `\b` after `answer` keeps the plural
+// (`Final Answers`, in prose) from reading as a label; everything past the phrase
+// belongs to the auditor.
+var answerLineLabelRe = regexp.MustCompile(`(?i)(final|guessed)\s+answer\b`)
 
 // answerLabel returns the label the deliverable claims — "final", "guessed" — or ""
 // when it carries neither. The first labelled line wins.
 func answerLabel(final string) string {
-	for _, line := range strings.Split(final, "\n") {
-		if m := answerLineLabelRe.FindStringSubmatch(line); m != nil {
-			return strings.ToLower(m[1])
-		}
+	if m := answerLineLabelRe.FindStringSubmatch(final); m != nil {
+		return strings.ToLower(m[1])
 	}
 	return ""
 }
@@ -56,63 +61,11 @@ func answerLabel(final string) string {
 // hasAnswerLine reports whether the deliverable carries an answer label at all.
 func hasAnswerLine(final string) bool { return answerLabel(final) != "" }
 
-// answerLineText reports whether any labelled line carries text after the label —
-// anything at all: a value, a colon, a note. The gate does NOT read what that text
-// says (see answerLabel); it needs only the difference between an answer line and a
-// bare heading, because the recovery ladder exists for the bare-heading shape: a run
-// that wrote `## Final Answer` and stopped still holds its answer in an earlier turn,
-// and shipping the heading alone would ship nothing.
-func answerLineText(final string) bool {
-	lines := strings.Split(final, "\n")
-	for i, line := range lines {
-		loc := answerLineLabelRe.FindStringSubmatchIndex(line)
-		if loc == nil {
-			continue
-		}
-		if strings.TrimSpace(line[loc[1]:]) != "" {
-			return true // text rides the label's own line
-		}
-		// Otherwise the value may ride the next non-blank line, and there the FOS
-		// marker for a value is the bold run — `## Final Answer` followed by a
-		// paragraph is a heading, not an answer, and a run that stopped at the
-		// heading holds no answer to ship. This reads the MARKER, never the text.
-		for j := i + 1; j < len(lines); j++ {
-			if strings.TrimSpace(lines[j]) == "" {
-				continue
-			}
-			return boldedRun(lines[j]) != ""
-		}
-		return false
-	}
-	return false
-}
-
-// boldedRun returns the content of the first `**...**` run on a line, or "" when the
-// line carries none.
-func boldedRun(line string) string {
-	i := strings.Index(line, "**")
-	if i < 0 {
-		return ""
-	}
-	rest := line[i+2:]
-	j := strings.Index(rest, "**")
-	if j < 0 {
-		return ""
-	}
-	return strings.TrimSpace(rest[:j])
-}
-
 // answerLineCount counts lines carrying an answer label. The finalize synthesis must
 // produce exactly ONE: zero means the label was lost, two-plus means the model
 // re-rendered the whole deliverable inside an answer line.
 func answerLineCount(s string) int {
-	count := 0
-	for _, line := range strings.Split(s, "\n") {
-		if answerLineLabelRe.MatchString(line) {
-			count++
-		}
-	}
-	return count
+	return len(answerLineLabelRe.FindAllString(s, -1))
 }
 
 // fosSectionRe matches the structural headings of the FOS deliverable.
@@ -220,14 +173,6 @@ func reconcileAnswerLabels(final string) string {
 		return final
 	}
 	return strings.Join(lines, "\n")
-}
-
-// normalizeForMatch folds text for a substring test: lowercase, drop markdown
-// emphasis and collapse whitespace.
-var nonWordRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
-
-func normalizeForMatch(s string) string {
-	return strings.TrimSpace(nonWordRe.ReplaceAllString(strings.ToLower(s), " "))
 }
 
 // groundingWindowSlack is how many words a sliding match may span beyond the
@@ -428,13 +373,11 @@ func buildAuditPayload(final string, prechecks []string) string {
 // precheckNoAnswerLine is the gate's own reading, and it is a LABEL reading: a
 // deliverable without an answer label has no answer to audit. It is record vocabulary,
 // so it is a stable identifier rather than prose.
-const (
-	precheckNoAnswerLine = "answer_line_missing"
-	// precheckCitationGrounding is the one text-only reading that survived besides the
-	// label: it looks at the deliverable's own matrix lines (are they grounded only by
-	// a bibliographic entry?), never at the answer.
-	precheckCitationGrounding = "citation_only_grounding"
-)
+// precheckNoAnswerLine is the gate's ONLY precheck kind: the deliverable does not
+// contain the answer label. Everything else about the text - whether the value fills
+// the slot, whether a line merely cites a document, whether a tie is real - is
+// answer_auditor's judgement, and its contract carries those defects.
+const precheckNoAnswerLine = "answer_line_missing"
 
 // collectGatePrechecks returns the gate's text-only reading of a deliverable that is
 // about to be audited, as EVIDENCE for the auditor rather than a verdict. Two readings
@@ -444,29 +387,20 @@ const (
 //   - the citation-only grounding of the matrix lines (a structural reading of the
 //     deliverable's own lines, not of the answer).
 //
-// The value-based readings are gone with the value reader: `ungrounded_answer_value`
-// and `list_only_answer_value` both needed the value STRING, and the auditor's own
-// contract covers them more strictly (the value must be grounded in the CITED
-// evidence, not merely "appear somewhere in what the run read" — and a listing entry
-// that merely names a candidate is already a defect there).
+// The text-based readings are gone with the content reader: the value checks needed
+// the value STRING, and the citation check read the matrix lines. The auditor's own
+// contract covers all of them - and more strictly, since it reads the CITED evidence
+// rather than "anywhere in what the run read".
 func collectGatePrechecks(final string) []string {
 	if strings.TrimSpace(final) == "" {
 		return nil // nothing to audit; the caller asks for a deliverable
 	}
 	var prechecks []string
-	switch {
-	case !hasAnswerLine(final):
+	// ONE reading, and it does not parse the answer: the phrase's presence.
+	if !hasAnswerLine(final) {
 		prechecks = append(prechecks, precheckNoAnswerLine+
-			": the deliverable carries no `Final Answer` / `Guessed Answer` line; the contract"+
-			" requires one as its LAST line")
-	case !answerLineText(final):
-		prechecks = append(prechecks, precheckNoAnswerLine+
-			": the answer heading carries NO value; the contract requires"+
-			" `Final Answer: **<value>**` (or the Guessed variant) as its LAST line")
-	}
-	if gaps := citationOnlyGroundings(final); len(gaps) > 0 {
-		prechecks = append(prechecks, precheckCitationGrounding+
-			": these lines are grounded only by a bibliographic entry: "+strings.Join(gaps, "; "))
+			": the deliverable does not contain `Final Answer` / `Guessed Answer`; the contract"+
+			" requires the label as its LAST line")
 	}
 	return prechecks
 }

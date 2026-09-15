@@ -759,7 +759,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		runErr = nil
 	}
 	final = gateFinal
-	if !answerLineText(final) {
+	if !hasAnswerLine(final) {
 		// Recovery ladder, cheapest and most faithful first. A run that ends
 		// on a narration tail or on a bare tool call still holds an answer
 		// somewhere in its own turns, and that answer is the model's own
@@ -769,7 +769,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// may not even reach a provider (it would be short-circuited with the
 		// stale error that tripped the cooldown).
 		carried := sess.explorer.lastAssistant(ctx, func(m *schema.Message) bool {
-			return strings.TrimSpace(m.Content) != "" && answerLineText(m.Content)
+			return strings.TrimSpace(m.Content) != "" && hasAnswerLine(m.Content)
 		})
 		switch {
 		case hasFOSStructure(auditedFinal):
@@ -806,7 +806,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// FOS deliverable. Synthesize one deterministically from the question,
 	// whatever partial output exists, and the evidence gathered so far — the
 	// turn must never end on narration or a blank.
-	if final == "" || runErr != nil || !answerLineText(final) {
+	if final == "" || runErr != nil || !hasAnswerLine(final) {
 		// Detach from the run's cancellation entirely: the fallback fires most
 		// often BECAUSE the shared wall-clock budget expired, and a deadline
 		// expiry and a client hang-up are indistinguishable to the derived
@@ -853,28 +853,17 @@ func Run(ctx context.Context, in Input) (string, error) {
 		}
 	}
 
-	// Label governance (lever 1): `Final Answer` claims every discriminating constraint
-	// is corpus-verified, so it may only survive an audit that PASSED. A declared TIE is
-	// the auditor's defect now ("Final Answer claims a tie") rather than the gate's
-	// regex: the auditor reads the clause, the gate reads labels, and a run that keeps
-	// its tie ships `Guessed Answer` because the audit does not PASS with one. This runs
-	// LAST - the text it governs has to be the text that ships, and the synthesizer above
-	// renders a FRESH deliverable with its own label. The value is untouched (that is
-	// what the judge scores).
-	if governed, reason := governAnswerLabel(final, in.GateAudit); reason != "" {
-		common.InfoCtx(ctx, "agentic_rag: demoted Final Answer to Guessed Answer",
-			zap.String("reason", reason))
-		final = governed
-	}
-
-	// Final label check: whatever text won (gate deliverable, synthesized or
-	// recovered message) must agree with itself — a `## Final Answer` heading
-	// above a `**Guessed Answer: X**` value line claims more than the run
-	// verified. The conservative label wins; the value is untouched.
-	if reconciled := reconcileAnswerLabels(final); reconciled != final {
-		common.InfoCtx(ctx, "agentic_rag: reconciled answer labels (heading disagreed with the value line)")
-		final = reconciled
-	}
+	// The label is the MODEL's claim and the AUDITOR's judgement, and the gate does not
+	// touch it. `Final Answer` asserts that every discriminating constraint is
+	// corpus-verified; the auditor's contract fails that assertion when the record does
+	// not establish them (`Final Answer claims corpus-verification the record does not
+	// establish`), and its repair directive tells the producer to state a label it can
+	// support. The pipeline used to do that edit itself — `demoteFinalAnswerLabel`
+	// spliced the word with a regex and appended a canned note — which is the pipeline
+	// rewriting the deliverable rather than the deliverable's author correcting it. What
+	// the gate keeps is the VERDICT, so a `Final Answer` that ships without a PASS is at
+	// least visible in the log and in the archived row (GateAudit.Passed).
+	observeUnverifiedFinalLabel(ctx, final, in.GateAudit)
 
 	// Diagnosis, not enforcement: a locate tool the run called but the matrix
 	// never credits leaves nothing in the archived row to show it was used. On
@@ -896,47 +885,6 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// several competing "Final Answer" blocks.
 	emit(ctx, in.OnDelta, final, "")
 	return final, runErr
-}
-
-// shouldDemoteFinalAnswer reports whether the run's `Final Answer` claim has to
-// fall back to `Guessed Answer`: the gate never concluded PASS and it has
-// SOMETHING on record — an audit verdict (Suspects) or a deliverable it refused
-// before an audit could run (Rejections). Without the Rejections arm a run whose
-// gate short-circuited pre-audit shipped an unaudited `Final Answer`.
-// governAnswerLabel applies the ONE label rule to the text a run is about to ship,
-// returning the (possibly rewritten) text plus the reason, or ("", no reason) when
-// the label may stand.
-//
-// It is a function so the rule is applied at ONE place, on the FINAL text. It used
-// to be inlined before the last-resort synthesis, and that synthesis replaces the
-// answer with a freshly rendered deliverable carrying its own label - so a
-// synthesized `Final Answer` shipped ungoverned (w3: four pre-audit rejections and
-// no audit at all, `Final Answer` on the synthesizer's text while the log showed a
-// demotion on the draft it had just replaced).
-func governAnswerLabel(final string, audit *GateAuditRecord) (string, string) {
-	reason := ""
-	// One reason, and it is a STATE, not a reading of the answer: the gate did not
-	// conclude PASS. Whether the deliverable declares a tie is the auditor's judgement
-	// now — it has the clause and the defect vocabulary for it — and a tie that the
-	// auditor accepts still does not PASS, so the label follows the same rule.
-	if shouldDemoteFinalAnswer(audit) {
-		reason = "the delivery gate did not conclude PASS, so this value is not fully corpus-verified"
-	}
-	if reason == "" {
-		return final, ""
-	}
-	demoted, changed := demoteFinalAnswerLabel(final, reason)
-	if !changed {
-		return final, ""
-	}
-	return demoted, reason
-}
-
-func shouldDemoteFinalAnswer(audit *GateAuditRecord) bool {
-	if audit == nil || audit.Passed {
-		return false
-	}
-	return len(audit.Suspects) > 0 || audit.Rejections > 0 || audit.AuditFailures > 0
 }
 
 // countGateAuditFailure records an audit pass the auditor could not complete, so
@@ -995,6 +943,29 @@ func countGateRejection(audit *GateAuditRecord) {
 	if audit != nil {
 		audit.Rejections++
 	}
+}
+
+// observeUnverifiedFinalLabel records a `Final Answer` that ships without a passing
+// audit. It is an OBSERVATION, never a rewrite: the label is the deliverable author's
+// claim and the auditor's judgement, so the pipeline does not splice it (it used to —
+// see the removed `demoteFinalAnswerLabel`, a regex that rewrote the word and appended
+// a canned English note). What the gate knows deterministically is its own verdict, and
+// this line puts it in the record: a run that shipped a `Final Answer` the gate never
+// PASSed is visible instead of silent.
+func observeUnverifiedFinalLabel(ctx context.Context, final string, audit *GateAuditRecord) {
+	if answerLabel(final) != "final" {
+		return
+	}
+	if audit != nil && audit.Passed {
+		return
+	}
+	rounds, rejections, failures := 0, 0, 0
+	if audit != nil {
+		rounds, rejections, failures = len(audit.Suspects), audit.Rejections, audit.AuditFailures
+	}
+	common.WarnCtx(ctx, "agentic_rag: shipping a Final Answer label the gate never PASSed",
+		zap.Int("audit_rounds", rounds), zap.Int("rejections", rejections),
+		zap.Int("audit_failures", failures))
 }
 
 // gateNoProgressLimit bounds CONSECUTIVE repair attempts that fail to advance
@@ -1439,6 +1410,16 @@ func auditRepairDirective(suspects int, verdict string, hist []int) string {
 		"lawful outcome is a DECLARED TIE (a `(tie: ...)` clause per rival on the answer line), never a "+
 		"silent swap; a rival that is ungrounded is eliminated for ABSENCE with the named search that "+
 		"showed it, never promoted. "+
+		// (c2) The label is the producer's to write and the auditor's to judge; the
+		// pipeline no longer relabels a deliverable itself (it used to splice the word
+		// and append a note). Without this clause the anti-swap rule above reads as a
+		// ban on touching the answer line at all, and a run whose record does not
+		// establish its `Final Answer` would keep claiming it.
+		"THE LABEL IS NOT THE VALUE: when a failing item says the record does not establish what `Final Answer` claims "+
+		"(an untested constraint, a rival not refuted, a declared tie, an unverified step), the repair is your OWN answer "+
+		"line - state `Guessed Answer` with the assumption note, keep the value you can support, and leave the rest of the "+
+		"record intact. `REPAIR THE RECORD, NOT THE CONCLUSION` governs the VALUE, not this claim, and nothing downstream "+
+		"will relabel the deliverable for you. "+
 		// (d) Fix the EVIDENCE, not the wording. v2 on q221 spent three
 		// passes re-arguing ONE naming-level inference ("the collection is
 		// called the Opium Collection") and flatlined at 5,5,5 while the
@@ -1803,7 +1784,7 @@ func finalizeAnswer(
 		// Safety net: the re-render dropped the structure. Graft the bare
 		// answer onto the audited partial instead of shipping it alone, so
 		// the reasoning chain survives even a non-compliant synthesis call.
-		if answerLineText(synth) {
+		if hasAnswerLine(synth) {
 			return strings.TrimSpace(partial) + "\n\n" + synth + "\n", nil
 		}
 		return strings.TrimSpace(partial) + "\n\nFinal Answer: **" + synth + "**\n", nil

@@ -87,12 +87,12 @@ func TestBuildAuditPayload(t *testing.T) {
 	if decoded.GatePrechecks != nil {
 		t.Errorf("a clean deliverable must not carry an empty precheck list: %v", decoded.GatePrechecks)
 	}
-	withPre := buildAuditPayload(final, []string{"citation_only_grounding: lines A"})
+	withPre := buildAuditPayload(final, []string{"answer_line_missing: no label"})
 	var decodedPre auditPayload
 	if err := json.Unmarshal([]byte(withPre), &decodedPre); err != nil {
 		t.Fatalf("buildAuditPayload produced invalid JSON: %v", err)
 	}
-	if len(decodedPre.GatePrechecks) != 1 || decodedPre.GatePrechecks[0] != "citation_only_grounding: lines A" {
+	if len(decodedPre.GatePrechecks) != 1 || decodedPre.GatePrechecks[0] != "answer_line_missing: no label" {
 		t.Errorf("prechecks must ride the payload, got %v", decodedPre.GatePrechecks)
 	}
 }
@@ -742,33 +742,32 @@ func TestAnswerLabelShapeZoo(t *testing.T) {
 			if got := answerLabel(tc.final); got != tc.want {
 				t.Errorf("answerLabel(%q) = %q, want %q", tc.final, got, tc.want)
 			}
-			if !hasAnswerLine(tc.final) || !answerLineText(tc.final) {
+			if !hasAnswerLine(tc.final) {
 				t.Errorf("shape not seen as an answer line: %q", tc.final)
 			}
 		})
 	}
-	// What is NOT an answer: prose, prose that mentions the words, an empty deliverable.
-	for _, text := range []string{
-		"", "A prose paragraph without any label.",
-		"I will give a final answer once the evidence is in.",
-		"the final_answer is computed elsewhere",
-	} {
+	// What is NOT an answer: text without the phrase at all.
+	for _, text := range []string{"", "A prose paragraph without any label.", "the final_answer is computed elsewhere"} {
 		if got := answerLabel(text); got != "" {
 			t.Errorf("answerLabel(%q) = %q, want empty", text, got)
 		}
-		if answerLineText(text) {
-			t.Errorf("answerLineText(%q) = true, want false", text)
+		if hasAnswerLine(text) {
+			t.Errorf("hasAnswerLine(%q) = true, want false", text)
 		}
 	}
-	// The bare-heading shape: the label is there, the text is not. The gate must tell
-	// them apart because the recovery ladder exists for a run that wrote the heading and
-	// stopped — what it does NOT do is judge what a value should have been.
-	bare := "## Candidate Matrix\n...\n## Final Answer"
-	if !hasAnswerLine(bare) {
-		t.Error("a bare heading still carries the label")
+	// A MENTION in prose DOES read as the label, and that is deliberate: telling a
+	// mention from a claim needs the sense of the sentence, which is the auditor's
+	// reading, not the gate's. What keeps a narration-only run from shipping is not
+	// this test but the deliverable's structure (hasFOSStructure) and the answer-less
+	// continuation rejection.
+	if !hasAnswerLine("I will give a final answer once the evidence is in.") {
+		t.Error("the phrase's presence is all the gate reads, mentions included")
 	}
-	if answerLineText(bare) {
-		t.Error("a bare heading carries no text after the label")
+	// The bare-heading shape still counts as the label's presence, for the same reason:
+	// whether an answer LINE is complete is not something this reader decides.
+	if !hasAnswerLine("## Candidate Matrix\n...\n## Final Answer") {
+		t.Error("a bare heading contains the phrase")
 	}
 }
 
@@ -809,9 +808,11 @@ func TestCollectGatePrechecksLabelOnly(t *testing.T) {
 		!strings.Contains(got[0], precheckNoAnswerLine) {
 		t.Errorf("a deliverable with no answer line must be flagged, got %v", got)
 	}
-	if got := collectGatePrechecks("## Candidate Matrix\n...\n## Final Answer"); len(got) != 1 ||
-		!strings.Contains(got[0], "carries NO value") {
-		t.Errorf("a bare heading must be flagged, got %v", got)
+	// A bare heading is NOT flagged: the phrase is present, and whether the answer LINE
+	// is complete (a value, not just a heading) is the auditor's judgement - its
+	// contract has `schema integrity: answer is missing` for exactly that shape.
+	if got := collectGatePrechecks("## Candidate Matrix\n...\n## Final Answer"); len(got) != 0 {
+		t.Errorf("a bare heading still contains the phrase, got %v", got)
 	}
 	if got := collectGatePrechecks("   "); got != nil {
 		t.Errorf("nothing to audit must return nil, got %v", got)
