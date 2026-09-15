@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -1158,6 +1159,15 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			// and no refusal at all, and q350/q223 the same (3 and 8). The kinds are
 			// recorded separately, which is what the number was being read for.
 			countGatePrechecks(in.audit, precheckKinds(prechecks))
+			// Full deliverable at DEBUG, untruncated. The question that produced this
+			// line was "did the gate hold the text that was archived?", and the
+			// answer is the text itself - a 2000-char head cannot show an answer
+			// line, which is always the LAST line. Info/Warn lines stay capped:
+			// they are what a normal run prints, and the payload's head is enough
+			// to see which pass is talking.
+			common.DebugCtx(ctx, "agentic_rag: delivery gate hold (full)",
+				zap.Int("pass", pass+1), zap.String("shipped", shipped),
+				zap.String("deliverable", final))
 			common.InfoCtx(ctx, "agentic_rag: delivery gate prechecks (the audit decides)",
 				zap.Int("pass", pass+1), zap.Strings("prechecks", prechecks),
 				// The gate's OWN reading, plus the deliverable's last line. Without
@@ -1351,6 +1361,11 @@ func runRepairAttempt(
 	conv *conversation,
 	final, directive string,
 ) (string, error) {
+	// What the producer was actually TOLD, at full length, debug only: the repair
+	// directive was previously logged nowhere, so "the model ignored the anchor
+	// demand" and "the demand was never in front of it" were indistinguishable.
+	common.DebugCtx(ctx, "agentic_rag: delivery gate repair directive (full)",
+		zap.String("directive", directive))
 	gateMsgs := conv.turnMessages(in.baseMessages, final, directive)
 	// Deltas stay off for gate passes: clients already hold the first
 	// answer, and only the corrected final is returned upward.
@@ -1513,6 +1528,11 @@ func gateRunAudit(
 	payload := buildAuditPayload(final, prechecks)
 	common.WarnCtx(ctx, "agentic_rag: gate-run audit start",
 		zap.String("payload", truncateForLog(payload, 2000)))
+	// The auditor's INPUT and OUTPUT at full length, debug only: the tail of both is
+	// the answer-line region (the deliverable it echoed back plus its opinions), and
+	// the capped lines above can never reach it. Log volume is the cost and it is
+	// deliberate - these two are the only record of what the auditor was shown.
+	common.DebugCtx(ctx, "agentic_rag: gate-run audit payload (full)", zap.String("payload", payload))
 	head := conv.head(ctx)
 	iter := conv.runner(ctx, auditor, false).Run(ctx, []adk.Message{schema.UserMessage(payload)})
 	verdict, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, toolCallCounts, nil, nil)
@@ -1522,6 +1542,7 @@ func gateRunAudit(
 	}
 	common.InfoCtx(ctx, "agentic_rag: gate-run audit verdict",
 		zap.String("verdict", truncateForLog(verdict, 2000)))
+	common.DebugCtx(ctx, "agentic_rag: gate-run audit verdict (full)", zap.String("verdict", verdict))
 	return verdict, nil
 }
 
@@ -1588,7 +1609,7 @@ func consumeAgentEvents(
 					zap.String("tool", toolNames[mo.Message.ToolCallID]),
 					zap.String("tool_call_id", mo.Message.ToolCallID),
 					zap.Int("content_bytes", len(content)),
-					zap.String("content_head", truncateForLog(content, 2000)),
+					zap.String("content_head", loggable(content, 2000)),
 				)
 				// Failure accounting: tools report failures as canonical
 				// <tool_error> results so the loop keeps running; the
@@ -1628,7 +1649,7 @@ func consumeAgentEvents(
 				common.DebugCtx(ctx, "agentic_rag: tool call",
 					zap.String("tool", name),
 					zap.String("tool_call_id", tc.ID),
-					zap.String("args", truncateForLog(tc.Function.Arguments, 2000)),
+					zap.String("args", loggable(tc.Function.Arguments, 2000)),
 				)
 				if toolCallCounts != nil && name != "" {
 					toolCallCounts[name]++
@@ -1810,6 +1831,29 @@ func lastUserQuestion(messages []*schema.Message) string {
 		}
 	}
 	return ""
+}
+
+// logFullToolResults keeps the WHOLE tool output and tool arguments in the log
+// instead of their 2000-char heads. Read once from the environment
+// (RAGFLOW_LOG_FULL_TOOL_RESULTS=1) because the volume is real: one question can
+// read ~1700 chunks and a single semantic fan-out returns ~60KB, which is ~100MB of
+// log for ONE question. The head plus `content_bytes` shows the shape, and the
+// content is re-fetchable; a run that is being diagnosed is where the whole text
+// earns its keep.
+//
+// The gate's own full-text lines (deliverable, audit payload, verdict, repair
+// directive) are deliberately NOT gated by this switch: they are small, they are few
+// per run, and they are exactly what a "did the gate hold the archived text?"
+// question needs.
+var logFullToolResults = os.Getenv("RAGFLOW_LOG_FULL_TOOL_RESULTS") != ""
+
+// loggable returns s whole when the full-tool-result switch is on, and capped to max
+// otherwise.
+func loggable(s string, max int) string {
+	if logFullToolResults {
+		return s
+	}
+	return truncateForLog(s, max)
 }
 
 // truncateForLog caps a string for log lines so a huge tool output or argument
