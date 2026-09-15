@@ -1199,17 +1199,6 @@ def _gate_audit_verdicts(row: dict[str, Any]) -> list[str] | None:
     return [str(v) for v in verdicts] if isinstance(verdicts, list) else None
 
 
-def _gate_audit_precheck_counts(row: dict[str, Any]) -> dict[str, int] | None:
-    """Per-kind counts of the gate's mechanical readings (see collectGatePrechecks).
-    The rounds behind them are audited too, so the counts say how often the gate's
-    own reading disagreed with the deliverable, per kind."""
-    audit = row.get("gate_audit")
-    if not isinstance(audit, dict):
-        return None
-    counts = audit.get("precheck_counts")
-    return counts if isinstance(counts, dict) else None
-
-
 def _gate_audit_citation_groundings(row: dict[str, Any]) -> int | None:
     """Deliverables the gate refused because a candidate line's cited support was a
     BIBLIOGRAPHIC ENTRY: a citation names a work and states nothing about it, so it
@@ -1273,7 +1262,6 @@ def _usage_row(query_id: str, row: dict[str, Any], search_tools: tuple[str, ...]
         "audit_rejections": _gate_audit_rejections(row),
         "audit_failures": _gate_audit_failures(row),
         "citation_groundings": _gate_audit_citation_groundings(row),
-        "precheck_counts": _gate_audit_precheck_counts(row),
         "audit_verdicts": _gate_audit_verdicts(row),
         # Locate tools used but never credited in the Candidate Matrix: an
         # omission here hides which leg actually did the work.
@@ -1592,7 +1580,6 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
         audit_failures = _as_int(gate_audit.get("audit_failures"))
         verdicts = gate_audit.get("audit_verdicts")
         citation_groundings = _as_int(gate_audit.get("citation_groundings"))
-        precheck_counts = gate_audit.get("precheck_counts")
         # Keep the record when ANY signal is present: a gate that refused every
         # deliverable before an audit could run reports no suspects at all, and
         # one whose auditor never returned a verdict reports nothing but the
@@ -1607,11 +1594,6 @@ def extract_run_stats(payload: Any) -> dict[str, Any]:
                 # The mechanical sibling check: deliverables refused because a
                 # candidate's cited support was a bibliographic entry.
                 "citation_groundings": citation_groundings,
-                # Per-kind counts of the gate's own mechanical readings: those
-                # rounds are AUDITED now, so this is what shows how often the
-                # gate's regex disagreed (49 rounds in the 16-question batch
-                # were invisible here until the whitelist carried them).
-                "precheck_counts": precheck_counts if isinstance(precheck_counts, dict) else None,
                 # An excerpt of each round's verdict, in step with suspects:
                 # counts show the curve, these show what was actually contested.
                 "audit_verdicts": [str(v) for v in verdicts] if isinstance(verdicts, list) else None,
