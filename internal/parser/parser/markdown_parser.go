@@ -176,7 +176,7 @@ func renderMarkdownTablesInline(text string) (string, bool) {
 			for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
 				i++
 			}
-			tableHTML := markdownlib.ToHTML([]byte(strings.Join(lines[start:i], "")), markdownNew(), nil)
+			tableHTML := markdownlib.ToHTML([]byte(strings.Join(balanceTableColumns(lines[start:i]), "")), markdownNew(), nil)
 			// Wrap the inlined <table> HTML in blank lines so gomarkdown
 			// keeps it as a single HTML block (one item) instead of
 			// re-parsing it into scattered cell text. See
@@ -191,6 +191,84 @@ func renderMarkdownTablesInline(text string) (string, bool) {
 		i++
 	}
 	return buf.String(), changed
+}
+
+// balanceTableColumns pads the header row and its separator up to the widest row's cell
+// count, and returns the lines unchanged when no row is wider.
+//
+// This is a deliberate deviation from GFM, which ignores every cell beyond the header's
+// column count. The corpus is Wikipedia-derived and its rows carry unescaped pipes inside a
+// cell - an image spec such as "150x150px|alt=..." - so a row legitimately has more cells
+// than its header, and GFM therefore drops the tail of the row without a word. On a list of
+// World Heritage Sites that tail is the Year and Description columns: the words are in the
+// file and nowhere in the index. Measured on the production index, tables of this shape cost
+// 514 documents and 18,185 words that no query can reach.
+//
+// Padding the header keeps every cell, at the price of a few empty <th> elements. The
+// alternative - matching GFM exactly - is to keep losing the text, and the indexed text is
+// what this parser exists to preserve.
+func balanceTableColumns(tableLines []string) []string {
+	if len(tableLines) < 2 {
+		return tableLines
+	}
+	cells := func(line string) int {
+		s := strings.TrimRight(line, "\n")
+		pipes, escaped := 0, false
+		for i := 0; i < len(s); i++ {
+			switch {
+			case escaped:
+				escaped = false
+			case s[i] == '\\':
+				escaped = true
+			case s[i] == '|':
+				pipes++
+			}
+		}
+		trimmed := strings.TrimSpace(s)
+		if strings.HasPrefix(trimmed, "|") {
+			pipes--
+		}
+		if strings.HasSuffix(trimmed, "|") {
+			pipes--
+		}
+		if pipes < 0 {
+			return 0
+		}
+		return pipes + 1
+	}
+
+	head := cells(tableLines[0])
+	widest := head
+	for _, line := range tableLines[1:] {
+		if n := cells(line); n > widest {
+			widest = n
+		}
+	}
+	if widest <= head {
+		return tableLines
+	}
+	add := widest - head
+
+	out := make([]string, len(tableLines))
+	copy(out, tableLines)
+	pad := func(line string, separator bool) string {
+		nl := ""
+		if strings.HasSuffix(line, "\n") {
+			nl, line = "\n", strings.TrimRight(line, "\n")
+		}
+		cell := " |"
+		if separator {
+			cell = "---|"
+		}
+		line = strings.TrimRight(line, " \t")
+		if !strings.HasSuffix(line, "|") {
+			line += "|"
+		}
+		return line + strings.Repeat(cell, add) + nl
+	}
+	out[0] = pad(out[0], false)
+	out[1] = pad(out[1], true)
+	return out
 }
 
 // renderMarkdownTablesInlineText renders every GFM/HTML table inline as an

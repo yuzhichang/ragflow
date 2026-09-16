@@ -136,6 +136,45 @@ func TestMarkdownParser_OrderedListKeepsNumbers(t *testing.T) {
 	}
 }
 
+// TestMarkdownParser_TableKeepsCellsBeyondTheHeader covers the deliberate deviation from GFM.
+//
+// A row may legitimately carry more cells than its header - an unescaped '|' inside a cell,
+// e.g. a Wikipedia image spec "150x150px|alt=..." - and GFM ignores every cell beyond the
+// header's column count, so the tail of such a row (the Year and Description columns of a
+// World Heritage list) never reaches the index. Measured on the production index that cost
+// 514 documents and 18,185 words no query could reach; the header is padded to the widest row
+// instead. Fails on the old behaviour: the sentinel below is dropped.
+func TestMarkdownParser_TableKeepsCellsBeyondTheHeader(t *testing.T) {
+	ctx := t.Context()
+	p, err := NewMarkdownParser(GoMarkdown)
+	if err != nil {
+		t.Fatalf("NewMarkdownParser: %v", err)
+	}
+	const sentinel = "DESCRIPTIONSENTINEL"
+	md := "| Site | Image | Year |\n" +
+		"|---|---|---|\n" +
+		"| Aachen Cathedral | 150x150px|alt=A Gothic building | 1978 | " + sentinel + " died in 814 |\n"
+	res := p.ParseWithResult(ctx, "table.md", []byte(md))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	var joined strings.Builder
+	for _, item := range res.JSON {
+		text, _ := item["text"].(string)
+		joined.WriteString(text)
+		joined.WriteString("\n")
+	}
+	out := joined.String()
+	// The unescaped '|' inside the image cell becomes a cell boundary of its own, so the
+	// assertions are on cell contents: everything the row said has to be somewhere in the
+	// output, which is exactly what the column-count padding buys.
+	for _, want := range []string{"Aachen Cathedral", "150x150px", "alt=A Gothic building", "1978", sentinel} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table cell content %q is missing from the parsed output:\n%s", want, out)
+		}
+	}
+}
+
 func TestMarkdownParser_ParseWithResult_EmptyInput(t *testing.T) {
 	ctx := t.Context()
 	p, _ := NewMarkdownParser(GoMarkdown)
