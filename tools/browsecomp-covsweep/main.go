@@ -685,7 +685,13 @@ func measure(corpusDir string, j job, opts options, st *stats) result {
 	res.WordPct, res.FileWords = ws.MultisetPct, ws.Total
 	res.MissingWords, res.MissingOccurrences = ws.Short, ws.OccShort
 	res.AbsentWords, res.FusedWords = len(ws.Absent), len(ws.Fused)
+	// The strict count has to be copied here explicitly: it is the verdict the summary keys off
+	// ("a word is served only when it is its own token"), and when it was left at its zero value the
+	// report said "0 documents with unserved words" while listing thousands of glued ones - a gate
+	// that passes because it was never wired, not because the index is clean.
+	res.MissingStrictWords = len(ws.Strict)
 	res.AbsentSamples, res.FusedSamples = firstN(ws.Absent, 8), firstN(ws.Fused, 8)
+	res.StrictSamples = firstN(ws.Strict, 8)
 	st.addCompute(time.Since(computeStart))
 
 	count := 0
@@ -957,6 +963,14 @@ func main() {
 	}
 	fmt.Printf("\n=== summary: %d documents in %.1f min ===\n", measured, time.Since(started).Minutes())
 	fmt.Printf("  documents with unserved words / errors : %d (sum %d words)\n", len(lossy), totalStrict)
+	// Consistency check, not a warning to ignore: every glued document is by definition a document
+	// with unserved words (gluing is not tolerated), so an empty strict verdict while glued
+	// documents exist means the strict count was not populated - the exact way this report managed
+	// to look clean while flagging thousands of glued words in its own next line.
+	if len(lossy) == 0 && len(glued) > 0 {
+		fmt.Printf("  INCONSISTENT: %d documents have glued words but none counted as unserved; the strict verdict is not wired\n", len(glued))
+		os.Exit(1)
+	}
 	fmt.Printf("    of which content never arrived       : %d words\n", totalAbsent)
 	fmt.Printf("    of which glued into a longer token   : %d words in %d documents (NOT tolerated)\n",
 		totalFused, len(glued))
