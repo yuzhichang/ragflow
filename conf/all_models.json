@@ -1075,6 +1075,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 2048
@@ -1084,6 +1085,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 1024,
       "context_length": 512,
       "max_output": 512,
@@ -1105,6 +1107,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "context_length": 8192,
       "max_output": 8192,
       "max_batch_size": 2048
@@ -1117,6 +1120,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "max_dimension": 1024,
       "dimensions": [],
       "context_length": 8192,
@@ -1132,6 +1137,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "context_length": 8192,
       "max_output": 8192,
       "max_batch_size": 2048
@@ -2098,6 +2105,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_batch_size": 2048
     },
     {
@@ -11940,6 +11948,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 2048
@@ -11953,6 +11962,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 2048
@@ -11966,6 +11976,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 2048
@@ -11980,6 +11992,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 2048
@@ -13468,6 +13482,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "max_dimension": 1024,
       "dimensions": [
         32,
@@ -13490,6 +13506,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "max_dimension": 1024,
       "dimensions": [
         32,
@@ -13512,6 +13530,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "xlmr-spm",
+      "tokenizer": "xlmr-spm",
       "max_dimension": 1024,
       "dimensions": [
         32,
@@ -13639,6 +13659,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 768,
       "dimensions": [
         768
@@ -13655,6 +13676,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 768,
       "dimensions": [
         768
@@ -13671,6 +13693,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 768,
       "dimensions": [
         768
@@ -13687,6 +13710,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 768,
       "dimensions": [
         768
@@ -13703,6 +13727,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 768,
       "dimensions": [
         768
@@ -13719,6 +13744,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "max_dimension": 512,
       "dimensions": [
         512
@@ -24130,6 +24156,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "cl100k_base",
+      "tokenizer": "cl100k_base",
       "max_dimension": 3072,
       "dimensions": [],
       "max_batch_size": 2048
@@ -24140,6 +24168,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "cl100k_base",
+      "tokenizer": "cl100k_base",
       "max_dimension": 1536,
       "dimensions": [],
       "max_batch_size": 2048
@@ -24150,6 +24180,8 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "cl100k_base",
+      "tokenizer": "cl100k_base",
       "max_dimension": 1536,
       "dimensions": [],
       "max_batch_size": 2048
@@ -25486,6 +25518,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "context_length": 32768,
       "max_output": 32768,
       "max_batch_size": 2048
@@ -25499,6 +25532,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "context_length": 32768,
       "max_output": 32768,
       "max_batch_size": 2048
@@ -25512,6 +25546,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "context_length": 32768,
       "max_output": 32768,
       "max_batch_size": 2048
@@ -27953,6 +27988,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "max_dimension": 1024,
       "dimensions": [],
       "context_length": 32768,
@@ -27967,6 +28003,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "max_dimension": 1024,
       "dimensions": [],
       "context_length": 32768,
@@ -27981,6 +28018,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "max_dimension": 2560,
       "dimensions": [],
       "context_length": 32768,
@@ -27995,6 +28033,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "max_dimension": 2560,
       "dimensions": [],
       "context_length": 32768,
@@ -28009,6 +28048,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "max_dimension": 4096,
       "dimensions": [],
       "context_length": 32768,
@@ -28023,6 +28063,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "qwen-bpe",
       "max_dimension": 4096,
       "dimensions": [],
       "context_length": 32768,
@@ -36864,6 +36905,8 @@
         "embedding",
         "chat"
       ],
+      "tokenizer": "cl100k_base",
+      "tokenizer": "cl100k_base",
       "alias": [],
       "max_batch_size": 2048
     },
@@ -36873,6 +36916,8 @@
         "embedding",
         "chat"
       ],
+      "tokenizer": "cl100k_base",
+      "tokenizer": "cl100k_base",
       "alias": [],
       "max_batch_size": 2048
     },
@@ -36882,6 +36927,8 @@
         "embedding",
         "chat"
       ],
+      "tokenizer": "cl100k_base",
+      "tokenizer": "cl100k_base",
       "alias": [],
       "max_batch_size": 2048
     },
@@ -36936,6 +36983,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 1
@@ -36949,6 +36997,7 @@
       "model_types": [
         "embedding"
       ],
+      "tokenizer": "bert-wordpiece",
       "context_length": 512,
       "max_output": 512,
       "max_batch_size": 1

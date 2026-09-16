@@ -580,6 +580,7 @@ func runIngestor(ctx context.Context, cancel context.CancelFunc, args *serverArg
 	if err := tokenizer.InitCL100KEncoder(); err != nil {
 		common.Fatal("Failed to initialize cl100k_base tokenizer", zap.Error(err))
 	}
+	logTokenizerCounters()
 
 	// The dataset-level post-processing consumer cluster (§11) is owned and run by
 	// the Ingestor: it is started inside ingestor.Start() and joined inside
@@ -1142,6 +1143,28 @@ func registerNativeDeepDoc() {
 		zap.String("model_dir", modelDir))
 }
 
+// logTokenizerCounters reports, once at startup, which embedding tokenizers this process
+// can count with. An unavailable counter is not fatal - the ingest path falls back to the
+// calibrated cl100k estimate - but that fallback is otherwise invisible until a model
+// that needs it is used, and it costs precision in the direction that makes a provider
+// reject a request.
+func logTokenizerCounters() {
+	var available, unavailable []string
+	for _, status := range tokenizer.CounterStatuses() {
+		if status.Available {
+			available = append(available, status.ID)
+			continue
+		}
+		unavailable = append(unavailable, status.ID)
+	}
+	common.Info("embedding tokenizer counters", zap.Strings("available", available))
+	if len(unavailable) > 0 {
+		common.Warn("embedding tokenizers unavailable; the models that declare them count with the calibrated fallback",
+			zap.Strings("unavailable", unavailable),
+			zap.String("hint", "run `uv run ragflow_deps/download_deps.py`, or set "+common.EnvModelAssetsDir+" to a directory holding them"))
+	}
+}
+
 // resolveDeepDocModelDir picks the model directory: the explicit DEEPDOC_MODEL_DIR
 // env, else the RAGFlow default (rag/res/deepdoc, mirroring deepdoc_server.py),
 // else the snapshot fetched by ragflow_deps/download_deps.py. The first
@@ -1151,10 +1174,13 @@ func resolveDeepDocModelDir() string {
 		return v
 	}
 	wd, _ := os.Getwd()
-	candidates := []string{
+	// MODEL_ASSETS_DIR first: the shared model-asset root keeps this layout too, so one
+	// variable can point at the DeepDoc weights as well as the embedding tokenizers.
+	candidates := append([]string(nil), common.ModelAssetCandidates("huggingface.co/InfiniFlow/deepdoc")...)
+	candidates = append(candidates,
 		filepath.Join(wd, "rag", "res", "deepdoc"),
 		filepath.Join(wd, "huggingface.co", "InfiniFlow", "deepdoc"),
-	}
+	)
 	for _, c := range candidates {
 		if dirHasModels(c) {
 			return c

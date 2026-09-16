@@ -41,7 +41,7 @@ import urllib.request
 os.environ.setdefault("NLTK_ALLOW_PROXIED_URLOPEN", "1")
 
 import nltk
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 # mirrors internal/common.DeepDocORTVersion (Go in-process backend). Single
 # source for the onnxruntime native release: the download URL, .tgz name,
@@ -157,11 +157,59 @@ repos = [
     "InfiniFlow/deepdoc",
 ]
 
+# Embedding tokenizer assets (internal/tokenizer/embedding_token_limits.md).
+#
+# The ingest path must count an embedding model's input with that model's OWN
+# tokenizer: cl100k_base and, say, XLM-R SentencePiece disagree by up to ~2% and
+# the sign depends on the content, so a chunk that cl100k scores just under the
+# model's window can be over it in the model's tokenizer - which the provider
+# rejects with a 400 that used to fail the whole document.
+#
+# Fetching is per file, not `snapshot_download`: these repos also carry multi-GB
+# weights we do not want. The Go loaders (internal/tokenizer) read them from
+# disk with a SHA-1 pin and no network access, exactly like the cl100k table.
+#
+# Unlike the InfiniFlow/deepdoc guard below, a missing tokenizer asset does NOT
+# abort the build: internal/tokenizer falls back to a calibrated cl100k count
+# (plus the shrink-and-retry path) and only loses a few percent of precision.
+tokenizer_assets = [
+    # Each entry is (repo, file, kind):
+    #   "runtime" - the Go counters load it in production, so the runtime image has
+    #               to ship it (the copy loop in Dockerfile / Dockerfile_base) and
+    #               the loader has to pin its SHA-1;
+    #   "oracle"  - used only by scripts/gen_tokenizer_oracle.py to regenerate the
+    #               test fixtures, deliberately NOT shipped to the image.
+    # ragflow_deps/test_tokenizer_assets.py asserts all of that, because a drift here
+    # is invisible at runtime: the counter just becomes unavailable and ingest
+    # silently counts with the calibrated cl100k fallback.
+    # XLM-R SentencePiece (Unigram) - the BAAI bge / multilingual-e5 / m3e /
+    # gte-multilingual / jina-v3 family shares this vocabulary.
+    ("BAAI/bge-m3", "sentencepiece.bpe.model", "runtime"),
+    # BERT WordPiece vocab for the bge-*-en / e5-* / gte-base family.
+    ("BAAI/bge-large-en-v1.5", "vocab.txt", "runtime"),
+    # Byte-level BPE families (Qwen3-Embedding, Mistral/Llama embeddings).
+    ("Qwen/Qwen3-Embedding-0.6B", "tokenizer.json", "runtime"),
+    ("intfloat/e5-mistral-7b-instruct", "tokenizer.json", "runtime"),
+    # Cross-check oracles only: the HF tokenizer.json files the same families
+    # convert to. Tests compare our own counters against these.
+    ("BAAI/bge-m3", "tokenizer.json", "oracle"),
+    ("BAAI/bge-large-en-v1.5", "tokenizer.json", "oracle"),
+]
+
 
 def download_model(repository_id):
     local_directory = os.path.abspath(os.path.join("huggingface.co", repository_id))
     os.makedirs(local_directory, exist_ok=True)
     snapshot_download(repo_id=repository_id, local_dir=local_directory)
+
+
+def download_tokenizer_asset(repository_id, filename):
+    """Fetch one tokenizer file into huggingface.co/<repo>/<file>."""
+    local_directory = os.path.abspath(os.path.join("huggingface.co", repository_id))
+    os.makedirs(local_directory, exist_ok=True)
+    path = hf_hub_download(repo_id=repository_id, filename=filename, local_dir=local_directory)
+    print(f"  ✓ {repository_id}/{filename} ({os.path.getsize(path) / 1024 / 1024:.2f} MB)")
+    return path
 
 
 if __name__ == "__main__":
@@ -274,6 +322,15 @@ if __name__ == "__main__":
     for repo_id in repos:
         print(f"Downloading huggingface repo {repo_id}...")
         download_model(repo_id)
+
+    for repo_id, filename, _kind in tokenizer_assets:
+        print(f"Downloading tokenizer asset {repo_id}/{filename}...")
+        try:
+            download_tokenizer_asset(repo_id, filename)
+        except Exception as exc:  # noqa: BLE001 - deliberate: see tokenizer_assets
+            # Not fatal: the Go side counts with a calibrated fallback when an
+            # asset is missing. Loud, though, because it costs precision.
+            print(f"  WARNING: could not fetch {repo_id}/{filename}: {exc}", file=sys.stderr)
 
     # Guard: the Go in-process DeepDoc backend loads the .ort weights from the
     # InfiniFlow/deepdoc snapshot pulled above. snapshot_download fetches the

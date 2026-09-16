@@ -27,6 +27,27 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps 
     cp /deps/tika-server-standard-3.3.0.jar /deps/tika-server-standard-3.3.0.jar.md5 /ragflow/ && \
     cp /deps/cl100k_base.tiktoken /ragflow/9b5ad71b2ce5302211f9c61530b329a4922fc6a4
 
+# Embedding tokenizer assets (internal/tokenizer/embedding_token_limits.md). The Go
+# counters load them from ragflow_deps/huggingface.co/<repo>/<file>; without them every
+# model that declares a tokenizer falls back to the calibrated cl100k count, which is
+# the less precise path these counters exist to replace (cl100k under-counts XLM-R on
+# some content, and an under-count is what makes a provider answer 400).
+# The tokenizer.json files that download_deps.py fetches as cross-check oracles are
+# test-only and deliberately not shipped here.
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co,target=/huggingface.co \
+    for asset in \
+        BAAI/bge-m3/sentencepiece.bpe.model \
+        BAAI/bge-large-en-v1.5/vocab.txt \
+        Qwen/Qwen3-Embedding-0.6B/tokenizer.json \
+        intfloat/e5-mistral-7b-instruct/tokenizer.json ; do \
+        if [ -f "/huggingface.co/$asset" ]; then \
+            mkdir -p "/ragflow/ragflow_deps/huggingface.co/$(dirname "$asset")" && \
+            cp "/huggingface.co/$asset" "/ragflow/ragflow_deps/huggingface.co/$asset" ; \
+        else \
+            echo "WARNING: tokenizer asset $asset is missing from the ragflow_deps image; the matching counter will fall back to the calibrated estimate" ; \
+        fi ; \
+    done
+
 ENV TIKA_SERVER_JAR="file:///ragflow/tika-server-standard-3.3.0.jar"
 ENV DEBIAN_FRONTEND=noninteractive
 
