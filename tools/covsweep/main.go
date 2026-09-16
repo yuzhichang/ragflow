@@ -1,12 +1,15 @@
-// Command browsecomp-covsweep answers one question for a whole corpus:
+// Command covsweep answers one question for a whole document set:
 //
 //	does the search index still serve every passage of every source document?
 //
 // It exists because "document.chunk_num equals the number of chunk documents in ES" only proves
-// the two counters agree - it cannot see a document whose chunks silently dropped a passage.
-// scripts/browsecomp_index_coverage.py answers the same question for a handful of documents; this
-// tool answers it for the whole re-parse target set in one pass, fast enough to run after every
-// repair, which is what makes the answer useful.
+// the two counters agree - it cannot see a document whose chunks silently dropped a passage. The
+// Python scripts under scripts/ answer the same question for a handful of documents; this tool
+// answers it for a whole document set in one pass, fast enough to run after every repair, which is
+// what makes the answer useful.
+//
+// The document set is never assumed: --docs, --corpus, --index and --kb have no built-in defaults,
+// so a run either names its inputs or stops before it reads anything.
 //
 // Method, per document:
 //
@@ -44,20 +47,27 @@
 //	workers    --workers goroutines doing tokenising and hashing;
 //	writer     one goroutine appending JSONL and printing progress.
 //
-// A document is emitted as soon as it is complete, so one slow shard cannot stall the rest. The
-// phase breakdown exists because this workload does not scale the way "add goroutines" suggests:
-// the index has few shards, so the fetch half saturates before the CPU does, and the compute half
-// is dominated by the largest documents rather than by their number - measuring beats guessing.
+// A document is emitted as soon as the chunk texts seen for it reach the chunk_num column of
+// --docs, so one slow shard cannot stall the rest; the flip side is that a stale chunk_num either
+// truncates a document or emits it with nothing at all (see Usage).
+//
+// The phase breakdown exists because this workload does not scale the way "add goroutines"
+// suggests: the index has few shards, so the fetch half saturates before the CPU does, and the
+// compute half is dominated by the largest documents rather than by their number - measuring beats
+// guessing.
 //
 // Usage:
 //
-//	# list of "<doc id>\t<name>\t<chunk_num>" rows, one per document, from MySQL
-//	docker exec docker-mysql-1 sh -c 'MYSQL_PWD=infini_rag_flow mysql -N -uroot rag_flow \
+//	# "<doc id>\t<name>\t<chunk_num>" rows, one per document, with one source file per row's name
+//	# column in --corpus. Regenerate the list immediately before a run: chunk_num is the per
+//	# document threshold above, so a stale value truncates a document, or at 0 emits it empty.
+//	docker exec <mysql-container> sh -c 'MYSQL_PWD=<password> mysql -N -uroot <database> \
 //	    -e "SELECT id,name,chunk_num FROM document WHERE kb_id=\"<kb>\";"' > /tmp/cov_docs.tsv
 //
-//	go run ./tools/browsecomp-covsweep --docs /tmp/cov_docs.tsv --out outputs/full_coverage_20260915
-//	go run ./tools/browsecomp-covsweep --docs /tmp/cov_docs.tsv --limit 400   # calibrate
-//	go run ./tools/browsecomp-covsweep --docs /tmp/cov_docs.tsv --only-file <out>/below99.txt
+//	go run ./tools/covsweep --docs /tmp/cov_docs.tsv --corpus <sources> \
+//	    --index <es-index> --kb <dataset-id> --out outputs/coverage
+//	go run ./tools/covsweep ... --limit 400                    # calibrate on a subset
+//	go run ./tools/covsweep ... --only-file <out>/below99.txt   # re-check only the flagged ones
 package main
 
 import (
@@ -822,15 +832,15 @@ func processCPU() time.Duration {
 
 func main() {
 	var (
-		docsPath  = flag.String("docs", "/tmp/cov_docs.tsv", "TSV of doc id / name / chunk_num rows")
-		corpusDir = flag.String("corpus", "/home/zhichyu/Downloads/data/browsecomp-plus/corpus", "source .md corpus")
-		outDir    = flag.String("out", "outputs/full_coverage_20260915", "output directory")
+		docsPath  = flag.String("docs", "", "TSV of doc id / name / chunk_num rows (required)")
+		corpusDir = flag.String("corpus", "", "directory holding the source file named by each row (required)")
+		outDir    = flag.String("out", "outputs/coverage", "output directory")
 		esURL     = flag.String("es", "http://localhost:1200", "Elasticsearch base URL")
 		esUser    = flag.String("es-user", "elastic", "Elasticsearch user")
 		esPass    = flag.String("es-pass", "", "Elasticsearch password (default: ELASTIC_PASSWORD from --env)")
 		envFile   = flag.String("env", "docker/.env", "file to read ELASTIC_PASSWORD from")
-		index     = flag.String("index", "ragflow_10c9203e8fd611f18a8527a64e461315", "ES index")
-		kb        = flag.String("kb", "5abdf3f1b8954735aa3fa2e03041e479", "dataset id")
+		index     = flag.String("index", "", "ES index to read (required)")
+		kb        = flag.String("kb", "", "dataset id every checked document belongs to (required)")
 		shards    = flag.Int("shards", 8, "parallel ES producer goroutines")
 		workers   = flag.Int("workers", 0, "coverage workers (0 = number of CPUs)")
 		pageSize  = flag.Int("page", 1000, "chunk documents per ES page")
@@ -843,6 +853,28 @@ func main() {
 		every     = flag.Int("every", 200, "progress line every N documents")
 	)
 	flag.Parse()
+
+	// Nothing about the document set is baked in. A default corpus or index would mean a run that
+	// forgot a flag still produced numbers - about whatever was compiled in.
+	var missing []string
+	for _, required := range []struct {
+		name  string
+		value string
+	}{
+		{"docs", *docsPath},
+		{"corpus", *corpusDir},
+		{"index", *index},
+		{"kb", *kb},
+	} {
+		if strings.TrimSpace(required.value) == "" {
+			missing = append(missing, "-"+required.name)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "required flag(s) missing: %s\n", strings.Join(missing, ", "))
+		flag.Usage()
+		os.Exit(2)
+	}
 
 	if *workers <= 0 {
 		*workers = runtime.NumCPU()
