@@ -28,14 +28,24 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
+	"ragflow/internal/common"
 	"ragflow/internal/dao"
 	"ragflow/internal/entity/models"
 	componentpkg "ragflow/internal/ingestion/component"
 	"ragflow/internal/service"
+	"ragflow/internal/tokenizer"
 )
 
 type embedder struct {
 	model *models.EmbeddingModel
+
+	// limiter is resolved once per embedder (one embedder is built per tokenizer
+	// invocation, i.e. per document) and binds the model's tokenizer, the
+	// declared input window and the calibration for this provider instance.
+	limiterOnce sync.Once
+	limiterVal  tokenizer.Limiter
 }
 
 func (e *embedder) MaxTokens() int {
@@ -45,6 +55,16 @@ func (e *embedder) MaxTokens() int {
 	return e.model.MaxTokens
 }
 
+// ResolveMaxTokens is the input window to actually honour: the model's declared
+// value, then the provider catalog's context_length, then a conservative
+// default. MaxTokens() stays as the raw declaration for compatibility.
+func (e *embedder) ResolveMaxTokens() int {
+	if e == nil || e.model == nil {
+		return tokenizer.EmbeddingTokenLimitDefault
+	}
+	return tokenizer.ResolveEmbeddingMaxTokens(e.model.ResolveMaxTokens(), 0)
+}
+
 func (e *embedder) BatchSize() int {
 	if e == nil || e.model == nil {
 		return models.DefaultEmbeddingBatchSize
@@ -52,56 +72,336 @@ func (e *embedder) BatchSize() int {
 	return e.model.ResolveBatchSize()
 }
 
+// limiter returns the counter+margin+calibration for this embedding model.
+func (e *embedder) limiter() tokenizer.Limiter {
+	e.limiterOnce.Do(func() {
+		id := ""
+		if e.model != nil {
+			id = e.model.ResolveTokenizerID()
+		}
+		if id != "" && !tokenizer.CounterExact(id) {
+			// The model declares a tokenizer family, but its asset is not on disk, so
+			// the limiter degrades to the calibrated cl100k counter. Say so once per
+			// embedder: otherwise a runtime image that does not ship
+			// ragflow_deps/huggingface.co - or a download_deps.py run without the
+			// tokenizer assets - silently costs the exactness these counters exist for.
+			common.Warn(fmt.Sprintf(
+				"embedding tokenizer %q is declared for %s but unavailable; counting with the calibrated fallback (check that ragflow_deps/huggingface.co is present)",
+				id, e.quotaKey()))
+		}
+		e.limiterVal = tokenizer.LimiterFor(id, string(e.quotaKey()), tokenizer.DefaultCalibration())
+	})
+	return e.limiterVal
+}
+
+// Trim cuts text down to what this model accepts. This implements the
+// component's optional EmbedderTrimmer seam, which is what makes the ingest path
+// count with the model's own tokenizer (or a calibrated bound of it) instead of
+// cl100k alone.
+func (e *embedder) Trim(text string) (string, int) {
+	limiter := e.limiter()
+	return limiter.Trim(text, e.ResolveMaxTokens())
+}
+
+// Encode embeds texts, keeping three properties the previous implementation did
+// not have:
+//
+//  1. It never lets one oversized input fail the whole document: an over-limit
+//     rejection shrinks the budget and retries, then isolates the offending
+//     input, instead of returning the error to the caller;
+//  2. It reports the provider's own token usage, which doubles as the token
+//     count for accounting and as the oracle that calibrates our counting;
+//  3. It records an over-limit rejection against the calibration, so the next
+//     attempt - and the next document - starts from a tighter bound.
 func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.EmbeddingResult, error) {
 	if e.model.ModelDriver == nil {
 		return nil, fmt.Errorf("embedder: embedding model driver is nil for model %v", e.model.ModelName)
 	}
+	if len(texts) == 0 {
+		return []componentpkg.EmbeddingResult{}, nil
+	}
+	limiter := e.limiter()
+	maxTokens := e.ResolveMaxTokens()
+	cal, calKey := limiter.Calibration()
+
+	var lastErr error
+	for _, limit := range overLimitLadder(limiter.Limit(maxTokens)) {
+		candidate := trimAll(texts, limiter, maxTokens, limit)
+		embeds, usage, err := e.embedWithRetry(ctx, candidate)
+		if err == nil {
+			e.recordUsage(cal, calKey, limiter, candidate, usage)
+			return distributeTokenCount(embeds, usage, candidate, limiter), nil
+		}
+		if !isOverLimitErr(err) {
+			return nil, err
+		}
+		// An over-limit rejection is the only signal that reveals the true
+		// ratio for a model we cannot count exactly; use it before retrying. The
+		// window applies per input, so the observation must be the LARGEST
+		// input's own count: a batch total is expected to exceed the window and
+		// would imply a ratio below 1, i.e. teach us nothing.
+		if cal != nil {
+			cal.ObserveOverLimit(calKey, ownTokenMax(candidate, limiter), maxTokens)
+		}
+		common.Warn("embedding input over the model limit; shrinking and retrying",
+			zap.String("model", derefString(e.model.ModelName)),
+			zap.Int("limit", limit),
+			zap.String("counter", limiter.Counter().ID()),
+			zap.Float64("ratio", limiter.Ratio()))
+		lastErr = err
+	}
+
+	// The shrink ladder was not enough, which means the batch probably contains
+	// one pathological input next to healthy ones. Isolate instead of failing.
+	vecs, err := e.encodeIsolating(ctx, texts, limiter, maxTokens)
+	if err == nil {
+		return vecs, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, err
+}
+
+// overLimitLadder is the sequence of budgets tried, as fractions of the first
+// one, oldest first. Trimming is a prefix operation, so each step simply sends a
+// shorter prefix than the previous one.
+//
+// 1 -> 0.75 -> 0.5 -> 0.25 -> 0.125: the first two steps are gentle, because an
+// over-limit rejection usually means the input is a little past the window (a
+// tokenizer that under-counts by a percent or two), and cutting a quarter of the
+// content for that would lose text for no reason. The later steps are for the
+// genuinely oversized input (a table the chunker never split), where only a large
+// cut helps.
+func overLimitLadder(budget int) []int {
+	if budget <= 0 {
+		return []int{0}
+	}
+	limits := []int{budget}
+	for _, factor := range []float64{0.75, 0.5, 0.25, 0.125} {
+		next := int(float64(budget) * factor)
+		if next < overLimitFloorTokens {
+			next = overLimitFloorTokens
+		}
+		if next < limits[len(limits)-1] {
+			limits = append(limits, next)
+		}
+	}
+	return limits
+}
+
+// overLimitFloorTokens is the smallest budget worth trying before declaring the
+// input genuinely broken rather than merely long.
+const overLimitFloorTokens = 64
+
+// trimAll re-trims every text to `limit` tokens. Texts handed in by the caller
+// are already trimmed to the full budget, and trimming a prefix again just makes
+// it shorter, so this needs no access to the untrimmed input.
+func trimAll(texts []string, limiter tokenizer.Limiter, maxTokens, limit int) []string {
+	out := make([]string, len(texts))
+	for i, t := range texts {
+		out[i] = limiter.Counter().TrimToLimit(t, limit)
+	}
+	return out
+}
+
+// ownTokenTotal estimates what the batch costs in our own counter, used for the
+// usage-based calibration.
+func ownTokenTotal(texts []string, limiter tokenizer.Limiter) int {
+	total := 0
+	for _, t := range texts {
+		total += limiter.Counter().Count(t)
+	}
+	return total
+}
+
+// ownTokenMax is the largest single input's cost in our own counter. The
+// provider's window bounds each input individually, so this - not the batch
+// total - is what an over-limit rejection tells us about.
+func ownTokenMax(texts []string, limiter tokenizer.Limiter) int {
+	max := 0
+	for _, t := range texts {
+		if n := limiter.Counter().Count(t); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// embedWithRetry performs one embedding call, retrying rate limits exactly as
+// before (a TPM-limited provider refills on a one-minute window, and the shared
+// cooldown damps all workers at once). It returns the provider's token usage for
+// the request.
+func (e *embedder) embedWithRetry(ctx context.Context, texts []string) ([]models.EmbeddingData, int, error) {
 	config := &models.EmbeddingConfig{Dimension: 0}
 	req := models.EmbedRequest{Texts: texts}
+	// The cooldown is scoped to this provider instance: workers embedding
+	// through the same credentials+endpoint back off together, everything else
+	// keeps running.
+	quota := e.quotaKey()
 
 	var (
 		embeds []models.EmbeddingData
 		err    error
 	)
-	// The cooldown is scoped to this provider instance: workers embedding
-	// through the same credentials+endpoint back off together, everything else
-	// keeps running.
-	quota := e.quotaKey()
 	for attempt := 1; attempt <= maxEncodeAttempts; attempt++ {
 		// Sit out any cooldown that another worker's 429 started. The provider
 		// quota is shared, so a worker that keeps firing while the window is
 		// exhausted only earns more 429s - and the whole point of the cooldown
 		// is that one worker's rejection damps all of them.
 		if cerr := waitOutCooldown(ctx, quota); cerr != nil {
-			return nil, cerr
+			return nil, 0, cerr
 		}
-		embeds, err = e.model.ModelDriver.Embed(ctx, e.model.ModelName, req, e.model.APIConfig, config, nil)
+		usage := &common.ModelUsage{}
+		embeds, err = e.model.ModelDriver.Embed(ctx, e.model.ModelName, req, e.model.APIConfig, config, usage)
 		if err == nil {
-			break
+			return embeds, usage.InputTokens, nil
 		}
 		if !isRateLimitErr(err) {
-			return nil, err
+			return nil, 0, err
 		}
 		if attempt == maxEncodeAttempts {
-			return nil, err
+			return nil, 0, err
 		}
 		wait := encodeBackoff(attempt, err)
 		startCooldown(quota, wait)
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, 0, ctx.Err()
 		case <-time.After(wait):
 		}
 	}
-	if err != nil {
-		return nil, err
-	}
+	return nil, 0, err
+}
 
+// distributeTokenCount attaches a token count to every input. Providers report
+// usage per request, so the total is spread over the inputs in proportion to our
+// own counts of exactly the texts we sent; the rounding remainder goes to the
+// largest input so the sum matches the provider's number.
+func distributeTokenCount(embeds []models.EmbeddingData, usageTotal int, texts []string, limiter tokenizer.Limiter) []componentpkg.EmbeddingResult {
 	vecs := make([]componentpkg.EmbeddingResult, len(embeds))
-	for i, v := range embeds {
-		vecs[i] = componentpkg.EmbeddingResult{Vector: v.Embedding, TokenCount: v.TokenCount}
+	own := make([]int, len(texts))
+	total := 0
+	for i, t := range texts {
+		own[i] = limiter.Counter().Count(t)
+		total += own[i]
 	}
-	return vecs, nil
+	if usageTotal <= 0 || total <= 0 {
+		// No usage reported by the provider: fall back to our own count rather
+		// than to 0, which is what the previous implementation always reported.
+		for i, v := range embeds {
+			tc := 0
+			if i < len(own) {
+				tc = own[i]
+			}
+			vecs[i] = componentpkg.EmbeddingResult{Vector: v.Embedding, TokenCount: tc}
+		}
+		return vecs
+	}
+	largest, assigned := 0, 0
+	for i := range own {
+		if own[i] > own[largest] {
+			largest = i
+		}
+	}
+	for i, v := range embeds {
+		tc := 0
+		if i < len(own) {
+			tc = usageTotal * own[i] / total
+			assigned += tc
+		}
+		vecs[i] = componentpkg.EmbeddingResult{Vector: v.Embedding, TokenCount: tc}
+	}
+	if reminder := usageTotal - assigned; reminder > 0 && largest < len(vecs) {
+		vecs[largest].TokenCount += reminder
+	}
+	return vecs
+}
+
+// recordUsage feeds the calibration: the provider's total for this batch against
+// our own count of the same texts.
+func (e *embedder) recordUsage(cal *tokenizer.Calibration, key string, limiter tokenizer.Limiter, texts []string, usageTotal int) {
+	if cal == nil || usageTotal <= 0 {
+		return
+	}
+	own := ownTokenTotal(texts, limiter)
+	if own <= 0 {
+		return
+	}
+	cal.ObserveUsage(key, own, usageTotal)
+}
+
+// encodeIsolating is the last resort: it embeds inputs one at a time so a single
+// pathological input cannot drag the rest down, and falls back to the floor
+// budget for inputs that still do not fit. It returns an error only when an
+// input fails at the floor, i.e. for reasons unrelated to size.
+func (e *embedder) encodeIsolating(ctx context.Context, texts []string, limiter tokenizer.Limiter, maxTokens int) ([]componentpkg.EmbeddingResult, error) {
+	out := make([]componentpkg.EmbeddingResult, len(texts))
+	cal, calKey := limiter.Calibration()
+	var lastErr error
+	for i, text := range texts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		embedded := false
+		for _, limit := range overLimitLadder(limiter.Limit(maxTokens)) {
+			candidate := []string{limiter.Counter().TrimToLimit(text, limit)}
+			embeds, usage, err := e.embedWithRetry(ctx, candidate)
+			if err == nil {
+				e.recordUsage(cal, calKey, limiter, candidate, usage)
+				out[i] = distributeTokenCount(embeds, usage, candidate, limiter)[0]
+				embedded = true
+				break
+			}
+			if !isOverLimitErr(err) {
+				return nil, err
+			}
+			if cal != nil {
+				cal.ObserveOverLimit(calKey, limiter.Counter().Count(candidate[0]), maxTokens)
+			}
+			lastErr = err
+		}
+		if !embedded {
+			return nil, fmt.Errorf("embedder: input %d does not fit the model window even at %d tokens: %w", i, overLimitFloorTokens, lastErr)
+		}
+	}
+	return out, nil
+}
+
+// overLimitMarkers are the provider wordings that mean "this input is longer
+// than the model accepts". 20015 is SiliconFlow's code for exactly that (it
+// answers a generic "The parameter is invalid" message); the rest are the usual
+// phrasings elsewhere.
+var overLimitMarkers = []string{
+	"20015",
+	"too long",
+	"too many tokens",
+	"maximum context",
+	"context length",
+	"context_length",
+	"input length",
+	"token limit",
+	"reduce the length",
+	"maximum allowed",
+}
+
+// isOverLimitErr reports whether err is an over-limit rejection rather than a
+// rate limit or a genuine failure. Only 4xx rejections qualify: a 5xx is the
+// provider's problem and shrinking the input would not help.
+func isOverLimitErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "400") && !strings.Contains(msg, "413") && !strings.Contains(msg, "422") {
+		return false
+	}
+	for _, marker := range overLimitMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Retry policy for rate-limited embedding calls.
