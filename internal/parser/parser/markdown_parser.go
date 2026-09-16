@@ -133,7 +133,15 @@ func markdownNew() *mdparser.Parser {
 	// Python parsers in parity. walkLeaf still handles ast.Math /
 	// ast.MathBlock defensively so that turning the extension back on
 	// cannot lose text again.
-	extensions := mdparser.CommonExtensions&^mdparser.MathJax | mdparser.AutoHeadingIDs | mdparser.NoEmptyLineBeforeBlock
+	// OrderedListStart is not part of CommonExtensions, and without it the parser leaves
+	// ast.List.Start at zero for every ordered list: listEntries then falls back to 1 and
+	// renumbers the entries 1..N, so a list that the source spells "996. graphql: ..." is
+	// indexed as "1. graphql: ...". The numbers are then gone from the index (a query for
+	// "996" cannot match anything, and the gap counts against coverage), while Python's
+	// _extract_list_block keeps the raw lines - markers included - verbatim. Enabling it
+	// makes Start carry the number the source wrote (gomarkdown normalises a literal 1 to 0,
+	// which the fallback in listEntries turns back into 1).
+	extensions := mdparser.CommonExtensions&^mdparser.MathJax | mdparser.AutoHeadingIDs | mdparser.NoEmptyLineBeforeBlock | mdparser.OrderedListStart
 	return mdparser.NewWithExtensions(extensions)
 }
 

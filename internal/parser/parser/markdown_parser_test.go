@@ -78,32 +78,61 @@ func TestMarkdownParser_ListItemsKeepWordBoundaries(t *testing.T) {
 // TestMarkdownParser_OrderedListKeepsNumbers covers the ordered branch of the marker
 // reconstruction: the number and its delimiter live on the list node, so they have to be rebuilt
 // from Start/Delimiter instead of being read off a leaf.
+//
+// Two of the three cases start above 1 on purpose. A list that starts at 1 cannot tell "kept the
+// numbers the source wrote" from "renumbered from 1", and this test used to run nothing but
+// "1."/"2." - it passed while the parser renumbered every ordered list in a real corpus (a
+// 2,244-entry list whose source numbers start at 996 was indexed as 1..N, which removes the source
+// numbers from the index and made them count as unserved words).
 func TestMarkdownParser_OrderedListKeepsNumbers(t *testing.T) {
 	ctx := t.Context()
 	p, err := NewMarkdownParser(GoMarkdown)
 	if err != nil {
 		t.Fatalf("NewMarkdownParser: %v", err)
 	}
-	md := "1. first item\n2. second item\n"
-	res := p.ParseWithResult(ctx, "ordered.md", []byte(md))
-	if res.Err != nil {
-		t.Fatalf("ParseWithResult: %v", res.Err)
+	cases := []struct {
+		name string
+		md   string
+		want []string
+	}{
+		{
+			name: "starts at ten",
+			md:   "10. a\n11. b\n",
+			want: []string{"10. a", "11. b"},
+		},
+		{
+			name: "starts in the thousands",
+			md:   "996. first entry\n\n997. second entry\n\n998. third entry\n",
+			want: []string{"996. first entry", "997. second entry", "998. third entry"},
+		},
+		{
+			name: "starts at one",
+			md:   "1. first item\n2. second item\n",
+			want: []string{"1. first item", "2. second item"},
+		},
 	}
-	var lists []string
-	for _, item := range res.JSON {
-		if ck, _ := item["ck_type"].(string); ck == "list" {
-			text, _ := item["text"].(string)
-			lists = append(lists, text)
-		}
-	}
-	want := []string{"1. first item", "2. second item"}
-	if len(lists) != len(want) {
-		t.Fatalf("want %d items, got %d: %#v", len(want), len(lists), lists)
-	}
-	for i := range want {
-		if lists[i] != want[i] {
-			t.Errorf("ordered item %d = %q, want %q", i, lists[i], want[i])
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := p.ParseWithResult(ctx, "ordered.md", []byte(tc.md))
+			if res.Err != nil {
+				t.Fatalf("ParseWithResult: %v", res.Err)
+			}
+			var lists []string
+			for _, item := range res.JSON {
+				if ck, _ := item["ck_type"].(string); ck == "list" {
+					text, _ := item["text"].(string)
+					lists = append(lists, text)
+				}
+			}
+			if len(lists) != len(tc.want) {
+				t.Fatalf("want %d items, got %d: %#v", len(tc.want), len(lists), lists)
+			}
+			for i := range tc.want {
+				if lists[i] != tc.want[i] {
+					t.Errorf("ordered item %d = %q, want %q", i, lists[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
