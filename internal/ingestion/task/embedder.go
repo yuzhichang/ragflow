@@ -83,8 +83,9 @@ func (e *embedder) limiter() tokenizer.Limiter {
 			// The model declares a tokenizer family, but its asset is not on disk, so
 			// the limiter degrades to the calibrated cl100k counter. Say so once per
 			// embedder: otherwise a runtime image that does not ship
-			// ragflow_deps/huggingface.co - or a download_deps.py run without the
-			// tokenizer assets - silently costs the exactness these counters exist for.
+			// ragflow_deps/huggingface.co - or a checkout that never ran
+			// download_go_deps.py - silently costs the exactness these counters exist
+			// for.
 			common.Warn(fmt.Sprintf(
 				"embedding tokenizer %q is declared for %s but unavailable; counting with the calibrated fallback (check that ragflow_deps/huggingface.co is present)",
 				id, e.quotaKey()))

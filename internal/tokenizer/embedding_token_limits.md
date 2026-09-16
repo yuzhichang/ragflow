@@ -345,10 +345,10 @@ an unrelated `vocab.txt` there silently replaces the verified artifact; and audi
 1. **Identify the architecture** from the model's own artifact (`tokenizer.json`, or
    `vocab.txt` / `sentencepiece.bpe.model`). If the vocabulary is byte-identical to a
    family fixture, only step 4 is needed; if it differs, the model needs its own fixture.
-2. **Add the artifact** to `ragflow_deps/download_deps.py`'s tokenizer asset list -
+2. **Add the artifact** to `ragflow_deps/download_go_deps.py`'s `TOKENIZER_ASSETS` list -
    individual files, not `snapshot_download` of a multi-GB repo - pin its SHA-1 in the
    loader map so a mismatch fails at load instead of counting with the wrong table, and add
-   it to the copy loop in `Dockerfile` / `Dockerfile_base` so the runtime image ships it
+   it to the copy loop in `Dockerfile` / `Dockerfile_base` / `Dockerfile_go` so every runtime image ships it
    (the `ragflow_deps` image is built from this script's output, so it needs a refresh too -
    see §Assets and the oracle for the whole chain).
 3. **Add the fixture line** to `ORACLES` in `scripts/gen_tokenizer_oracle.py`, generate it,
@@ -385,19 +385,20 @@ property tier green, `gofmt` clean.
 
 ## Assets and the oracle
 
-Assets are fetched, never committed: `ragflow_deps/download_deps.py` has a
-`tokenizer_assets` list that downloads **individual files** (not `snapshot_download`
-of a repo that also carries multi-GB weights) into
-`ragflow_deps/huggingface.co/<repo>/<file>`, which `.gitignore` already excludes
-(`huggingface.co/`). Loaders read them from disk with a SHA-1 pin, walk up from the
-working and executable directories like `bpe_loader.go`, and perform no network I/O.
-A missing asset is a WARNING, not a build failure, because the Go side degrades to
-the calibrated fallback.
+Assets are fetched, never committed: `ragflow_deps/download_go_deps.py` (the Go-side
+downloader - `download_deps.py` is upstream and stays untouched) has a `TOKENIZER_ASSETS`
+list that downloads **individual files** (not `snapshot_download` of a repo that also
+carries multi-GB weights) into `ragflow_deps/huggingface.co/<repo>/<file>`, which
+`.gitignore` already excludes (`huggingface.co/`). Loaders read them from disk with a
+SHA-1 pin, walk up from the working and executable directories like `bpe_loader.go`, and
+perform no network I/O. A missing asset is a WARNING, not a build failure, because the Go
+side degrades to the calibrated fallback (the cl100k table itself is the one asset that
+still comes from `download_deps.py`, which fetches it from the OpenAI blob).
 
-**The whole chain, because a gap in it is invisible**: `download_deps.py` writes
+**The whole chain, because a gap in it is invisible**: `download_go_deps.py` writes
 `ragflow_deps/huggingface.co/…`; the `ragflow_deps` image is built from that directory
 (`ragflow_deps/Dockerfile` copies `huggingface.co` to `/huggingface.co`); the root
-`Dockerfile` and `Dockerfile_base` bind-mount that image and copy the four *runtime*
+`Dockerfile`, `Dockerfile_base` and `Dockerfile_go` bind-mount that image and copy the four *runtime*
 tokenizer assets into `/ragflow/ragflow_deps/huggingface.co/…`, which is where the
 counters look (the working directory is `/ragflow`). The `tokenizer.json` files that
 exist only as cross-check oracles are deliberately **not** shipped. Two consequences
@@ -429,8 +430,8 @@ an operator can point at whichever tree they have:
 
 The variable is deliberately **not** embedding-specific: DeepDoc's weights use the same
 layout (`huggingface.co/InfiniFlow/deepdoc`) and `resolveDeepDocModelDir` honours it too,
-so one mount can serve every downloaded model asset. `ragflow_deps/download_deps.py` and
-the two Dockerfiles keep writing the same tree, so nothing changes for a default
+so one mount can serve every downloaded model asset. `ragflow_deps/download_go_deps.py` and
+the three runtime Dockerfiles keep writing the same tree, so nothing changes for a default
 deployment. The layout and the precedence are pinned by tests:
 `internal/common/model_assets_test.go` for the candidate list, and
 `internal/tokenizer/asset_dir_test.go` for the end-to-end case (a child process with an
@@ -441,7 +442,7 @@ Two things make the state of the assets observable:
 - each counter reports the file it loaded (`SourcePath`), so logs and failures can name it;
 - the ingestor logs an **availability report once at startup** -
   `embedding tokenizer counters {available: [...]}` plus, when something is missing, a
-  warning naming the unavailable ones and pointing at `ragflow_deps/download_deps.py` /
+  warning naming the unavailable ones and pointing at `ragflow_deps/download_go_deps.py` /
   `MODEL_ASSETS_DIR`. Without it, a deployment that ships no assets looks healthy and
   quietly counts with the calibrated fallback.
 
@@ -654,7 +655,8 @@ means "what the model does":
    against the model is not tagged in the catalog; it falls back to the calibrated
    path. Guessing a tag is the unsafe direction.
 2. **Nothing is hand-typed.** Fixtures and expected counts come from the model's
-   tokenizer; assets come from `download_deps.py` with a SHA-1 pin.
+   tokenizer; assets come from the downloaders (`download_go_deps.py` for the tokenizer
+   files, `download_deps.py` for the cl100k table) with a SHA-1 pin.
 3. **Equality, not resemblance** (see above), and the dangerous direction
    (under-count) is the one the tests are shaped around.
 4. **Every approximation is named** in §Known approximations together with the

@@ -294,7 +294,7 @@ def main() -> int:
     else:
         tokenizer_path = os.path.join(args.deps, rel)
         if not os.path.isfile(tokenizer_path):
-            print(f"missing oracle tokenizer: {tokenizer_path}\nrun `uv run ragflow_deps/download_deps.py`", file=sys.stderr)
+            print(f"missing oracle tokenizer: {tokenizer_path}\nrun `uv run ragflow_deps/download_go_deps.py`", file=sys.stderr)
             return 1
         try:
             from tokenizers import Tokenizer
