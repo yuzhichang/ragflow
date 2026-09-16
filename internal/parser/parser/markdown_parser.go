@@ -301,9 +301,21 @@ func walkMarkdownBlocksWithImages(doc ast.Node, out *[]map[string]any, flatten b
 			ckType = "text"
 			docTypeKwd = "text"
 		case *ast.List:
-			txt = leafText(n)
-			ckType = "list"
-			docTypeKwd = "text"
+			// Python's _markdown keeps one item per list entry, marker included
+			// ("- Eat a light diet before the exam?"), so a list never collapses into one blob.
+			// Emit the same shape: the reconstructed marker plus the entry's own text, one item
+			// each. The boundaries matter beyond alignment - the marker lives in the list node
+			// rather than in any leaf literal, and concatenating entries glued their words
+			// ("ChinaChina"), which destroys the word boundaries the tokenizer and the retrieval
+			// index depend on.
+			for _, entry := range listEntries(n) {
+				*out = append(*out, map[string]any{
+					"text":         entry,
+					"doc_type_kwd": "text",
+					"ck_type":      "list",
+				})
+			}
+			continue
 		case *ast.CodeBlock:
 			txt = leafText(n)
 			ckType = "code"
@@ -564,6 +576,59 @@ func leafText(n ast.Node) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// listEntries renders a list's entries the way the source spells them: the marker first, then the
+// entry text, one string per entry (Python's _markdown shape, see the en golden). The marker has to
+// be reconstructed because the AST keeps it on the list node - BulletChar for bullet lists,
+// Start/Delimiter for ordered ones - rather than in any leaf literal.
+func listEntries(list *ast.List) []string {
+	entries := make([]string, 0, len(list.GetChildren()))
+	ordered := list.ListFlags&ast.ListTypeOrdered != 0
+	for i, item := range list.GetChildren() {
+		text := strings.TrimSpace(leafText(item))
+		if text == "" {
+			continue
+		}
+		var marker string
+		switch {
+		case ordered:
+			start := list.Start
+			if start == 0 {
+				start = 1
+			}
+			delim := list.Delimiter
+			if delim == 0 {
+				delim = '.'
+			}
+			marker = fmt.Sprintf("%d%c ", start+i, delim)
+		default:
+			// The markdown parser records the bullet on the ITEM (parser/block.go sets
+			// ListItem.BulletChar), not on the list, so read it there first.
+			bullet := list.BulletChar
+			if li, ok := item.(*ast.ListItem); ok && li.BulletChar != 0 {
+				bullet = li.BulletChar
+			}
+			if bullet != 0 {
+				marker = string(bullet) + " "
+			}
+		}
+		entries = append(entries, marker+text)
+	}
+	return entries
+}
+
+// writeListItems emits a list's items separated by a newline. Without the separator the item texts
+// run together ("bullet onebullet two"), because the marker lives in the list structure rather than
+// in the item's leaf text - the same defect that merged table rows showed as "ChinaChina" in the
+// indexed chunks.
+func writeListItems(list *ast.List, buf *bytes.Buffer) {
+	for i, item := range list.GetChildren() {
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		walkLeaf(item, buf)
+	}
+}
+
 func walkLeaf(n ast.Node, buf *bytes.Buffer) {
 	switch t := n.(type) {
 	case *ast.Text:
@@ -601,6 +666,23 @@ func walkLeaf(n ast.Node, buf *bytes.Buffer) {
 		// survives verbatim, exactly as the source file spells it.
 		buf.Write(t.Literal)
 		buf.Write(t.Content)
+	case *ast.List:
+		// A list marker is structure, not a leaf: the item's own Text literal
+		// carries neither the bullet nor a trailing newline, so concatenating the
+		// items glued the last word of one item to the first word of the next
+		// ("ChinaChina", "HathiTrustThe"). That is not a cosmetic difference: it
+		// destroys the word boundaries the tokenizer and the retrieval index rely
+		// on, so a query for "China" can no longer match the merged token. Python's
+		// _markdown keeps the source lines, so a newline between items restores
+		// parity and keeps the words separate.
+		writeListItems(t, buf)
+	case *ast.ListItem:
+		for i, c := range t.GetChildren() {
+			if i > 0 {
+				buf.WriteByte('\n')
+			}
+			walkLeaf(c, buf)
+		}
 	default:
 		for _, c := range n.GetChildren() {
 			walkLeaf(c, buf)

@@ -35,6 +35,78 @@ func TestMarkdownParser_ParseWithResult_Basic(t *testing.T) {
 	}
 }
 
+// TestMarkdownParser_ListItemsKeepWordBoundaries pins the shape of a list in the parsed output:
+// one item per entry, marker included, and no gluing between entries.
+//
+// A list marker is structure, not a leaf: the marker lives on the list node (bullets on the item)
+// and the entry's own text carries no marker and no trailing newline. Emitting the list as a single
+// blob therefore glued the last word of one entry to the first word of the next ("GamesChina"),
+// which destroys the word boundaries the tokenizer and the retrieval index depend on - a query for
+// "China" can no longer match the merged token. Python's _markdown keeps one item per entry with the
+// marker, so this pins the same shape.
+func TestMarkdownParser_ListItemsKeepWordBoundaries(t *testing.T) {
+	ctx := t.Context()
+	p, err := NewMarkdownParser(GoMarkdown)
+	if err != nil {
+		t.Fatalf("NewMarkdownParser: %v", err)
+	}
+	md := "See also\n\n* China at the Asian Games\n* China at the Paralympics\n"
+	res := p.ParseWithResult(ctx, "list.md", []byte(md))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	var lists []string
+	for _, item := range res.JSON {
+		if ck, _ := item["ck_type"].(string); ck == "list" {
+			text, _ := item["text"].(string)
+			lists = append(lists, text)
+		}
+	}
+	if len(lists) != 2 {
+		t.Fatalf("want one item per list entry, got %d: %#v", len(lists), lists)
+	}
+	for i, want := range []string{"* China at the Asian Games", "* China at the Paralympics"} {
+		if lists[i] != want {
+			t.Errorf("list item %d = %q, want %q", i, lists[i], want)
+		}
+		if strings.Contains(lists[i], "GamesChina") {
+			t.Errorf("list entries are glued together: %q", lists[i])
+		}
+	}
+}
+
+// TestMarkdownParser_OrderedListKeepsNumbers covers the ordered branch of the marker
+// reconstruction: the number and its delimiter live on the list node, so they have to be rebuilt
+// from Start/Delimiter instead of being read off a leaf.
+func TestMarkdownParser_OrderedListKeepsNumbers(t *testing.T) {
+	ctx := t.Context()
+	p, err := NewMarkdownParser(GoMarkdown)
+	if err != nil {
+		t.Fatalf("NewMarkdownParser: %v", err)
+	}
+	md := "1. first item\n2. second item\n"
+	res := p.ParseWithResult(ctx, "ordered.md", []byte(md))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	var lists []string
+	for _, item := range res.JSON {
+		if ck, _ := item["ck_type"].(string); ck == "list" {
+			text, _ := item["text"].(string)
+			lists = append(lists, text)
+		}
+	}
+	want := []string{"1. first item", "2. second item"}
+	if len(lists) != len(want) {
+		t.Fatalf("want %d items, got %d: %#v", len(want), len(lists), lists)
+	}
+	for i := range want {
+		if lists[i] != want[i] {
+			t.Errorf("ordered item %d = %q, want %q", i, lists[i], want[i])
+		}
+	}
+}
+
 func TestMarkdownParser_ParseWithResult_EmptyInput(t *testing.T) {
 	ctx := t.Context()
 	p, _ := NewMarkdownParser(GoMarkdown)
