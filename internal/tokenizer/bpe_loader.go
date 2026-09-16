@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"ragflow/internal/common"
 
@@ -62,6 +63,26 @@ var expectedBpeHashes = map[string]string{
 
 // localBpeLoader resolves tiktoken BPE tables from the local filesystem.
 type localBpeLoader struct{}
+
+// cl100kTablePath records the table file the loader accepted, for diagnostics: the
+// availability report (CounterStatuses) prints it, which is how an operator sees which
+// copy of the table is in use.
+var (
+	cl100kTablePathMu sync.Mutex
+	cl100kTablePath   string
+)
+
+func recordCl100kTablePath(path string) {
+	cl100kTablePathMu.Lock()
+	cl100kTablePath = path
+	cl100kTablePathMu.Unlock()
+}
+
+func cl100kTableSource() string {
+	cl100kTablePathMu.Lock()
+	defer cl100kTablePathMu.Unlock()
+	return cl100kTablePath
+}
 
 // LoadTiktokenBpe implements tiktoken.BpeLoader.
 //
@@ -96,6 +117,7 @@ func (localBpeLoader) LoadTiktokenBpe(bpeURL string) (map[string]int, error) {
 			// name collision. Continuing to the next candidate would mask it.
 			return nil, fmt.Errorf("BPE table %s is malformed: %w", candidate, err)
 		}
+		recordCl100kTablePath(candidate)
 		return ranks, nil
 	}
 
@@ -136,6 +158,12 @@ func bpeCandidatePaths(bpeURL string) []string {
 		if dir := strings.TrimSpace(os.Getenv(env)); dir != "" {
 			add(filepath.Join(dir, cacheName))
 		}
+	}
+
+	// MODEL_ASSETS_DIR: the shared model-asset root (see common.ModelAssetCandidates).
+	// Listed before the working-directory walk because it is an explicit instruction.
+	for _, candidate := range common.ModelAssetCandidates(bundledName) {
+		add(candidate)
 	}
 
 	for _, root := range bpeSearchRoots() {
