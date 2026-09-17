@@ -195,9 +195,14 @@ func auditModelFor(in Input) *models.EinoChatModel {
 }
 
 // llmRetryMax bounds retry attempts per model call on top of the initial one
-// (adk semantics: MaxRetries=3 → up to 4 calls). With the backoff below the
-// worst-case added latency per call is ~17s.
-const llmRetryMax = 3
+// (adk semantics: MaxRetries=1 → up to 2 calls). With the backoff below the
+// worst-case added latency per call is ~2s.
+//
+// Lowered from 3 to 1 on 2026-09-17 for the slow-plan experiment: a slow
+// endpoint that fails at the send phase fails the same way on every attempt,
+// so the extra attempts only bought latency (and, with the old 300s per-call
+// budget, ran whole questions into the wall-clock deadline).
+const llmRetryMax = 1
 
 // agentModelRetryConfig returns the eino-native retry policy attached to
 // every ChatModelAgent this package builds (explorer, repair turns, and the

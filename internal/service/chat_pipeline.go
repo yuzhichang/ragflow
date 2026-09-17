@@ -2202,7 +2202,10 @@ func factoryFromLLMID(llmID string) string {
 // deadline (observed on q268, where two Elasticsearch queries died at exactly
 // T+10m while the cluster was green, and the gate shipped pure narration
 // because there was no budget left to repair or even to synthesize).
-var smartReasoningTimeout = 20 * time.Minute
+// Raised to 30 minutes on 2026-09-17 for the slow-plan experiment: with 10-minute per-call
+// budgets a single stalled call plus the audit passes can consume most of 20 minutes and
+// leave nothing for the synthesis turn.
+var smartReasoningTimeout = 30 * time.Minute
 
 func (s *ChatPipelineService) agenticRag(
 	ctx context.Context,
