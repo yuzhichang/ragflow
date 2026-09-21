@@ -270,10 +270,7 @@ func (g *GrepAdapter) Grep(ctx context.Context, req runtime.GrepRequest) ([]runt
 	if strings.TrimSpace(req.Pattern) == "" {
 		return nil, fmt.Errorf("grep: pattern cannot be empty")
 	}
-	// Validate the regex on the Go side regardless of pushdown path. A pattern
-	// written with another engine's escape (\u2013) is normalised first, so a
-	// JSON-style escape does not fail a call that meant a literal dash.
-	req.Pattern = normalizeRegexPattern(req.Pattern)
+	// Validate the regex on the Go side regardless of pushdown path.
 	if _, err := regexp.Compile("(?i)" + req.Pattern); err != nil {
 		return nil, fmt.Errorf("grep: invalid regex: %w", err)
 	}

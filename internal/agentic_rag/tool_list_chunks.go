@@ -49,13 +49,11 @@ Use this AFTER grep_chunks / search_chunks / search_bm25_chunks locate documents
 ## Output (XML)
 Root <chunks> element carries doc_id, fetched, anchored_chunk_ids and number_neighbors; whenever number_neighbors > 0 it also carries doc_chunks_total — the document's total readable-chunk count — so you can tell whether the returned window covered the entire document. Each chunk carries chunk_id/doc_id/page_num/chunk_index/dataset_id/doc_name plus a <content> element with the FULL original text in reading order; doc_name is the doc engine's document name (the docnm field — typically the source file name such as 66090.md). Graph relation/entity chunks are excluded.`
 
-// listChunksArgs is the JSON the model sends into InvokableRun. The anchor ids
-// take flexStrings because they arrive keyed by index as often as in the
-// declared array, and number_neighbors takes flexInt for "2" (see tool_args.go).
+// listChunksArgs is the JSON the model sends into InvokableRun.
 type listChunksArgs struct {
-	DocID           string      `json:"doc_id"`
-	AnchorChunkIDs  flexStrings `json:"anchor_chunk_ids"`
-	NumberNeighbors flexInt     `json:"number_neighbors,omitempty"`
+	DocID           string   `json:"doc_id"`
+	AnchorChunkIDs  []string `json:"anchor_chunk_ids"`
+	NumberNeighbors int      `json:"number_neighbors,omitempty"`
 }
 
 // Anchored-window bounds: neighbors per side, and the anchor-count cap.
@@ -155,7 +153,7 @@ func (l *ListChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 	if docID == "" {
 		return "", fmt.Errorf("list_chunks: doc_id is required")
 	}
-	anchors := nonEmptyStrings([]string(args.AnchorChunkIDs))
+	anchors := nonEmptyStrings(args.AnchorChunkIDs)
 	if len(anchors) == 0 {
 		return "", fmt.Errorf(
 			"list_chunks: anchor_chunk_ids is required — pass at least one chunk_id from grep_chunks / search_bm25_chunks / search_chunks output")
@@ -189,7 +187,7 @@ func (l *ListChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 		DocScope:   []string{docID},
 	}
 
-	nb := min(max(int(args.NumberNeighbors), 0), listChunksMaxNeighbors)
+	nb := min(max(args.NumberNeighbors, 0), listChunksMaxNeighbors)
 
 	// Select which positions to read. Two regimes:
 	//   nb == 0 → only the anchors themselves; a single id-filtered content

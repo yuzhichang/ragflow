@@ -53,12 +53,10 @@ Skip for single, straightforward, or purely conversational tasks.
 Mark tasks complete immediately after finishing. Only mark completed when fully accomplished.
 The todo_write tool tracks WHAT to retrieve; the think tool handles HOW to synthesize and present the information.`
 
-// todoWriteArgs is the JSON the model sends into InvokableRun. Steps take
-// flexPlanSteps because a keyed object arrives as often as the declared array
-// (see tool_args.go).
+// todoWriteArgs is the JSON the model sends into InvokableRun.
 type todoWriteArgs struct {
-	Task  string        `json:"task,omitempty"`
-	Steps flexPlanSteps `json:"steps"`
+	Task  string     `json:"task,omitempty"`
+	Steps []planStep `json:"steps"`
 }
 
 // planStep is a single step in the retrieval plan.
@@ -128,7 +126,7 @@ func (t *TodoWriteTool) invokableRun(_ context.Context, argumentsInJSON string) 
 	if strings.TrimSpace(args.Task) == "" {
 		args.Task = "No task description provided"
 	}
-	return generatePlanOutput(args.Task, []planStep(args.Steps)), nil
+	return generatePlanOutput(args.Task, args.Steps), nil
 }
 
 // generatePlanOutput formats the plan. Emoji are intentionally omitted.

@@ -66,19 +66,17 @@ Each thought can build on, question, or revise previous insights as understandin
 - **branch_id**: Identifier for the current branch (if any)
 - **needs_more_thoughts**: If reaching end but realizing more thoughts needed`
 
-// thinkArgs is the JSON the model sends into InvokableRun. The numbering fields
-// take flexInt because "3" and 3 both arrive for the same field (see
-// tool_args.go); the rest stay plain.
+// thinkArgs is the JSON the model sends into InvokableRun.
 type thinkArgs struct {
-	Thought           string   `json:"thought"`
-	NextThoughtNeeded bool     `json:"next_thought_needed"`
-	ThoughtNumber     flexInt  `json:"thought_number"`
-	TotalThoughts     flexInt  `json:"total_thoughts"`
-	IsRevision        bool     `json:"is_revision,omitempty"`
-	RevisesThought    *flexInt `json:"revises_thought,omitempty"`
-	BranchFromThought *flexInt `json:"branch_from_thought,omitempty"`
-	BranchID          string   `json:"branch_id,omitempty"`
-	NeedsMoreThoughts bool     `json:"needs_more_thoughts,omitempty"`
+	Thought           string `json:"thought"`
+	NextThoughtNeeded bool   `json:"next_thought_needed"`
+	ThoughtNumber     int    `json:"thought_number"`
+	TotalThoughts     int    `json:"total_thoughts"`
+	IsRevision        bool   `json:"is_revision,omitempty"`
+	RevisesThought    *int   `json:"revises_thought,omitempty"`
+	BranchFromThought *int   `json:"branch_from_thought,omitempty"`
+	BranchID          string `json:"branch_id,omitempty"`
+	NeedsMoreThoughts bool   `json:"needs_more_thoughts,omitempty"`
 }
 
 // ThinkTool is a stateless reflective-thinking tool. It validates the reasoning
@@ -150,19 +148,14 @@ func (t *ThinkTool) invokableRun(_ context.Context, argumentsInJSON string) (str
 	if args.Thought == "" {
 		return "", fmt.Errorf("think: thought must be a non-empty string")
 	}
-	// The numbering is bookkeeping, not content: a model that forgets to count
-	// (or counts from zero) is corrected here rather than handed an error, which
-	// would cost a round trip and repeat the same slip.
-	thoughtNumber := int(args.ThoughtNumber)
-	if thoughtNumber < 1 {
-		thoughtNumber = 1
+	if args.ThoughtNumber < 1 {
+		return "", fmt.Errorf("think: thought_number must be >= 1")
 	}
-	totalThoughts := int(args.TotalThoughts)
-	if totalThoughts < thoughtNumber {
-		totalThoughts = thoughtNumber
+	if args.TotalThoughts < 1 {
+		return "", fmt.Errorf("think: total_thoughts must be >= 1")
 	}
 
-	incomplete := args.NextThoughtNeeded || args.NeedsMoreThoughts || thoughtNumber < totalThoughts
+	incomplete := args.NextThoughtNeeded || args.NeedsMoreThoughts || args.ThoughtNumber < args.TotalThoughts
 	if incomplete {
 		return "Thought process recorded - unfinished steps remain, continue exploring and calling tools", nil
 	}

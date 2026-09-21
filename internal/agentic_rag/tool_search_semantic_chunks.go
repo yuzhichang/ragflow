@@ -46,11 +46,11 @@ Accepts 1-5 queries. Output is the same <search_results> XML as the other locate
 // is that the keyword leg cannot be dialled back in, so the field would only
 // invite the caller to rebuild search_chunks by hand.
 type searchSemanticChunksArgs struct {
-	Queries             flexStrings `json:"queries"`
-	DatasetIDs          flexStrings `json:"dataset_ids,omitempty"`
-	DocScope            flexStrings `json:"doc_scope,omitempty"`
-	TopN                flexInt     `json:"top_n,omitempty"`
-	SimilarityThreshold *float64    `json:"similarity_threshold,omitempty"`
+	Queries             []string `json:"queries"`
+	DatasetIDs          []string `json:"dataset_ids,omitempty"`
+	DocScope            []string `json:"doc_scope,omitempty"`
+	TopN                int      `json:"top_n,omitempty"`
+	SimilarityThreshold *float64 `json:"similarity_threshold,omitempty"`
 }
 
 // SearchSemanticChunksTool is the vector-only locate tool. The tenant and
@@ -131,11 +131,11 @@ func (k *SearchSemanticChunksTool) invokableRun(ctx context.Context, argumentsIn
 	}
 	return runLocateSearch(ctx, locateSearchSpec{
 		tool:                searchSemanticChunksToolName,
-		queries:             []string(args.Queries),
-		datasetIDs:          []string(args.DatasetIDs),
+		queries:             args.Queries,
+		datasetIDs:          args.DatasetIDs,
 		boundDatasetIDs:     k.datasetIDs,
-		docScope:            []string(args.DocScope),
-		topN:                int(args.TopN),
+		docScope:            args.DocScope,
+		topN:                args.TopN,
 		similarityThreshold: args.SimilarityThreshold,
 		// The unclamped keyword share is 0 BY CONSTRUCTION: the caller cannot
 		// raise it, which is the difference between this tool and
