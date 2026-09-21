@@ -2496,6 +2496,193 @@
           "others": "13 题的判别性词元都在参考文档中（full-gold 串不逐字多因排版/重音/标点差异，如 q25 的 typographic apostrophe、q450 的重音）"
         },
         "artifacts": "outputs/covsweep_20260921/unanswerable_scan.json；脚本 /tmp/scan_unanswerable.py（未落仓）。"
+      },
+      "_improvement_opportunities_20260921": {
+        "scope": {
+          "failed_retrieval_strategy": 59,
+          "failed_evidence_in_hand": 76,
+          "total": 135
+        },
+        "facts_measured": {
+          "evidence_is_indexed": "检索桶 59/59 的参考文档含全部 gold 词元（53/59 含完整 gold 串逐字）；全库 gold 逐字存在 88–90%",
+          "not_budget_bound": "中位 search_calls 28–29、tool_calls 39–42、耗时 475–508 s；仅 1 题撞 30 min 墙",
+          "never_anchors": "答文自报检索串里出现 gold 判别词的比例：retrieval 3.4%(2/59)、evidence 8.9%(7/76)；判对组对照 48%(328/684)",
+          "give_up_value_slots": "值槽为放弃/未确定文本 **81 题**（retrieval 42 / evidence 39）；其中 **16 题答文已含全部 gold 判别词** （200,470,497,553,561,655,865,869,873,898,951,1008,1026,1044,1119,1193）",
+          "answer_string_in_doc_title_line": "**64/135** 题的完整 gold 串出现在某参考文档的 `title:`/`name:` 行（retrieval 29 / evidence 35）⇒ 内容侧按实体名查询可直达",
+          "title_field_unusable": "本 KB 的 `title_tks`/`title_sm_tks` **只存数字 id**（如 '95811'）⇒ 标题加权/标题检索不可用（入库未从 `title:` 行提取真实标题）",
+          "citation_gaps": "E1 18 题 gold 文档已 served 却零引用；gold 文档零引用 50/76；`gold_doc_cited ⊄ served` 52 题；`citation_groundings` 全 830 为 None（不可观测）"
+        },
+        "opportunities": [
+          {
+            "id": "I1",
+            "name": "值槽纪律：禁止放弃/未确定文本，必须交付最佳候选（可附置信度与备选）",
+            "scope": "81 题受影响（其中 16 题答文已含 gold 判别词）",
+            "upper_bound": "+16 题 ≈ +1.9pt",
+            "risk": "零下行（这些题现已判错，猜错不额外损失）",
+            "cost": "纯交付契约 + gate 可解析性校验",
+            "metric": "值槽可解析率、放弃文本占比"
+          },
+          {
+            "id": "I2",
+            "name": "强制实体锚定检索：先枚举候选实体→逐候选发实体名查询→逐约束核验（禁止只改写线索句）",
+            "scope": "116/138 从未搜过 gold 判别词；其中 64 题的答案串就在文档标题行",
+            "upper_bound": "覆盖最大的一块",
+            "risk": "低（不改检索算法，只改查询构造与流程）",
+            "cost": "提示/契约 +（可选）locate_by_title/entity 工具（注意 title_tks 不可用，须走 content_ltks）",
+            "metric": "gold_in_queries 命中率 3.4%/8.9% → ≥40%（判对组 48%）"
+          },
+          {
+            "id": "I3",
+            "name": "引用落地：每条事实带 doc_id#chunk_id，gate 校验 引用⊆已读；修 citation_groundings 落盘",
+            "scope": "E1 18 题 + 52 题引用异常",
+            "upper_bound": "+9 题左右（若半数只是\"没把手里证据写进结论\"）",
+            "risk": "低",
+            "cost": "中（gate + 落盘字段）",
+            "metric": "citation_groundings 非空、cited⊄served 归零、E1 转正数"
+          },
+          {
+            "id": "I4",
+            "name": "候选×约束裁决表：唯一全满足者才定稿；并列时自动生成区分性查询",
+            "scope": "E4 8 题（提到 gold 却交别值）+ E5 约 30 题",
+            "upper_bound": "软收益，估 10–20% 转正",
+            "risk": "中（可能引入新错）",
+            "cost": "中",
+            "metric": "交付值与 gold 一致率"
+          },
+          {
+            "id": "I5",
+            "name": "禁止\"语料缺失\"式结论：断言须附已尝试的锚定查询清单；未锚定实体不得输出 guess",
+            "scope": "48+53 题的错误自诊断、早停",
+            "upper_bound": "间接（配合 I1/I2）",
+            "risk": "低",
+            "cost": "低（契约+gate）",
+            "metric": "\"语料缺失\"断言数 / 早停轮次"
+          },
+          {
+            "id": "I6",
+            "name": "入库改进（可选）：从 `title:`/文件头提取真实标题写入 title_tks，恢复标题加权",
+            "scope": "全库 67,708 篇",
+            "upper_bound": "未知（需 A/B）",
+            "risk": "低（新增字段内容）",
+            "cost": "中（重解析/回填）",
+            "metric": "title_tks 非数字 id 比例；标题命中题的 recall"
+          }
+        ],
+        "ab_plan": "取 30 题样本（16 题值槽放弃 + 14 题标题行含 gold 串），改动前后同配置各跑一轮（并发 4 ⇒ ~1 h/轮），比较：值槽可解析率、gold_in_queries 命中率、Accuracy、平均 search_calls（确认不是在堆轮次）。",
+        "artifacts": "outputs/covsweep_20260921/{title_strict_probe.json,title_field_probe.json,unanswerable_scan.json,cw_probe_138.json}；脚本 /tmp/improve_probe.py（未落仓）。"
+      },
+      "_incident_lossy_key_edit_20260921": {
+        "what": "发现 annotations 的 `failed_retrieval_strategy` 被装入了原 `failed_evidence_in_hand` 的 76 个 id，而原 59 个检索题**整块消失**，分区合计仅 771（应为 830）。",
+        "diagnosis": "顶层只剩一个 failed_retrieval_strategy 数组（值=evidence 的 76）；原 59 元素组被覆盖/删除，无重复键残留（其余键的嵌套引用不算重复）。判定为**外部编辑（IDE/查找替换）造成的键内容覆盖**。",
+        "fix": "从 `browsecompplus_retry_conf.json.bak8.20260921` 回填 59 个检索 id，并把当前 76 恢复为 `failed_evidence_in_hand`；损坏态留档 `.damaged59.20260921`。恢复后六桶 = 684/10/59/76/1/0 = 830、两两交集 0 ✓。",
+        "lesson": "这个文件 ~250 KB、键名高度相似，**不要用编辑器/查找替换直接改**：覆盖或空值键会被静默吞掉（空列表键此前也丢过一次）。改动一律走脚本 + setdefault 守卫 + 六桶合计/交集校验 + 备份。"
+      },
+      "_title_tks_proposal_20260921": {
+        "proposal": "把 md 文件头元数据块里的 `title:`/`name:`/`fullname:` 纳入 `title_tks` 字段（用户提议），以改善检索。",
+        "verdict": "方向正确且有杠杆，但**收益是条件性的**：只在\"查询里含标题词元\"时兑现，因此它不能替代查询侧修复（I2）。建议先做离线量化，再走\"回填 → 解析器通用化\"两步。",
+        "evidence": {
+          "retrieval_uses_it_with_big_weight": "internal/engine/elasticsearch/chunk.go:2243 → fields = title_tks^10, title_sm_tks^5, important_kwd^30, important_tks^20, question_tks^20, content_ltks^2, content_sm_ltks（标题词元权重 = 正文的 5 倍）",
+          "current_value_useless": "本 KB 的 title_tks/title_sm_tks 只有数字 id（如 '95811'，实测 ES）；检索时该字段等于空转",
+          "why": "各解析器都用**文件名**生成 title_tks：rag/app/naive.py:1095 / one.py:184 / book.py:74 / laws.py:152 / manual.py:145 / tag.py:52 / picture.py:54 / presentation.py:138 / resume.py:2131 均为 re.sub(r\"\\.[a-zA-Z]+$\", \"\", filename)；只有 paper.py:216 用文档自带 title（说明\"用文档声明标题\"的先例已在仓库里）",
+          "metadata_block_is_already_indexed": "`title:`/`name:` 行本就在 chunk 文本里（content_with_weight/content_ltks 实测含 `title: Pragyan Ojha`）⇒ 词元可被 content_ltks 命中，改 title 字段的边际收益是**排序加权**（title^10 vs content^2），不是\"从无到有\"",
+          "benefit_condition": "116/138 的失败题从未查询任何答案实体（失败组 gold_in_queries 3.4%/8.9% vs 判对组 48%）⇒ 对这批题改标题字段无效；有效场景是查询已含实体/标题词元但正确文档排序靠后（对应 E1\"gold 文档 served 却未引用\"一类）",
+          "instance_docs": "q250→44250.md（title: Pragyan Ojha）、q323→77548.md（title: Lesley Manyathela - Wikipedia）、q175→12477.md（title: The Unstoppable 'CoComelon' …）"
+        },
+        "implementation_options": [
+          {
+            "path": "a 回填 title_tks（不改解析器）",
+            "how": "对现有 chunk 用 ES `_update_by_query` 写入正确 title_tks/title_sm_tks（从元数据块取 title/name/fullname，用仓库自带 `internal/tokenizer` 生成与入库一致的分词形态）",
+            "cost": "分钟级、可回滚（先在小索引/子集验证）；仅动本 KB 索引（1.2M chunks）",
+            "gain": "立即可用于已有文档"
+          },
+          {
+            "path": "b 解析器通用化",
+            "how": "naive.py（及同族）在检测到文件头 `title:`/`name:` 键值块时，用其值而非文件名生成 title_tks；仅当存在时才替换，保留文件名兜底",
+            "cost": "低（一处逻辑 + 单测）；需重解析才对新文档生效",
+            "gain": "通用改进（文件名无意义的语料都受益），非 benchmark 专用 hack"
+          },
+          {
+            "path": "c 查询侧 I2（必须并行）",
+            "how": "流程契约要求先枚举候选实体→用实体名检索",
+            "cost": "低",
+            "gain": "让\"查询里有实体\"这件事真的发生"
+          }
+        ],
+        "cautions": [
+          "**只做增量**：不要把 `title:` 行从 content 里移除（两处都保留）",
+          "title_tks 要限长（只取 title/name/fullname，别把 author/描述整块塞进去）",
+          "分词必须与入库一致（用 internal/tokenizer，而不是自己 split）",
+          "**不要顺手改 embedding 输入**（把标题拼进 chunk 文本会让全部向量失效，需重算，风险高、另立议题）",
+          "改完必须重跑召回相关指标（Recall/Search Calls/Calibration）并声明口径变化"
+        ],
+        "validation_plan": [
+          "① 零成本离线实验（先做）：取\"标题行含 gold 串\"的 64 题（或抽 20 题），用 ES 比较 `content-only` 与 `content + title^10` 两种加权下 **gold 文档进入 top-N（10/20/50）的比例**；此实验直接给出回填的边际收益。",
+          "② 若显著：先做 a（回填）→ 用同一指标复测；",
+          "③ 再做 b（解析器通用化 + 单测）；",
+          "④ 30 题 A/B 中把 c（查询侧实体锚定）与 a/b 的效果分开度量。"
+        ],
+        "recommendation": "建议顺序：①离线量化 → ②回填（若显著）→ ③解析器通用化 → 与 ④查询侧 I2 并行；不要先动解析器（成本最高、见效最慢）。"
+      },
+      "_title_tks_weight_experiment_20260921": {
+        "question": "查询期把 title 权重设为与 content 相等（用户要求）效果如何？",
+        "setup": "同一临时索引（title_tks 已是过滤回填：字母且>=5、去重）；只改查询权重；指标＝文档级名次（top1/3/5/10 + 中位 + 净 top3）。TREAT=64（gold 在标题行）/ CONTROL=71（不在）。",
+        "results": {
+          "A_content^2_现状": {
+            "treat": "21/47/54/56",
+            "control": "26/37/39/43",
+            "median_T/C": "2/1",
+            "net_top3": "84/135",
+            "dtop1": 0
+          },
+          "C_title^5+content^2": {
+            "treat": "35/60/63/63",
+            "control": "25/36/40/45",
+            "median_T/C": "1/2",
+            "net_top3": "96/135",
+            "dtop1": 13
+          },
+          "E1_title^2+content^2_等权": {
+            "treat": "33/59/63/63",
+            "control": "27/37/40/45",
+            "median_T/C": "1/1",
+            "net_top3": "96/135",
+            "dtop1": 13
+          },
+          "E2_title^5+content^5_等权": {
+            "treat": "32/59/63/63",
+            "control": "27/37/40/45",
+            "median_T/C": "2/1",
+            "net_top3": "96/135",
+            "dtop1": 12
+          },
+          "E3_title^1+content^1_等权": {
+            "treat": "34/59/63/63",
+            "control": "27/37/40/45",
+            "median_T/C": "1/1",
+            "net_top3": "96/135",
+            "dtop1": 14
+          },
+          "E4_title^2+content^2_去标签词": {
+            "treat": "30/59/63/63",
+            "control": "26/38/40/45",
+            "median_T/C": "2/1",
+            "net_top3": "97/135",
+            "dtop1": 9
+          }
+        },
+        "conclusions": [
+          "**等权（title=content）与上一轮的最优非等权（^5/^2）打平**：净 top3 都是 96/135，相对现状 84/135 = **+12 题（+8.9pt）**；top1 合计 60-61 vs 47（+13~+14）。",
+          "**等权更优的地方在 CONTROL**：E1/E2/E3 的 CONTROL 为 27/37/40/45，**不低于**现状 A 的 26/37/39/43；而 C（^5/^2）的 CONTROL 是 25/36/40/45（中位名次 T/C 从 A 的 2/1 变成 1/2，即 CONTROL 的目标文档被挤后一位）。因回填文本已过滤，非等权的必要性消失。",
+          "等权内部差异不显著（top1 56-61、top3 96-97/135）。**推荐 E1：title_tks^2 + content_ltks^2** —— 它与内容字段同权、且不改变 content 的既有权重（不扰动其它阈值/校准）；若同时要保留 title_sm_tks，建议一并降到 ^2。",
+          "E4（去标签词 + 等权）top3 最高（97/135）但 top1 反而降（56）⇒ 差异在噪声范围内，标签词清理可做但不必作为主要手段。"
+        ],
+        "caveats": [
+          "测试索引仅 809 篇（135 题的参考文档）⇒ 数字不可外推；真实 67k 库竞争更激烈，标题权的去歧义价值可能更高。",
+          "查询用 gold 串（I2 修好后的理想查询）⇒ 是收益上限；真实查询混线索词，收益更小。",
+          "排序指标 ≠ Accuracy，须端到端 30 题 A/B 验证转化率。",
+          "本轮只测了 title_tks 与 content_ltks 两字段；线上构造器还有 important_kwd^30 / important_tks^20 / question_tks^20（需先确认这些字段在本 KB 是否为空，再决定相对权重的调整幅度）。"
+        ],
+        "artifacts": "outputs/covsweep_20260921/{title_ab_equal_weights.json,title_ab_variants.json,title_ab_experiment.json}；脚本 /tmp/title_ab_equal_weights.py（未落仓）；临时索引 covsweep_titletest_20260921。"
       }
     },
     "verdict_overrides": {
