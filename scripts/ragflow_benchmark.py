@@ -65,10 +65,11 @@ Two artefacts are written at the end of a run:
                        question's tokens, time and full judge verdict.
 
 Re-running a batch efficiently (resume):
-  A batch that failed, aborted or was interrupted (provider quota wall, machine
-  restart, Ctrl-C) is re-run by repeating the SAME command. Everything needed to
-  continue lives in the config and in the run directory - there is no separate
-  resume script and no flag to remember.
+  A batch that was interrupted (machine restart, Ctrl-C, or a bounded
+  `--wall-max-waits` give-up) is re-run by repeating the SAME command.
+  A provider quota wall does NOT interrupt it: the phase waits it out in
+  process (see step 4). Everything needed to continue lives in the config and in
+  the run directory - there is no separate resume script and no flag to remember.
 
   1. Carry the batch in the config, not on the command line. `question_ids`
      takes either `include` (inline ids) or `include_file` (a path relative to
@@ -97,12 +98,16 @@ Re-running a batch efficiently (resume):
      Above concurrency 1 answer rows land out of order; resume is id-based, so
      that changes nothing.
 
-  4. Cheap enough to automate. Re-running the same command while the plan is
-     still exhausted costs one aborted batch: the quota breaker stops it within
-     minutes and every finished row/verdict stays on disk. That is what makes an
-     hourly scheduler a safe way to ride out a quota wall - the config is the
-     only thing to point it at:
+  4. A quota wall is ridden out IN PROCESS (no scheduler needed). When the
+     provider plan is exhausted the phase stops dispatching, waits
+     WALL_RETRY_WAIT_SEC (30 min, `--wall-wait`), then re-enters itself and
+     retries exactly the work still missing an answer/verdict. That repeats for
+     as long as it takes: the wait count is unbounded unless you pass
+     `--wall-max-waits N`, and every finished row/verdict stays on disk
+     throughout. So a single invocation survives a plan wall:
          python3 scripts/ragflow_benchmark.py --config <conf>
+     A scheduler is still the right tool for a MACHINE restart (nothing can
+     survive a reboot), which is what the rest of this section covers.
 
   5. Scheduling it - systemd user timer (no root, survives the terminal):
 
@@ -186,7 +191,11 @@ DEFAULT_LEADERBOARD_NAME = "leaderboard.json"
 
 # Transport defaults. Intentionally not per-dataset config: every dataset talks
 # to the same backend, so retries and timeouts are tuned in one place.
-DEFAULT_TIMEOUT_SECONDS = 1800
+# Raised 1800 -> 2400 on 2026-09-17: the server's smart-reasoning wall is now 30
+# minutes, so a 1800s client timeout would cut off questions exactly when the
+# server was about to answer them (observed: a question failing at exactly 1800s
+# with "Read timed out (read timeout=1800)").
+DEFAULT_TIMEOUT_SECONDS = 2400
 DEFAULT_MAX_RETRIES = 0
 DEFAULT_BACKOFF_SECONDS = 2.0
 
@@ -264,6 +273,21 @@ QUOTA_BURST_WINDOW_SEC = 120  # failures closer together than this = burst
 QUOTA_BURST_PAUSE_SEC = 90  # sleep before probing again after a burst
 QUOTA_ABORT_TOTAL = 12  # hard stop regardless of clustering
 
+# Riding out an exhausted plan IN PROCESS (2026-09-18): a wall used to END the
+# run, which is what forced an external scheduler (systemd timer / cron) to
+# re-launch it every hour. The phases now wait WALL_RETRY_WAIT_SEC and retry the
+# still-pending work themselves, with NO upper bound by default
+# (WALL_MAX_WAITS = 0). The wait is deliberately long: a Token Plan refills on a
+# clock, not on a retry, so probing every few minutes only re-arms the burst
+# detector and burns quota on calls that cannot succeed yet.
+#   --wall-wait SECONDS   interval between retries (default 1800 = 30 min)
+#   --wall-max-waits N    bound the waits (default 0 = unlimited); a bounded run
+#                         that gives up still exits 1 with its rows on disk.
+WALL_RETRY_WAIT_SEC = 1800  # 30 minutes between wall retries
+WALL_MAX_WAITS = 0  # 0 = keep waiting until the plan refills
+WALL_WAIT_SLICE_SEC = 30  # sleep slice: keeps Ctrl-C and the log responsive
+WALL_WAIT_LOG_EVERY_SEC = 300  # progress line while waiting
+
 # The judge phase runs its own, SMALLER concurrency: judging is a single
 # short chat call, so the throughput win of a high concurrency is nil while a
 # burst of rate-limit failures costs real verdicts (judge calls that fail with
@@ -318,9 +342,10 @@ class QuotaBreaker:
 
     Every phase outcome is fed to note(); a non-quota outcome clears the
     history. note() returns "" (keep going), "burst" (pause and probe again)
-    or "wall" (abort the run). See the QUOTA_* constants for the rationale:
-    with concurrency > 1 a single rate-limit burst fails several in-flight
-    questions at once, which must not be mistaken for an exhausted plan.
+    or "wall" (the plan is exhausted: the caller waits and retries). See the
+    QUOTA_* constants for the rationale: with concurrency > 1 a single
+    rate-limit burst fails several in-flight questions at once, which must not
+    be mistaken for an exhausted plan.
     """
 
     def __init__(self) -> None:
@@ -569,6 +594,32 @@ def render_judge_prompt(row: dict[str, Any]) -> str:
     )
 
 
+def _wait_for_plan_refill(*, label: str, wait_sec: float, round_no: int, max_waits: int) -> None:
+    """Sleep out a provider plan wall before the next retry round.
+
+    Sliced rather than one long sleep, for two reasons: Ctrl-C stays responsive,
+    and the log keeps proving the process is parked on purpose (a 30-minute
+    silence is indistinguishable from a hang). The wait is long by design - a
+    Token Plan refills on a clock, not on a retry.
+    """
+    limit = "unlimited" if max_waits <= 0 else f"at most {max_waits} wait(s)"
+    print(
+        f"[{label}] provider plan exhausted - waiting {int(wait_sec)}s before retry round {round_no} ({limit}); every finished row/verdict stays on disk",
+        flush=True,
+    )
+    remaining = float(wait_sec)
+    slept = 0.0
+    next_notice = WALL_WAIT_LOG_EVERY_SEC
+    while remaining > 0:
+        slice_sec = min(WALL_WAIT_SLICE_SEC, remaining)
+        time.sleep(slice_sec)
+        slept += slice_sec
+        remaining -= slice_sec
+        if remaining > 0 and slept >= next_notice:
+            print(f"[{label}] still waiting: {int(remaining)}s left before retry round {round_no}", flush=True)
+            next_notice += WALL_WAIT_LOG_EVERY_SEC
+
+
 def run_answer_phase(
     *,
     client: JsonHttpClient,
@@ -576,8 +627,56 @@ def run_answer_phase(
     questions: list[dict[str, Any]],
     answers_path: Path,
     concurrency: int = 1,
+    wall_wait_sec: float = WALL_RETRY_WAIT_SEC,
+    wall_max_waits: int = WALL_MAX_WAITS,
 ) -> bool:
-    """Returns True when the run was aborted by the quota circuit breaker."""
+    """Answer every pending question, riding out an exhausted plan in process.
+
+    A provider wall no longer ends the run. Each round answers what it can; a
+    wall parks the phase for wall_wait_sec and then re-enters it, which retries
+    exactly the questions still missing an answer (the resume rule: a row counts
+    as finished only when it carries an answer and no ragflow_error). The loop
+    is unbounded unless wall_max_waits > 0, so no external scheduler is needed
+    to ride out a plan wall - only a machine reboot still needs one.
+
+    Returns True only when a bounded wait budget gave up (wall_max_waits > 0).
+    """
+    round_no = 0
+    waits = 0
+    while True:
+        round_no += 1
+        if round_no > 1:
+            print(f"[answers] retry round {round_no} (after {waits} plan-wall wait(s))", flush=True)
+        aborted = _answer_phase_once(
+            client=client,
+            cfg=cfg,
+            questions=questions,
+            answers_path=answers_path,
+            concurrency=concurrency,
+        )
+        if not aborted:
+            if waits:
+                print(f"[answers] plan recovered after {waits} wait(s); no questions left", flush=True)
+            return False
+        if wall_max_waits > 0 and waits >= wall_max_waits:
+            print(
+                f"[answers] giving up after {waits} plan-wall wait(s) (--wall-max-waits {wall_max_waits}); {answers_path} holds every finished row",
+                flush=True,
+            )
+            return True
+        waits += 1
+        _wait_for_plan_refill(label="answers", wait_sec=wall_wait_sec, round_no=round_no + 1, max_waits=wall_max_waits)
+
+
+def _answer_phase_once(
+    *,
+    client: JsonHttpClient,
+    cfg: dict[str, Any],
+    questions: list[dict[str, Any]],
+    answers_path: Path,
+    concurrency: int = 1,
+) -> bool:
+    """One dispatch round. Returns True when the quota breaker saw a wall."""
     completed = {key for key, row in _read_jsonl_by_id(answers_path).items() if not (row.get("ragflow_error") or "").strip()}
     chat_cfg = cfg.get("ragflow_chat", {})
     shared_session_id = None
@@ -688,8 +787,9 @@ def run_answer_phase(
             elif verdict == "wall":
                 print(
                     f"[answers] provider plan quota exhausted ({breaker.total} Token Plan failures, "
-                    f"spread over >= {QUOTA_BURST_WINDOW_SEC}s) - aborting; remaining question(s) left "
-                    f"untouched. Re-run the same command once the quota is replenished."
+                    f"spread over >= {QUOTA_BURST_WINDOW_SEC}s) - this round stops here; the question(s) "
+                    f"without an answer are retried after the plan-wall wait.",
+                    flush=True,
                 )
             return verdict == "wall"
 
@@ -726,13 +826,58 @@ def run_judge_phase(
     answers_path: Path,
     leaderboard_path: Path,
     concurrency: int = 1,
+    wall_wait_sec: float = WALL_RETRY_WAIT_SEC,
+    wall_max_waits: int = WALL_MAX_WAITS,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
-    """Judge every unanswered answer row and persist the verdicts.
+    """Judge every row without a verdict, riding out an exhausted plan in process.
+
+    Same retry contract as run_answer_phase: a plan wall parks the phase for
+    wall_wait_sec and then re-enters it, which re-judges exactly the rows still
+    missing a verdict (a verdict that is ITSELF a backend error does not count).
+    Unbounded unless wall_max_waits > 0. Returns (judgements, gave_up), where
+    gave_up is True only when a bounded wait budget was exhausted.
+    """
+    round_no = 0
+    waits = 0
+    judgements: dict[str, dict[str, Any]] = {}
+    while True:
+        round_no += 1
+        if round_no > 1:
+            print(f"[judge] retry round {round_no} (after {waits} plan-wall wait(s))", flush=True)
+        judgements, aborted = _judge_phase_once(
+            client=client,
+            cfg=cfg,
+            answers_path=answers_path,
+            leaderboard_path=leaderboard_path,
+            concurrency=concurrency,
+        )
+        if not aborted:
+            if waits:
+                print(f"[judge] plan recovered after {waits} wait(s); no row left unjudged", flush=True)
+            return judgements, False
+        if wall_max_waits > 0 and waits >= wall_max_waits:
+            print(
+                f"[judge] giving up after {waits} plan-wall wait(s) (--wall-max-waits {wall_max_waits}); {leaderboard_path} holds every stored verdict",
+                flush=True,
+            )
+            return judgements, True
+        waits += 1
+        _wait_for_plan_refill(label="judge", wait_sec=wall_wait_sec, round_no=round_no + 1, max_waits=wall_max_waits)
+
+
+def _judge_phase_once(
+    *,
+    client: JsonHttpClient,
+    cfg: dict[str, Any],
+    answers_path: Path,
+    leaderboard_path: Path,
+    concurrency: int = 1,
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    """One judging round. Returns (judgements, wall_seen).
 
     Judgements live in leaderboard.json's per_query_judgements extension,
     keyed by run key - that file is both the submission output and the resume
-    state, so there is no separate judged artefact. Returns (judgements,
-    aborted); `aborted` is True when the quota circuit breaker fired.
+    state, so there is no separate judged artefact.
     """
     if not answers_path.exists():
         raise FileNotFoundError(f"Missing answers file: {answers_path}")
@@ -821,8 +966,9 @@ def run_judge_phase(
         elif verdict == "wall":
             print(
                 f"[judge] provider plan quota exhausted ({breaker.total} Token Plan failures, "
-                f"spread over >= {QUOTA_BURST_WINDOW_SEC}s) - aborting; remaining row(s) left "
-                f"unjudged. Re-run the same command once the quota is replenished."
+                f"spread over >= {QUOTA_BURST_WINDOW_SEC}s) - this round stops here; the row(s) left "
+                f"without a verdict are re-judged after the plan-wall wait.",
+                flush=True,
             )
         return verdict == "wall"
 
@@ -2049,6 +2195,18 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without calling any API")
     parser.add_argument("--skip-answers", action="store_true", help="Judge an existing answers.jsonl")
     parser.add_argument("--skip-judge", action="store_true", help="Only collect answers")
+    parser.add_argument(
+        "--wall-wait",
+        type=float,
+        default=WALL_RETRY_WAIT_SEC,
+        help=f"Seconds to sleep when the provider Token Plan is exhausted, before retrying the pending work in process (default {int(WALL_RETRY_WAIT_SEC)} = 30 min)",
+    )
+    parser.add_argument(
+        "--wall-max-waits",
+        type=int,
+        default=WALL_MAX_WAITS,
+        help=f"Give up after this many plan-wall waits instead of waiting indefinitely (default {WALL_MAX_WAITS} = unlimited; a bounded run exits 1 and leaves its rows/verdicts on disk)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -2131,9 +2289,11 @@ def main() -> int:
             questions=selected,
             answers_path=answers_path,
             concurrency=concurrency,
+            wall_wait_sec=args.wall_wait,
+            wall_max_waits=args.wall_max_waits,
         )
         if answer_aborted:
-            print(f"Run aborted at the answer phase; {answers_path} holds the completed rows.")
+            print(f"Run gave up waiting for the plan at the answer phase; {answers_path} holds the completed rows.")
             return 1
         if args.skip_judge:
             print(f"Answers written to {answers_path}")
@@ -2145,6 +2305,8 @@ def main() -> int:
         answers_path=answers_path,
         leaderboard_path=leaderboard_path,
         concurrency=concurrency,
+        wall_wait_sec=args.wall_wait,
+        wall_max_waits=args.wall_max_waits,
     )
 
     # The leaderboard export scores retrieval recall against each question's
@@ -2156,7 +2318,7 @@ def main() -> int:
     _write_json(leaderboard_path, leaderboard)
 
     if judge_aborted:
-        print("Run aborted at the judge phase; re-run the same command once the quota is replenished.")
+        print("Run gave up waiting for the plan at the judge phase; re-run the same command to continue.")
         return 1
     print(f"Leaderboard submission written to {leaderboard_path}")
     print(_leaderboard_summary(leaderboard))

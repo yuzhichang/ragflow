@@ -23,7 +23,6 @@
       "grep_chunks",
       "search_bm25_chunks",
       "search_semantic_chunks"
-
     ],
     "calibration_bin_size": 100
   },
@@ -192,8 +191,8 @@
     }
   },
   "judge_llm_ids": [
-    "639286668fd611f18a8527a64e461315",
-    "80007a388fd611f18a8527a64e461315",
-    "5c96bd9d88a84eda833b0b99f89b41d9"
+    "6bbee637f279454f8c065f6a11a8e71b",
+    "f0ce03c2833141979782fd20aa57cb61",
+    "f237a7ddb5b2473fb10c7f66bc1278bb"
   ]
 }

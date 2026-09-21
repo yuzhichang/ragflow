@@ -466,7 +466,15 @@ func NewDriverHTTPClient(allowPrivate bool) *http.Client {
 	t.MaxIdleConnsPerHost = 10
 	t.IdleConnTimeout = 90 * time.Second
 	t.DisableCompression = false
-	t.ResponseHeaderTimeout = 5 * 60 * time.Second
+	// ResponseHeaderTimeout bounds how long we wait for response headers after the request
+	// body is fully written. On the non-streaming chat path (stream:false) a gateway only
+	// sends those headers once the whole completion is generated, so this is the real
+	// generation wall for slow providers - raised from 5 to 10 minutes on 2026-09-17 to
+	// match nonStreamCallTimeout, after StepFun questions kept dying at T+300s with
+	// "http2: timeout awaiting response headers" while the ctx budget above it never applied.
+	// It does not bound streams (doStreamRequest receives headers immediately; streamCallTimeout
+	// is what bounds those).
+	t.ResponseHeaderTimeout = 10 * time.Minute
 	t.TLSHandshakeTimeout = 30 * time.Second
 
 	var rt http.RoundTripper = t
