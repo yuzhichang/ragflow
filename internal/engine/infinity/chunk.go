@@ -954,8 +954,8 @@ func (e *Engine) Search(ctx context.Context, req *types.SearchRequest) (*types.S
 				}
 			} else {
 				textFields = []string{
-					"title_tks^10",
-					"title_sm_tks^5",
+					"title_tks^2",
+					"title_sm_tks^2",
 					"important_kwd^30",
 					"important_tks^20",
 					"question_tks^20",

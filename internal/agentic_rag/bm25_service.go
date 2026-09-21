@@ -27,7 +27,7 @@ import (
 
 // Bm25Adapter backs search_bm25_chunks with pure lexical full-text (BM25)
 // ranking: it issues engine Search requests carrying only a MatchTextExpr over
-// the default tokenized fields (title_tks^10, title_sm_tks^5, important_*,
+// the default tokenized fields (title_tks^2, title_sm_tks^2, important_*,
 // question_tks^20, content_ltks^2, content_sm_ltks) — no dense vector, no
 // fusion — so engines score with native BM25. Like GrepAdapter it is stateless
 // and safe to share across goroutines.

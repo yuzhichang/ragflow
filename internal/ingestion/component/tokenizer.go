@@ -369,6 +369,9 @@ func (c *TokenizerComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map
 		zap.Int("input_chunks", len(chunks)),
 	)
 	titleStem := titleExtRE.ReplaceAllString(name, "")
+	if toks := declaredTitleTokens(chunks); len(toks) > 0 {
+		titleStem = strings.TrimSpace(titleStem + " " + strings.Join(toks, " "))
+	}
 
 	normalizeChunkTextFallback(chunks)
 
@@ -764,6 +767,69 @@ func normalizeChunkTextFallback(chunks []schema.ChunkDoc) {
 			chunks[i].Text = chunks[i].ContentWithWeight
 		}
 	}
+}
+
+// declaredTitleTokens returns the tokens of the title a document declares about itself, when its
+// header block carries one ("title: Pragyan Ojha", "name: Lesley Manyathela", "fullname: ...").
+//
+// Why it exists: a corpus whose files are named by id ("93372.md") otherwise leaves title_tks
+// holding nothing but the id, while the retriever weights title_tks on a par with content_ltks -
+// so the declared title is a ranking signal that costs nothing to index. Label words, the word
+// "wikipedia", tokens shorter than five characters and pure numbers are dropped: they are noise
+// that would match unrelated queries once the field is weighted.
+//
+// Only the first non-empty chunk is inspected, because the header block (when present at all)
+// belongs to the head of the document.
+func declaredTitleTokens(chunks []schema.ChunkDoc) []string {
+	const (
+		headerLines = 20
+		maxTokens   = 20
+		minLen      = 5
+	)
+	var values []string
+	for i := range chunks {
+		head := chunks[i].Text
+		if head == "" {
+			head = chunks[i].ContentWithWeight
+		}
+		if head == "" {
+			continue
+		}
+		lines := strings.Split(head, "\n")
+		if len(lines) > headerLines {
+			lines = lines[:headerLines]
+		}
+		for _, line := range lines {
+			l := strings.ToLower(strings.TrimSpace(line))
+			for _, key := range []string{"title:", "name:", "fullname:"} {
+				if strings.HasPrefix(l, key) {
+					values = append(values, l[len(key):])
+				}
+			}
+		}
+		break
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	skip := map[string]bool{"title": true, "name": true, "fullname": true, "wikipedia": true}
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range values {
+		for _, w := range strings.FieldsFunc(v, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+		}) {
+			if len(w) < minLen || skip[w] || seen[w] {
+				continue
+			}
+			seen[w] = true
+			out = append(out, w)
+			if len(out) >= maxTokens {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // tokenizeChunks annotates each chunk with title_tks, content_ltks,

@@ -2240,7 +2240,7 @@ func buildQueryStringQuery(matchText *types.MatchTextExpr, isSkillIndex, isMemor
 		} else if isMemoryIndex {
 			fields = []string{"tokenized_content_ltks"}
 		} else {
-			fields = []string{"title_tks^10", "title_sm_tks^5", "important_kwd^30", "important_tks^20", "question_tks^20", "content_ltks^2", "content_sm_ltks"}
+			fields = []string{"title_tks^2", "title_sm_tks^2", "important_kwd^30", "important_tks^20", "question_tks^20", "content_ltks^2", "content_sm_ltks"}
 		}
 	}
 	if isSkillIndex {
