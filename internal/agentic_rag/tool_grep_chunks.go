@@ -60,9 +60,9 @@ Use this to locate candidate chunks by exact identifiers, error codes, product n
 
 // grepChunksArgs is the JSON the model sends into InvokableRun.
 type grepChunksArgs struct {
-	Query      string   `json:"query"`
-	DatasetIDs []string `json:"dataset_ids,omitempty"`
-	DocScope   []string `json:"doc_scope,omitempty"`
+	Query      string      `json:"query"`
+	DatasetIDs flexStrings `json:"dataset_ids,omitempty"`
+	DocScope   flexStrings `json:"doc_scope,omitempty"`
 }
 
 // grepChunksDefaultLimit caps the number of matching chunks returned.
@@ -133,7 +133,7 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 		return "", fmt.Errorf("grep_chunks: parse arguments: %w", err)
 	}
 
-	query := strings.TrimSpace(args.Query)
+	query := normalizeRegexPattern(strings.TrimSpace(args.Query))
 	if query == "" {
 		return "", fmt.Errorf("grep_chunks: query is required and must be a non-empty regex string")
 	}
@@ -144,7 +144,7 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 		return "", fmt.Errorf("grep_chunks: invalid regex %q: %w", query, err)
 	}
 
-	datasetIDs, err := resolveDatasetScope(g.datasetIDs, args.DatasetIDs)
+	datasetIDs, err := resolveDatasetScope(g.datasetIDs, []string(args.DatasetIDs))
 	if err != nil {
 		return "", fmt.Errorf("grep_chunks: %w", err)
 	}
@@ -159,7 +159,7 @@ func (g *GrepChunksTool) invokableRun(ctx context.Context, argumentsInJSON strin
 	req := runtime.GrepRequest{
 		Pattern:      query,
 		DatasetIDs:   datasetIDs,
-		DocScope:     args.DocScope,
+		DocScope:     []string(args.DocScope),
 		Limit:        grepChunksDefaultLimit,
 		Sort:         grepChunksSortFields, // order by doc_id, page_num_int, chunk_order_int
 		SelectFields: grepChunksSelectFields,

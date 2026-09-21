@@ -50,12 +50,12 @@ Returns an XML <search_results count="N" query="..."> document (unified with gre
 
 // searchChunksArgs is the JSON the model sends into InvokableRun.
 type searchChunksArgs struct {
-	Queries                  []string `json:"queries"`
-	DatasetIDs               []string `json:"dataset_ids,omitempty"`
-	DocScope                 []string `json:"doc_scope,omitempty"`
-	TopN                     int      `json:"top_n,omitempty"`
-	SimilarityThreshold      *float64 `json:"similarity_threshold,omitempty"`
-	KeywordsSimilarityWeight *float64 `json:"keywords_similarity_weight,omitempty"`
+	Queries                  flexStrings `json:"queries"`
+	DatasetIDs               flexStrings `json:"dataset_ids,omitempty"`
+	DocScope                 flexStrings `json:"doc_scope,omitempty"`
+	TopN                     flexInt     `json:"top_n,omitempty"`
+	SimilarityThreshold      *float64    `json:"similarity_threshold,omitempty"`
+	KeywordsSimilarityWeight *float64    `json:"keywords_similarity_weight,omitempty"`
 }
 
 // searchChunksDefaultTopN is the per-query result count.
@@ -163,11 +163,11 @@ func (k *SearchChunksTool) invokableRun(ctx context.Context, argumentsInJSON str
 	}
 	return runLocateSearch(ctx, locateSearchSpec{
 		tool:                searchChunksToolName,
-		queries:             args.Queries,
-		datasetIDs:          args.DatasetIDs,
+		queries:             []string(args.Queries),
+		datasetIDs:          []string(args.DatasetIDs),
 		boundDatasetIDs:     k.datasetIDs,
-		docScope:            args.DocScope,
-		topN:                args.TopN,
+		docScope:            []string(args.DocScope),
+		topN:                int(args.TopN),
 		similarityThreshold: args.SimilarityThreshold,
 		weight:              weight,
 		tenantID:            k.tenantID,

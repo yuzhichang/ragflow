@@ -45,13 +45,18 @@ Use it to recall chunks containing your keywords with relevance ranking (term fr
 Returns an XML <search_results count="N" query="..."> document (unified with grep_chunks / search_chunks). Each hit is a <chunk> element with rank, chunk_id, doc_id, page_num, chunk_index, dataset_id, doc_name and score attributes, plus a <match_snippet> element — a single-line window spanning from snippetContextRunes runes BEFORE the earliest keyword hit to that many runes AFTER the latest one. Snippets are for relevance triage only — call list_chunks with anchor_chunk_ids for the authoritative full-text deep read.`
 
 type searchBm25ChunksArgs struct {
-	Queries    []string `json:"queries"`
-	DatasetIDs []string `json:"dataset_ids,omitempty"`
-	DocScope   []string `json:"doc_scope,omitempty"`
-	TopN       int      `json:"top_n,omitempty"`
+	Queries    flexStrings `json:"queries"`
+	DatasetIDs flexStrings `json:"dataset_ids,omitempty"`
+	DocScope   flexStrings `json:"doc_scope,omitempty"`
+	TopN       flexInt     `json:"top_n,omitempty"`
 }
 
 const searchBm25DefaultTopN = 12
+
+// searchBm25MaxQueries caps one call's keyword batch. A longer batch is a
+// formatting slip, so the extra queries are dropped with a note rather than
+// failing the call and costing the round trip.
+const searchBm25MaxQueries = 5
 
 // SearchBm25ChunksTool performs lexical BM25 retrieval over 1-5 keyword
 // queries, merging results by chunk id. Backs onto runtime.GetBm25Service().
@@ -129,35 +134,38 @@ func (k *SearchBm25ChunksTool) invokableRun(ctx context.Context, argumentsInJSON
 		}
 	}
 	if len(queries) == 0 {
-		return "", fmt.Errorf("search_bm25_chunks: queries must contain 1-5 non-empty keyword queries")
+		return "", fmt.Errorf("search_bm25_chunks: queries must contain 1-%d non-empty keyword queries", searchBm25MaxQueries)
 	}
-	if len(queries) > 5 {
-		return "", fmt.Errorf("search_bm25_chunks: queries must contain at most 5 keyword queries, got %d", len(queries))
+	droppedQueries := 0
+	if len(queries) > searchBm25MaxQueries {
+		droppedQueries = len(queries) - searchBm25MaxQueries
+		queries = queries[:searchBm25MaxQueries]
 	}
 
-	topN := args.TopN
+	topN := int(args.TopN)
 	if topN <= 0 {
 		topN = searchBm25DefaultTopN
 	}
 	if topN > 50 {
 		topN = 50
 	}
-	datasetIDs, err := resolveDatasetScope(k.datasetIDs, args.DatasetIDs)
+	datasetIDs, err := resolveDatasetScope(k.datasetIDs, []string(args.DatasetIDs))
 	if err != nil {
 		return "", fmt.Errorf("search_bm25_chunks: %w", err)
 	}
 	if len(datasetIDs) > 10 {
 		datasetIDs = datasetIDs[:10]
 	}
-	if len(args.DocScope) > 10 {
-		args.DocScope = args.DocScope[:10]
+	docScope := []string(args.DocScope)
+	if len(docScope) > 10 {
+		docScope = docScope[:10]
 	}
 
 	svc := runtime.GetBm25Service()
 	chunks, err := svc.SearchBm25(ctx, runtime.Bm25Request{
 		Queries:    queries,
 		DatasetIDs: datasetIDs,
-		DocScope:   args.DocScope,
+		DocScope:   docScope,
 		TopN:       topN,
 		TenantID:   k.tenantID,
 	})
@@ -170,7 +178,12 @@ func (k *SearchBm25ChunksTool) invokableRun(ctx context.Context, argumentsInJSON
 		zap.Strings("queries", queries),
 	)
 	hits := snippetHitsFor(chunks, queries)
-	return formatLocateResultsXML(ctx, searchBm25ChunksToolName, strings.Join(queries, " | "), hits), nil
+	out := formatLocateResultsXML(ctx, searchBm25ChunksToolName, strings.Join(queries, " | "), hits)
+	if droppedQueries > 0 {
+		out = fmt.Sprintf("Note: searched the first %d of %d keyword queries (cap %d); issue the remaining %d in a second call.\n\n%s",
+			searchBm25MaxQueries, searchBm25MaxQueries+droppedQueries, searchBm25MaxQueries, droppedQueries, out)
+	}
+	return out, nil
 }
 
 // bm25TermTokens derives lowercase literal search terms from the query strings:

@@ -143,14 +143,20 @@ func TestThinkTool_EmptyThought(t *testing.T) {
 	}
 }
 
-func TestThinkTool_InvalidNumber(t *testing.T) {
+func TestThinkTool_NumberingIsClamped(t *testing.T) {
+	// A model that miscounts (a zero, or a total below the current step) is
+	// corrected rather than handed an error: the numbering is bookkeeping, and
+	// a failed call would only cost the turn it takes to repeat the slip.
 	out, err := NewThinkTool().InvokableRun(context.Background(),
 		`{"thought":"x","next_thought_needed":false,"thought_number":0,"total_thoughts":1}`)
 	if err != nil {
 		t.Fatalf("failure must become a result, got error: %v", err)
 	}
-	if !strings.Contains(out, toolErrorMarker) {
-		t.Errorf("expected a <tool_error> result, got %.200q", out)
+	if strings.Contains(out, toolErrorMarker) {
+		t.Errorf("an out-of-range number must be clamped, not reported: %.200q", out)
+	}
+	if !strings.Contains(out, "Thought process recorded") {
+		t.Errorf("unexpected output: %.200q", out)
 	}
 }
 

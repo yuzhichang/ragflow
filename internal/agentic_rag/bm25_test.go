@@ -127,9 +127,17 @@ func TestSearchBm25ChunksTool_ArgsBounds(t *testing.T) {
 	if out, err := tool.InvokableRun(context.Background(), `{"queries":[""]}`); err != nil || !strings.Contains(out, toolErrorMarker) {
 		t.Fatalf("empty queries must produce a tool_error result, got err=%v out=%.200q", err, out)
 	}
-	// More than 5 -> <tool_error> result.
-	if out, err := tool.InvokableRun(context.Background(), `{"queries":["a","b","c","d","e","f"]}`); err != nil || !strings.Contains(out, toolErrorMarker) {
-		t.Fatalf(">5 queries must produce a tool_error result, got err=%v out=%.200q", err, out)
+	// More than the cap: the first ones run and the rest are reported back, so
+	// a long batch costs a note instead of a whole round trip.
+	droppedOut, err := tool.InvokableRun(context.Background(), `{"queries":["a","b","c","d","e","f"]}`)
+	if err != nil {
+		t.Fatalf("InvokableRun: %v", err)
+	}
+	if !strings.Contains(droppedOut, "Note: searched the first 5 of 6 keyword queries") {
+		t.Errorf("a dropped-query note is required: %.200q", droppedOut)
+	}
+	if len(stub.lastReq.Queries) != 5 {
+		t.Errorf("Queries = %v, want the first 5", stub.lastReq.Queries)
 	}
 	// Happy path: top_n clamped and queries passed through; XML emitted with
 	// short snippets — never full chunk bodies.

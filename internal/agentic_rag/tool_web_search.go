@@ -117,7 +117,7 @@ const (
 
 // webSearchArgs is the JSON the model sends into InvokableRun.
 type webSearchArgs struct {
-	Queries []string `json:"queries"`
+	Queries flexStrings `json:"queries"`
 }
 
 // WebSearchTool runs web searches through an injected provider. It holds the
@@ -194,12 +194,21 @@ func (w *WebSearchTool) invokableRun(ctx context.Context, argumentsInJSON string
 	if len(queries) == 0 {
 		return "", fmt.Errorf("web_search: queries must contain 1-%d non-empty queries", webSearchMaxQueries)
 	}
+	// More queries than the cap is a formatting slip, not a reason to lose the
+	// turn: search the first ones, warn, and let the model issue the rest.
+	var droppedQueries []string
 	if len(queries) > webSearchMaxQueries {
-		return "", fmt.Errorf("web_search: queries must contain at most %d queries, got %d", webSearchMaxQueries, len(queries))
+		droppedQueries = queries[webSearchMaxQueries:]
+		queries = queries[:webSearchMaxQueries]
 	}
 
 	var hits []webHit
 	var notices []string
+	if len(droppedQueries) > 0 {
+		notices = append(notices, toolErrorXML(webSearchToolName, "warn",
+			fmt.Sprintf("searched the first %d of %d queries (cap %d); issue the remaining %d in a second call",
+				webSearchMaxQueries, webSearchMaxQueries+len(droppedQueries), webSearchMaxQueries, len(droppedQueries))))
+	}
 	var failures []string
 	for _, q := range queries {
 		results, err := w.search(ctx, q)

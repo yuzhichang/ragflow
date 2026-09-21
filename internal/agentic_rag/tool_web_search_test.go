@@ -86,14 +86,20 @@ func TestWebSearchTool_EscapesHits(t *testing.T) {
 }
 
 func TestWebSearchTool_TooManyQueries(t *testing.T) {
+	// Over the cap the first webSearchMaxQueries run and the rest are reported
+	// as a warning: a dropped query is recoverable, a failed call is a wasted
+	// turn spent re-sending the same arguments.
 	search, seen := fixedWebSearch(nil, nil)
 	out, err := NewWebSearchTool(search).InvokableRun(context.Background(),
-		`{"queries":["a","b","c","d"]}`)
-	if err != nil || !strings.Contains(out, toolErrorMarker) {
-		t.Fatalf("too many queries must produce a tool_error result, got err=%v out=%.200q", err, out)
+		`{"queries":["a","b","c","d","e"]}`)
+	if err != nil {
+		t.Fatalf("InvokableRun: %v", err)
 	}
-	if len(*seen) != 0 {
-		t.Errorf("provider must not be called on a rejected call, got %v", *seen)
+	if got := strings.Join(*seen, ","); got != "a,b,c" {
+		t.Errorf("searched %q, want the first %d queries", got, webSearchMaxQueries)
+	}
+	if !strings.Contains(out, "searched the first 3 of 5 queries") {
+		t.Errorf("a dropped-query warning is required: %.200q", out)
 	}
 }
 
