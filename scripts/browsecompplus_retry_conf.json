@@ -732,6 +732,8 @@
       "78",
       "116",
       "283",
+      "406",
+      "450",
       "688",
       "744",
       "826",
@@ -739,67 +741,6 @@
       "1141"
     ],
     "failed_retrieval_strategy": [
-      "109",
-      "156",
-      "161",
-      "166",
-      "175",
-      "205",
-      "250",
-      "323",
-      "349",
-      "350",
-      "370",
-      "414",
-      "418",
-      "487",
-      "490",
-      "502",
-      "507",
-      "513",
-      "576",
-      "619",
-      "655",
-      "706",
-      "710",
-      "711",
-      "716",
-      "726",
-      "754",
-      "757",
-      "835",
-      "865",
-      "873",
-      "875",
-      "876",
-      "898",
-      "915",
-      "920",
-      "922",
-      "927",
-      "961",
-      "986",
-      "999",
-      "1004",
-      "1005",
-      "1019",
-      "1055",
-      "1094",
-      "1150",
-      "1164",
-      "1185",
-      "1193",
-      "1204",
-      "1207",
-      "1211",
-      "1213",
-      "1215",
-      "1219",
-      "1249",
-      "1257",
-      "1265"
-    ],
-    "failed_evidence_in_hand": [
       "3",
       "25",
       "36",
@@ -814,16 +755,13 @@
       "234",
       "238",
       "245",
-      "253",
       "285",
       "293",
       "322",
       "362",
       "364",
-      "406",
       "427",
       "429",
-      "450",
       "470",
       "497",
       "521",
@@ -880,6 +818,9 @@
       "1252",
       "1254"
     ],
+    "failed_corpus_unanswerable": [
+      "253"
+    ],
     "failed_suspicious_judge": [],
     "question_notes": {
       "716": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy (was passed)。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response concludes with \"Unknown,\" indicating that the respondent was unable to find the answer in the available data. The correct answer is \"Liba\n\nRECLASSIFIED 2026-09-08: failed_retrieval_strategy -> passed. The 09-01 note below documented the retrieval-strategy defect (long clue-paraphrase queries instead of entity-anchored ones); that defect was FIXED on 2026-09-07 by two changes landing together: (1) bm25 tokenization repair - entity-anchored queries now hit stems/split tokens, so the Libanius doc family (14752/50007/90865) surfaces reliably (evidence 3/5); (2) prompt tuning adding name-anchored query discipline before any Guessed Answer. Result: two consecutive correct runs with the gold 'Libanius: A Critical Introduction' (browsecomp_20260907_202914 conf 100, and browsecomp_20260907_232345), the first passes since the question entered the set. Residual corpus caveat (does NOT block the answer): the question's 'held positions in four countries' clue is only verifiable as THREE countries in the corpus (14752 lists UK/Germany/Belgium), and the four-person interview page was never in the corpus - the qrel substitutes the 50007 book TOC + three academic pages (90865/50963/26055). The agent honestly ships these two constraints as unverifiable in its Guessed-style assumption; the official judge only scores the final answer text, so this costs nothing. Old note (09-01): the gold publication IS in the corpus via a complete evidence chain - 50007.md (NYPL catalogue: 'Libanius : a critical introduction / edited by Lieve van Hoof', Cambridge UP 2014, 'first comprehensive study ... Written by a team of experts'), 14752.md (van Hoof bio + 2014 publication), 90865.md (Cribiore PhD 1993), 86002.md (Libanius wiki).",
@@ -889,7 +830,7 @@
       "3": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 38%，gold_doc_served=0，gold_doc_cited=0，交付值 'Shaun Maloney'。判分要点：The extracted final answer \"Shaun Maloney\" is a different player from the correct answer \"Amr Zaki\". They are not semantically equivalent or interchan\n\nPASSED 2026-09-15 (browsecomp_retry_batch: correct=True, delivered `Final Answer: **Amr Zaki**` with the retirement clue cited from doc 57939). The 09-14 failure recorded below is STALE - the newest run got it right, so the entry moves back to passed. Original failure note, kept for history: FAILED 2026-09-14 (browsecomp_20260914_230731). Cause: FAILED_EVIDENCE_IN_HAND. The gold is 'Amr Zaki' and doc 15312 IS in this run's retrieved_docids - that doc is the Wikipedia page holding the answer, so the evidence was in hand.",
       "70": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was failed_retrieval_strategy)。830 全量跑批：recall 82%，gold_doc_served=0，gold_doc_cited=0，交付值 'Nil Nakshar Shandaney'。判分要点：The extracted final answer \"Nil Nakshar Shandaney\" does not match the correct answer \"Nikhoj Sangbad\". These are two different TV series, so the respo\n\nFAILED 2026-09-14. Cause: FAILED_RETRIEVAL_STRATEGY. Gold 'Nikhoj Sangbad' is in the corpus (1 doc) and was never retrieved; the string appears in NO query (74 made) and nowhere in the deliverable. The run's hypothesis space never contained the answer - it fixed on Dhaka film personalities (Humayun, Faridi, Kaiser, Shahidullah) and shipped 'Nil Nakshar Shandaney' under `Final Answer`. Effort was not the limit (30 docs, 46 deep-read chunks); audit curve [3,0] - it converged, on the wrong value.",
       "223": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 20%，gold_doc_served=1，gold_doc_cited=0，交付值 'Emma St. Clair'。判分要点：The extracted final answer is \"Emma St. Clair,\" which is a completely different author from the correct answer \"J.K. Rowling.\" The two names are not e\n\nFAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=113 cited=3 uncited=110; gold chunks=2 read=0 cited=0; verdict=gold_never_read__loss_is_upstream; grade FAIL. CLASS = never_read. FIX LINE: retrieval / hypothesis generation. Its expected documents are fully indexed (88-152% of the file text) and the reachability probe shows the family is usually reachable by name, so the content was there and was never queried for - the same 'one name away' shape as the retrieval_strategy bucket (18 of 25 of whose questions reach an expected doc at BM25 rank 1-7 via the gold name). FAILED 2026-09-14. Cause: FAILED_EVIDENCE_IN_HAND. Gold 'J.K. Rowling' (373 corpus docs contain 'Rowling'); THREE docs containing her name are in this run's retrieved set (69736, 84183, 8736) yet 'Rowling' appears in no query (252 made) and nowhere in the deliverable, and the run ABSTAINED with 'unknown'. Audit burned TEN rounds [5,13,10,6,5,5,4,4,3,3]; eight of them carried the `answer_value_missing` precheck, which was a misreading of a well-formed answer line (parser defect fixed 2026-09-15) - the loop and the abstention fed each other.",
-      "253": "GOD'S-EYE ADJUDICATION 2026-09-21 -> **判错**；官方自动判分 = 判错（与本次判决一致，理由不同）。依据：the question ends with 'Tell me the full name of this individual'; the delivered 'Norman Mapeza' drops the middle name 'Takanyariwa' that the gold requires, and that component's evidence never surfaced (recall 50%, gold_served 3/8). Missing a component the question explicitly demands is non-equivalence, not a formatting quibble.　⇒ leaderboard 维持判错；归因桶 = failed_evidence_in_hand。\n\nRECLASSIFIED 2026-09-21 -> failed_suspicious_judge（原 failed_evidence_in_hand，recall 50%）。台账为**单一分区**：一题只属一个桶，进 failed_* 桶即从 passed 移除，故本题不再计入原因桶。本题自动判分的**口径可疑**（交付槽位值与 gold 只差别名/拼写/部分形式/多带限定），结论待人工复核。\n\nfailed_suspicious_judge 2026-09-21（830 全量跑批 outputs/browsecomp_20260918_114506）。交付值 'Norman Mapeza' vs gold 'Norman Takanyariwa Mapeza' -> 交付是 gold 的部分形式（少组件/限定）；recall 50%，judge confidence 95.0。⚠️ 这是**判定口径待人工复核**的候选（判分按严格语义判错），不是裁定；复核结论请写在本条下方并同步 annotations。\n\nFAILED 2026-09-14. Cause: FAILED_CORPUS_INSUFFICIENT - NOT a pipeline defect. Gold is 'Norman Takanyariwa Mapeza' and the middle name 'Takanyariwa' appears in NO corpus document at all (case-insensitive grep over the 94k-doc corpus returns nothing), so the corpus cannot support the gold; the shipped 'Norman Mapeza' is the only corpus-attested form. The run read 5 documents, 4 of them gold docs, and searched correctly ('norman mapeza coach announced', 56 queries). The auditor looked straight at the question and PASSed the short form (suspects [0], 'the cited chunks state \"Norman Mapeza\" ... not as an entry in a name list'). Treat the item as a corpus/gold mismatch before spending pipeline work on it.",
+      "253": "MOVED 2026-09-21 -> **failed_corpus_unanswerable**（单列：语料不可答，与模型/检索失败彻底分开）。判定依据：全语料 rg 扫描 'Takanyariwa' = **0 篇**，且 8 篇参考文档（源文件与 ES 均）不含该词；参考文档只有 'Norman Mapeza'。⇒ 该题按本语料无法答对（数据集 gold 来自语料之外）。\n\nSRC-vs-ES / ADJUDICATION 2026-09-21 -> 维持**判错**，但归因为**语料侧不可答**。依据：问题明确要求 full name；交付 'Norman Mapeza' 缺中间名 ⇒ 维持判错。但**归因是语料侧**：'Takanyariwa' 在 8 篇参考文档的源文件与 ES 中都不存在，且**全语料 0 命中**（参考文档只有 'Norman Mapeza'）⇒ 该题按本语料无法答对（数据集 gold 来自语料之外）。\n\nGOD'S-EYE ADJUDICATION 2026-09-21 -> **判错**；官方自动判分 = 判错（与本次判决一致，理由不同）。依据：the question ends with 'Tell me the full name of this individual'; the delivered 'Norman Mapeza' drops the middle name 'Takanyariwa' that the gold requires, and that component's evidence never surfaced (recall 50%, gold_served 3/8). Missing a component the question explicitly demands is non-equivalence, not a formatting quibble.　⇒ leaderboard 维持判错；归因桶 = failed_evidence_in_hand。\n\nRECLASSIFIED 2026-09-21 -> failed_suspicious_judge（原 failed_evidence_in_hand，recall 50%）。台账为**单一分区**：一题只属一个桶，进 failed_* 桶即从 passed 移除，故本题不再计入原因桶。本题自动判分的**口径可疑**（交付槽位值与 gold 只差别名/拼写/部分形式/多带限定），结论待人工复核。\n\nfailed_suspicious_judge 2026-09-21（830 全量跑批 outputs/browsecomp_20260918_114506）。交付值 'Norman Mapeza' vs gold 'Norman Takanyariwa Mapeza' -> 交付是 gold 的部分形式（少组件/限定）；recall 50%，judge confidence 95.0。⚠️ 这是**判定口径待人工复核**的候选（判分按严格语义判错），不是裁定；复核结论请写在本条下方并同步 annotations。\n\nFAILED 2026-09-14. Cause: FAILED_CORPUS_INSUFFICIENT - NOT a pipeline defect. Gold is 'Norman Takanyariwa Mapeza' and the middle name 'Takanyariwa' appears in NO corpus document at all (case-insensitive grep over the 94k-doc corpus returns nothing), so the corpus cannot support the gold; the shipped 'Norman Mapeza' is the only corpus-attested form. The run read 5 documents, 4 of them gold docs, and searched correctly ('norman mapeza coach announced', 56 queries). The auditor looked straight at the question and PASSed the short form (suspects [0], 'the cited chunks state \"Norman Mapeza\" ... not as an entry in a name list'). Treat the item as a corpus/gold mismatch before spending pipeline work on it.",
       "283": "GOD'S-EYE ADJUDICATION 2026-09-21 -> **判对**；官方自动判分 = 判错（与本次判决相反）。依据：gold 'Zimri Elder' is the PlayStation Store blurb wording (64640.md, 55819.md); the delivered 'Zimri Eder' is the correct character name - Wikipedia (82489.md: 'a clone of security officer Zimri Eder'), the Steam store page, Wikiwand and the game wiki all use 'Eder'. The gold carries the typo, not the answer.　⇒ 已回填 leaderboard.json（correct=True + manual_adjudication）并归入 `passed_suspicious_judge`（人工复核为对；与 `passed` 互斥）。\n\nRECLASSIFIED 2026-09-21 -> failed_suspicious_judge（原 failed_evidence_in_hand，recall 67%）。台账为**单一分区**：一题只属一个桶，进 failed_* 桶即从 passed 移除，故本题不再计入原因桶。本题自动判分的**口径可疑**（交付槽位值与 gold 只差别名/拼写/部分形式/多带限定），结论待人工复核。\n\nfailed_suspicious_judge 2026-09-21（830 全量跑批 outputs/browsecomp_20260918_114506）。交付值 'Zimri Eder' vs gold 'Zimri Elder' -> 拼写/别名（相似度 0.95）；recall 67%，judge confidence 95.0。⚠️ 这是**判定口径待人工复核**的候选（判分按严格语义判错），不是裁定；复核结论请写在本条下方并同步 annotations。\n\nFAILED 2026-09-14 (but see the fix). Cause: FAILED_CORPUS_VARIANT - the corpus itself is ambiguous. Both spellings are attested: Wikipedia 82489 ('a clone of security officer Zimri Eder') and fandom 64640 + review 55819 ('Zimri Elder', the gold). This run retrieved all three, searched BOTH spellings, wrote 'Two grounded candidates', DECLARED THE TIE on the answer line, and then broke it on source authority ('per Wikipedia, which is the most authoritative') - shipping the single-source spelling. Audit curve [4,3,1,0] (converged, PASS). FIX 2026-09-15: the producer prompt now counts attesting chunks and ships the better-attested form while KEEPING the Guessed label (attestation orders the form, never the label). On this question that rule ships 'Zimri Elder' = the gold; retest is a regression check.",
       "323": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy (was failed_evidence_in_hand)。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The extracted final answer \"Puerta\" does not match the correct answer \"Manyathela\" in any way. They are entirely different surnames referring to diffe\n\nFAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=101 cited=3 uncited=98; gold chunks=9 read=0 cited=0; verdict=gold_never_read__loss_is_upstream; grade FAIL. CLASS = never_read. FIX LINE: retrieval / hypothesis generation. Its expected documents are fully indexed (88-152% of the file text) and the reachability probe shows the family is usually reachable by name, so the content was there and was never queried for - the same 'one name away' shape as the retrieval_strategy bucket (18 of 25 of whose questions reach an expected doc at BM25 rank 1-7 via the gold name). FAILED 2026-09-14. Cause: FAILED_EVIDENCE_IN_HAND (weakly - only a listing entry was in hand). The gold 'Lesley Manyathela' appears in doc 69319, which IS in the retrieved set - that doc is the Wikipedia 'List of retired numbers in association football' and carries the name only as a table row ('| Orlando Pirates | 22 | Lesley Manyathela | FW | 2000-03 |'), i.e. a line that merely NAMES a candidate and states no property. 'Manyathela' appears in no query (244 made) and nowhere in the deliverable; the run shipped 'Feher' with a '(tie: \"Puerta\")' clause. Audit curve [12,11,7,10,8,8,10] with seven `answer_value_missing` prechecks (parser defect of the same batch). The answering document - one that states the slot - was never retrieved.",
       "350": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The extracted final answer does not match the correct answer \"Dal Pescatore\" in any way. The response failed to identify the correct business and even\n\nFAILED 2026-09-14. Cause: FAILED_RETRIEVAL_STRATEGY (via abstention). Gold 'Dal Pescatore' is in the corpus (7 docs) and NONE was retrieved; the string appears in no query (170 made) and nowhere in the deliverable. The run shipped an abstention - 'The corpus does not contain a document that identifies the business' - which is honest about what it read and wrong about the corpus. Audit curve [7,6,6,6] (stall), three `ungrounded_answer_value` prechecks.",
@@ -966,12 +907,12 @@
       "362": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 14%，gold_doc_served=1，gold_doc_cited=0，交付值 'The Wacky World of Tex Avery'。判分要点：The extracted final answer \"The Wacky World of Tex Avery\" does not match the correct answer \"Captain Star\". These are two completely different cartoon",
       "364": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 38%，gold_doc_served=0，gold_doc_cited=0，交付值 'Joan Jett'。判分要点：The extracted final answer is \"Joan Jett,\" which is not the same as the correct answer \"Bada Lee.\" These are two entirely different people, so the res",
       "370": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response failed to identify the correct person and instead concluded that the answer was \"Unknown.\" The correct answer is Graham Gordy, which does",
-      "406": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 100%，gold_doc_served=3，gold_doc_cited=3，值槽为放弃/不足声明。判分要点：The extracted final answer is \"Masato Kato\" while the correct answer is \"Masata Kato\". These are different given names — \"Masato\" vs \"Masata\" — and th",
+      "406": "SRC-vs-ES / ADJUDICATION 2026-09-21 -> **判对**（gold 笔误；已加 gold_override 并迁入 passed_suspicious_judge）。依据：源文档 17394.md 自带 `title: Masato Kato - Wikipedia` / `Source URL: .../wiki/Masato_Kato`，全篇均为 Masato Kato；gold 'Masata Kato' 少一个 o，属标注笔误。交付 'Masato Kato (加藤 正人)' 与源文档一致且为该人物真实姓名 ⇒ 判对（同 q826/q283/q688 的 gold 缺陷家族）。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 100%，gold_doc_served=3，gold_doc_cited=3，值槽为放弃/不足声明。判分要点：The extracted final answer is \"Masato Kato\" while the correct answer is \"Masata Kato\". These are different given names — \"Masato\" vs \"Masata\" — and th",
       "414": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，交付值 'Fulera'。判分要点：The extracted final answer \"Fulera\" does not match the correct answer \"Rebecca\". These are two completely different names, so the response is incorrec",
       "418": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response explicitly states it could not find a grounded candidate in the corpus and gives \"Unknown\" as its answer. The correct answer is \"Pierre M",
       "427": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 40%，gold_doc_served=2，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response failed to identify the correct answer, which is Guerlain. The extracted final answer states that no company could be identified, which is",
       "429": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 17%，gold_doc_served=0，gold_doc_cited=0，交付值 'Felipe Fernández-Armesto whose journal Bulletin of'。判分要点：The extracted final answer \"Felipe Fernández-Armesto\" does not match the correct answer \"Hannah Belcher\". These are two entirely different individuals",
-      "450": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 78%，gold_doc_served=3，gold_doc_cited=3，交付值 'The Great Omar (the jeweled binding of the Rubaiya'。判分要点：The response identifies the object as \"The Great Omar,\" which is the specific name given to the lavish jeweled binding created by Sangorski & Sutcliff",
+      "450": "SRC-vs-ES / ADJUDICATION 2026-09-21 -> **判对**（交付含 gold 实体且额外细节正确；已迁入 passed_suspicious_judge）。依据：gold 'The Rubáiyát of Omar Khayyám.'；交付 'The Great Omar (the jeweled binding of the Rubaiyat of Omar Khayyam, created by Sangorski & Sutcliffe)' —— 同一对象，交付在其括号中**逐字给出 gold 的题名**（无重音形，源文亦如此），并补上该装帧的通用名 'The Great Omar'（95811.md：'The book, known as the Great Omar, sank with the ship'）。按官方口径「允许更精确/更啰嗦只要额外细节正确」+「字符串变体」⇒ 判对。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 78%，gold_doc_served=3，gold_doc_cited=3，交付值 'The Great Omar (the jeweled binding of the Rubaiya'。判分要点：The response identifies the object as \"The Great Omar,\" which is the specific name given to the lavish jeweled binding created by Sangorski & Sutcliff",
       "470": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 80%，gold_doc_served=1，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response's final guessed answer is \"Wyman\" (with \"Davis\" as a tie), not \"Timothy Barton Hayward.\" The correct answer is Timothy Barton Hayward. Al",
       "487": "CLASSIFIED 2026-09-21 -> failed_retrieval_strategy (was passed)。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response failed to identify the actor, stating there was \"Insufficient corpus evidence.\" The correct answer is Edward Norton, which the response d",
       "497": "CLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 33%，gold_doc_served=0，gold_doc_cited=1，值槽为放弃/不足声明。判分要点：The response concluded with \"Unable to determine\" as its final answer, while the correct answer is \"Shafeer Sait\". Although the response actually enco",
@@ -1066,18 +1007,19 @@
       "_summary": {
         "passed": 684,
         "failed_retrieval_strategy": 59,
-        "failed_evidence_in_hand": 79,
+        "failed_evidence_in_hand": 76,
         "total": 830,
         "last_updated": "2026-09-21",
         "last_run": "browsecomp_20260918_114506",
-        "note": "Five-way exclusive partition summing to 830: passed (automated passes) + passed_suspicious_judge (human-reviewed passes whose verdict is not from the automated judge) + failed_retrieval_strategy + failed_evidence_in_hand + failed_suspicious_judge (empty: all adjudicated 2026-09-21). The 830-run leaderboard reports 692 correct (= passed 684 + passed_suspicious_judge 8); the official judge alone said 685 of which q744 also needed manual adjudication, i.e. official 82.53% vs adjudicated 83.37%.",
+        "note": "Five-way exclusive partition summing to 830: passed (automated passes) + passed_suspicious_judge (human-reviewed passes whose verdict is not from the automated judge) + failed_retrieval_strategy + failed_evidence_in_hand + failed_suspicious_judge (empty: all adjudicated 2026-09-21). The 830-run leaderboard reports 692 correct (= passed 684 + passed_suspicious_judge 8); the official judge alone said 685 of which q744 also needed manual adjudication, i.e. official 82.53% vs adjudicated 83.37%. 2026-09-21 (later): two more human-adjudicated passes from the source-vs-ES check - q406 (gold typo 'Masata Kato' -> the corpus/real 'Masato Kato') and q450 (deliverable contains the gold title plus the binding's popular name) - moved from failed_evidence_in_hand to passed_suspicious_judge. 2026-09-21 (latest): added failed_corpus_unanswerable (single member q253 - the middle name it asks for exists in no corpus document), so the partition is passed 684 + passed_suspicious_judge 10 + failed_retrieval_strategy 59 + failed_evidence_in_hand 78 + failed_corpus_unanswerable 1 + failed_suspicious_judge 0 = 830.",
         "failed_suspicious_judge": 0,
         "suspicious_judge_resolved_correct": 1,
         "suspicious_judge_pending_review": 0,
-        "manual_adjudicated_correct": 8,
+        "manual_adjudicated_correct": 10,
         "suspicious_judge_adjudicated_correct": 8,
         "suspicious_judge_adjudicated_incorrect": 2,
-        "passed_suspicious_judge": 8
+        "passed_suspicious_judge": 10,
+        "failed_corpus_unanswerable": 1
       },
       "_passed_provenance": {
         "1": "browsecomp_20260908_102644",
@@ -1894,7 +1836,7 @@
           "1185"
         ]
       },
-      "_bucket_rules_20260921": "【桶定义，2026-09-21 定案；均为 annotations 下的键】\n五桶**两两无交集**、合计 = 全量 830（当前各桶题数见 `_summary`）：\n  passed                    = **自动判分**判对的题。\n  passed_suspicious_judge   = 人工/代理复核判定为**对**、但判定不来自可信自动判分的题（判分器判错而复核认为对；或判分提供方拒判后人工裁定）。**与 passed 互斥**：判定来源是人工，故不计入 passed（与 q744 最初那条规则统一）。\n  failed_retrieval_strategy = 判错且 recall=0（gold 证据一条都没被召回）。\n  failed_evidence_in_hand   = 判错且 recall>0（期望证据已召回但答案仍错，含值槽写放弃声明/撤回答案）。\n  failed_suspicious_judge   = 判分口径不可信、**待复核**的队列（复核后按结论迁出到上面各桶，故当前为空）。\n**台账铁律**：一题只属一个桶；进任何 failed_* 桶即从 passed 移除；passed_suspicious_judge 与 passed 亦互斥。\n复核结论的**权威存储**是 `annotations.verdict_overrides`（id → verdict/bucket/grounds）与 `annotations.gold_overrides`（标注缺陷修正）。\n筛子判据（分诊用，可生成待复核队列）：取 Final/Guessed Answer 行的槽位值（剥离 (assumption:…)/(tie:…)）、非放弃措辞、两侧含字母 token；命中任一：① gold ⊆ 值 且 gold 占值 ≥50% ② 值 ⊆ gold 且值占 gold ≥40% ③ 相似度 ≥0.8 且两侧 ≤10 token。⚠️ 自动筛子**只分诊、不加分**：实测排空后 precision 仅 0/3，必须人工/代理裁定。",
+      "_bucket_rules_20260921": "【桶定义，2026-09-21 定案；均为 annotations 下的键】\n六桶**两两无交集**、合计 = 全量 830（当前各桶题数见 `_summary`）：\n  passed                    = **自动判分**判对的题。\n  failed_corpus_unanswerable = **语料不可答**：问题的 gold（或其区分性成分）在本语料里根本不存在（全语料 0 命中），因此无论检索/推理多好都不可能答对 ⇒ 评估时应从\"系统缺陷\"里扣除。\n  passed_suspicious_judge   = 人工/代理复核判定为**对**、但判定不来自可信自动判分的题（判分器判错而复核认为对；或判分提供方拒判后人工裁定）。**与 passed 互斥**：判定来源是人工，故不计入 passed（与 q744 最初那条规则统一）。\n  failed_retrieval_strategy = 判错且 recall=0（gold 证据一条都没被召回）。\n  failed_evidence_in_hand   = 判错且 recall>0（期望证据已召回但答案仍错，含值槽写放弃声明/撤回答案）。\n  failed_suspicious_judge   = 判分口径不可信、**待复核**的队列（复核后按结论迁出到上面各桶，故当前为空）。\n**台账铁律**：一题只属一个桶；进任何 failed_* 桶即从 passed 移除；passed_suspicious_judge 与 passed 亦互斥。\n复核结论的**权威存储**是 `annotations.verdict_overrides`（id → verdict/bucket/grounds）与 `annotations.gold_overrides`（标注缺陷修正）。\n筛子判据（分诊用，可生成待复核队列）：取 Final/Guessed Answer 行的槽位值（剥离 (assumption:…)/(tie:…)）、非放弃措辞、两侧含字母 token；命中任一：① gold ⊆ 值 且 gold 占值 ≥50% ② 值 ⊆ gold 且值占 gold ≥40% ③ 相似度 ≥0.8 且两侧 ≤10 token。⚠️ 自动筛子**只分诊、不加分**：实测排空后 precision 仅 0/3，必须人工/代理裁定。\n【failed_corpus_unanswerable 定界流程（2026-09-21 定案，可复用）】对候选题按下列三条逐词元判定（源文件层面，不依赖 ES；工具：全语料 `rg -l -i -F`）：\n  ① 判别性 gold 词元全语料 **0 命中** ⇒ **本桶**（语料不可答，数据集缺陷）；\n  ② 词元全语料有命中、但不在本题参考文档（expected ∪ evidence）里 ⇒ **参考文档标注不完整**（仍留在原因桶，备注标明，因为这会影响 recall 口径）；\n  ③ 词元在参考文档里、但 ES chunk 文本没有 ⇒ 入库丢词（**本轮 0 例**）。\n  本轮扫描：候选 15 题（来源＝参考文档缺词元 ∪ full-gold 串不在语料）→ ①**1 题（q253）**、②1 题（q406，实为 gold 笔误 'Masata'→'Masato'，已按标注缺陷修正并判对）、③0 题、其余 13 题 OK。",
       "_run_20260918_114506": {
         "date": "2026-09-21",
         "run_dir": "outputs/browsecomp_20260918_114506",
@@ -1965,7 +1907,7 @@
           "adjudication_date": "2026-09-21",
           "adjudication_kind": "god_eye",
           "grounds": "the question ends with 'Tell me the full name of this individual'; the delivered 'Norman Mapeza' drops the middle name 'Takanyariwa' that the gold requires, and that component's evidence never surfaced (recall 50%, gold_served 3/8). Missing a component the question explicitly demands is non-equivalence, not a formatting quibble.",
-          "home_bucket": "failed_evidence_in_hand"
+          "home_bucket": "failed_corpus_unanswerable"
         },
         "283": {
           "status": "adjudicated_correct",
@@ -2060,12 +2002,32 @@
           "grounds": "gold 'Lambros Vorloou' vs delivered 'Lambros Worloou'. Both are attested spellings of Georges Guetary's birth name inside the corpus ('Worloou' in 76281.md The Independent obituary and 14270.md; 'Vorloou' in 66994.md Wikipedia), the deliverable names the person and explicitly lists the variant, and W/V is a transliteration difference, not another name.",
           "home_bucket": "passed_suspicious_judge"
         },
-        "__note__": "All ten members adjudicated 2026-09-21 (see _suspicious_judge_adjudication_20260921 for the standard and the per-question grounds); the bucket is now empty by design."
+        "__note__": "All ten members adjudicated 2026-09-21 (see _suspicious_judge_adjudication_20260921 for the standard and the per-question grounds); the bucket is now empty by design.",
+        "406": {
+          "status": "adjudicated_correct",
+          "adjudication_date": "2026-09-21",
+          "adjudication_kind": "god_eye",
+          "in_passed": false,
+          "home_bucket": "passed_suspicious_judge",
+          "grounds": "源文档 17394.md 自带 `title: Masato Kato - Wikipedia` / `Source URL: .../wiki/Masato_Kato`，全篇均为 Masato Kato；gold 'Masata Kato' 少一个 o，属标注笔误。交付 'Masato Kato (加藤 正人)' 与源文档一致且为该人物真实姓名 ⇒ 判对（同 q826/q283/q688 的 gold 缺陷家族）。",
+          "found_by": "source-vs-ES check for content_with_weight"
+        },
+        "450": {
+          "status": "adjudicated_correct",
+          "adjudication_date": "2026-09-21",
+          "adjudication_kind": "god_eye",
+          "in_passed": false,
+          "home_bucket": "passed_suspicious_judge",
+          "grounds": "gold 'The Rubáiyát of Omar Khayyám.'；交付 'The Great Omar (the jeweled binding of the Rubaiyat of Omar Khayyam, created by Sangorski & Sutcliffe)' —— 同一对象，交付在其括号中**逐字给出 gold 的题名**（无重音形，源文亦如此），并补上该装帧的通用名 'The Great Omar'（95811.md：'The book, known as the Great Omar, sank with the ship'）。按官方口径「允许更精确/更啰嗦只要额外细节正确」+「字符串变体」⇒ 判对。",
+          "found_by": "source-vs-ES check for content_with_weight"
+        }
       },
       "_manual_adjudicated_correct": [
         "78",
         "116",
         "283",
+        "406",
+        "450",
         "688",
         "744",
         "826",
@@ -2195,6 +2157,284 @@
         ],
         "validation_plan": "A/B：对 145 道判错题各跑 ①官方 prompt 再判一次（测判分自噪声，A vs A'）②v2 prompt（A vs B）；并对 685 道判对题抽样做 v2 复核以检测过度宽容。判定标准：v2 需修好 ≥5/8 真 FN 且不把 q253/q898 这类真错放进来。成本约 145×2~3 ≈ 300–450 次判分调用（分钟级）。",
         "integration_rule": "若 A/B 通过：**不改官方模板**（保持与公布口径可比），把 v2 作为**第二判分口径**（只对 flag 行或全量跑），报告同时给 'Accuracy (official judge)' 与 'Accuracy (equivalence v2)'；gold 缺陷用 gold_overrides 修正。"
+      },
+      "_failure_mode_analysis_20260921": {
+        "scope": {
+          "failed_retrieval_strategy": 59,
+          "failed_evidence_in_hand": 79
+        },
+        "headline": "两个桶的主因都不是'语料缺失'：语料里 gold 为判别性字符串的题中 88%(42/48, retrieval) 与 89%(57/64, evidence_in_hand) 的 gold 逐字存在；数据集标注的 expected/evidence 文档 0 缺失（全在磁盘）；而答文自报的检索串里出现 gold 判别词的比例：retrieval 3.4%(2/59)、evidence_in_hand 8.9%(7/79)、**判对组对照 48.0%(328/684)** ⇒ 主因是**查询从未锚定答案实体**，不是语料不足。",
+        "not_a_discriminator": "查询风格无区分度：≥6 词的'线索整句查询'占比 retrieval 63% / evidence 54% / 判对组 58%。",
+        "model_self_diagnosis_is_misleading": "48/59（retrieval）与 53/79（evidence）的答文自称'语料没有该事实'——实测语料里有 ⇒ 复核时把这句话当待验证断言。",
+        "effort_is_not_the_bottleneck": "检索量中位：28-29 次 search、42-45 篇文档、97 deep + 540-560 shallow 读、5.2-5.5M tokens、475-506s。",
+        "retrieval_breakdown": {
+          "B_query_never_anchored_the_entity": {
+            "n": 51,
+            "of_which_gold_verbatim_in_corpus": 41
+          },
+          "gold_not_a_verbatim_corpus_string": {
+            "n": 6,
+            "ids": [
+              "109",
+              "156",
+              "349",
+              "1150",
+              "1185",
+              "1193"
+            ]
+          },
+          "searched_but_still_missed": {
+            "n": 2,
+            "ids": [
+              "655",
+              "726"
+            ]
+          },
+          "gave_up_in_value_slot": 23,
+          "audit_failures": 4,
+          "hit_30min_wall": {
+            "n": 1,
+            "ids": [
+              "986"
+            ]
+          }
+        },
+        "evidence_breakdown": {
+          "E1_gold_doc_served_but_zero_citation": {
+            "n": 18,
+            "ids": [
+              "25",
+              "223",
+              "285",
+              "322",
+              "362",
+              "427",
+              "470",
+              "618",
+              "883",
+              "942",
+              "1066",
+              "1091",
+              "1110",
+              "1177",
+              "1209",
+              "1232",
+              "1236",
+              "1254"
+            ]
+          },
+          "E2_partial_evidence_then_guess_or_give_up": 18,
+          "E3_give_up_value_despite_evidence": 3,
+          "E4_mentioned_gold_but_delivered_another_value": {
+            "n": 8,
+            "ids": [
+              "233",
+              "521",
+              "546",
+              "718",
+              "950",
+              "951",
+              "987",
+              "1008"
+            ]
+          },
+          "E5_other_candidate_selection_or_constraint_failure": 32,
+          "gold_doc_never_served": 33,
+          "zero_gold_citation": 50,
+          "gold_not_a_verbatim_corpus_string": {
+            "n": 9,
+            "ids": [
+              "25",
+              "253",
+              "406",
+              "450",
+              "521",
+              "942",
+              "1044",
+              "1110",
+              "1252"
+            ]
+          }
+        },
+        "monitoring_gaps": {
+          "citation_groundings": "全 830 题均为 None ⇒ gate 的引用落地计数没落盘，与 E1（有文档不引用）叠加 = 这块不可观测",
+          "audit": "audit_failures>0 12 题、audit_rejections>0 4 题（低频，非主因）",
+          "cited_not_served": "52 题的 gold_doc_cited 含未在 served 集合中的 expected 文档 id（cited 由答文文本匹配、served 由检索集合求交）⇒ 引用可信度待审计"
+        },
+        "actions_by_roi": [
+          "1 强制实体锚定检索（覆盖 116/138）：先枚举候选实体→逐候选实体名锚定查询→核验；回归门禁指标用 gold_in_queries 命中率（现 3.4%/8.9%，判对组 48%）",
+          "2 禁止'语料缺失'式结论：放弃时必须列出已尝试的锚定查询，未锚定实体不得输出 guess（48+53 题为此症状）",
+          "3 强制引用落地：事实必须引用已读取的 evidence 文档 id；修 citation_groundings 落盘（现 None）；E1 的 18 题做回归用例",
+          "4 候选剪枝：把 Candidate Matrix 升级为 候选×约束 裁决表，只有唯一满足者定稿（针对 E4+E5 共 40 题）",
+          "5 标注复核队列：15 题（6+9）gold 非语料逐字串，需核查 expected docs 是否真能推出答案（参照 q826/q283/q688）",
+          "6 复核纪律：把答文里的'corpus 没有'视为待验证断言（模型自诊断系统性不可靠）"
+        ],
+        "artifacts": "分析脚本在 /tmp/failure_analysis.py（逐题特征）与 /tmp/corpus_gold_check.py（gold 语料/查询核对），中间结果 /tmp/failure_features.json、/tmp/gold_presence.json；脚本未落仓，如需可迁到 scripts/ 下（未做）。"
+      },
+      "_covsweep_138_20260921": {
+        "what": "用 tools/covsweep 测这 138 道错题涉及的全部参考文档（expected ∪ evidence）在 ES 中的 chunk 覆盖率，并额外做索引侧词元探测。",
+        "command": "CGO_ENABLED=0 go build -o /tmp/covsweep_strict ./tools/covsweep && /tmp/covsweep_strict --docs outputs/covsweep_20260921/ref_docs.tsv --corpus /home/zhichyu/Downloads/data/browsecomp-plus/corpus --index ragflow_10c9203e8fd611f18a8527a64e461315 --kb 5abdf3f1b8954735aa3fa2e03041e479 --es http://localhost:1200 --env docker/.env --shards 8 --workers 16 --out outputs/covsweep_20260921",
+        "inputs": "现况清单由 MySQL 重新导出（必须；陈旧 chunk_num 会静默给假结果）：docker exec docker-mysql-1 mysql -uroot -p$MYSQL_PASSWORD --default-character-set=utf8mb4 -N -B rag_flow -e \"SELECT id,name,chunk_num FROM document WHERE kb_id='5abdf3f1b8954735aa3fa2e03041e479'\" ⇒ 67,708 行、0 个问号名；138 题的参考文档 = 831 篇（按 name=<id>.md 映射，全部命中、无同名冲突、无未入库）。",
+        "result": {
+          "docs": 831,
+          "mysql_chunks_eq_es_chunks": 831,
+          "word_pct": {
+            "median": 100.0,
+            "mean": 99.51,
+            "min": 64.64
+          },
+          "coverage_pct_char": {
+            "median": 99.93,
+            "mean": 97.73,
+            "min": 28.2
+          },
+          "word_100pct": 641,
+          "word_below99": 71,
+          "word_below95": 23,
+          "word_below90": 4,
+          "strict_flagged": 143,
+          "strict_flagged_with_absent": 6,
+          "char_below95": 82,
+          "per_bucket": {
+            "failed_retrieval_strategy": {
+              "n": 59,
+              "median_min_word_pct": 99.67,
+              "q_with_ref_below99": 20,
+              "q_with_flagged_ref": 34
+            },
+            "failed_evidence_in_hand": {
+              "n": 79,
+              "median_min_word_pct": 99.55,
+              "q_with_ref_below99": 31,
+              "q_with_flagged_ref": 46
+            }
+          }
+        },
+        "probe": {
+          "method": "content_with_weight 是 **keyword** 字段（match/match_phrase 恒 0 命中，勿再用）；可检索文本是 content_ltks（whitespace，存 rag_tokenizer 输出：词干化+截断，如 trajectory→trajectori）⇒ 用「每个判别性 gold 词元的前缀 wildcard + docnm_kwd 限定在本题参考文档」做必要条件下界检验。",
+          "gold_terms_all_present_in_own_refdocs": {
+            "retrieval": 52,
+            "evidence_in_hand": 67,
+            "total": "119/138 (86%)"
+          },
+          "gold_terms_missing": {
+            "retrieval": [
+              "156",
+              "507",
+              "716",
+              "754",
+              "1055",
+              "1164",
+              "1219"
+            ],
+            "evidence_in_hand": [
+              "85",
+              "124",
+              "223",
+              "234",
+              "253",
+              "618",
+              "650",
+              "1021",
+              "1044",
+              "1061",
+              "1110",
+              "1236"
+            ]
+          }
+        },
+        "conclusion": "**索引侧不是 138 题的主因**：① 831 篇参考文档全部入库、chunk 计数一致；② 词覆盖率中位 100%、17.2% 有未服务词（其中仅 6 篇有 absent=内容真缺），**低于全库 2026-09-16 基线 24.2%**；③ 86% 的题其 gold 词元在本题参考文档的索引文本里可检索到。⇒ 与 `history._failure_mode_analysis_20260921` 的结论一致：失败主因是**查询不锚定实体**，不是语料/索引缺陷。**需要复查的少数**：19 题的 gold 词元在本题参考文档里找不到（其中 q253 的 'takanyariwa' 全域不存在）⇒ 归入标注/可推导性复核队列（与 _failure_mode_analysis 里的 6+9 题重叠）。另 82 篇字符覆盖 <95%（表格/标记被丢弃型）虽不影响词级检索，但会削弱短语/邻近匹配。",
+        "artifacts": "outputs/covsweep_20260921/{docs_all_kb.tsv,ref_docs.tsv,refdocs_by_question.json,coverage_go.jsonl,below99.txt,fused.txt,report_138.json}；脚本 /tmp/cov_report.py（未落仓）。"
+      },
+      "_cw_gold_check_20260921": {
+        "what": "检查项：content_with_weight（ES 里存的原始 chunk 文本，keyword 字段）是否含 gold 整串 / gold 词元（范围＝本题参考文档）。",
+        "method": "不用 ES wildcard（keyword 上**前导通配符要扫 1.2M term 词典**，每题 ~20 s、138 题跑不完）；改为把 831 篇参考文档的 chunk 文本一次性取回（8,147 chunks / 13.8 MB）后本地精确判定；词元判定用 Unicode 感知正则（v1 的 ASCII 正则在 `Khayyám`/`Nünning` 上切出假词元，已修）。",
+        "result": {
+          "docs_with_chunks_in_es": 831,
+          "empty_content_with_weight_chunks": 0,
+          "full_gold_string_verbatim": {
+            "retrieval": "53/59 (90%)",
+            "evidence_in_hand": "70/79 (89%)"
+          },
+          "all_gold_tokens_as_words": {
+            "retrieval": "59/59 (100%)",
+            "evidence_in_hand": "76/79 (96%)"
+          },
+          "answer_critical_token_absent_from_refdocs": {
+            "253": "Takanyariwa（问题明确要求的中间名）——参考文档里连子串都没有 ⇒ 与『模型交不出中间名』的失败完全吻合，属**标注/参考文档不自洽**",
+            "406": "Masata —— 同上",
+            "450": "Rubáiyát / Khayyám —— 语料写作无重音形 Rubaiyat/Khayyam ⇒ 仅重音归一化差异，不算缺失"
+          },
+          "glued_tokens_found": 0
+        },
+        "withdrawn": "⚠️ **撤销**上一版的『18 题 content_ltks 缺词』结论：`content_ltks` 存**词干形**（实测 `rowling→rowl`、`running→run`、`defendant→defend`、`survived→surviv`、`rigorous→rigor`、`location→locat`），我的『词元前缀 wildcard』探测因前缀长于词干而漏报 ⇒ 那是**探测假象，不是索引缺陷**。ltk 侧的权威度量改用 covsweep 的 word_pct/unserved words（143/831 有未服务词，其中仅 6 篇 absent）。",
+        "conclusion": "索引侧对答案文本基本完整：89–90% 的题其参考文档 chunk 文本**逐字含 gold 串**、98% 的题 gold 词元齐且无粘连；可直接归因的索引/标注缺陷只有 **q253、q406**（gold 的区分性成分在给定参考文档中不存在）+ q450（重音归一化）。⇒ 与 `_failure_mode_analysis_20260921`/`_covsweep_138_20260921` 一致：**136/138 的失败不在索引侧**。",
+        "artifacts": "outputs/covsweep_20260921/{cw_probe_138.json,cw_ltk_crosstab.json}；脚本 /tmp/cw_check_v2.py（未落仓）。"
+      },
+      "_src_vs_es_check_20260921": {
+        "question": "ES 的 content_with_weight 缺失 gold 成分/仅重音形差异，在原始语料里是否也一样？",
+        "method": "对三题各自的 expected ∪ evidence 文档，逐词元比较 **源文件** 与 **该文档的 ES chunk 文本**（exact/folded 子串与独立词四种口径），并在全语料 rg 计数。",
+        "findings": {
+          "q253": {
+            "token": "Takanyariwa",
+            "source": "缺失",
+            "es": "缺失",
+            "corpus_wide_docs": 0,
+            "verdict": "源语料与 ES 一致 ⇒ **不是入库问题**；该成分全语料不存在 ⇒ 语料不可答（数据集 gold 来自语料之外）"
+          },
+          "q406": {
+            "token": "Masata",
+            "source": "缺失",
+            "es": "缺失",
+            "corpus_wide_docs": "26（几乎都是 Masataka 的子串）",
+            "verdict": "同篇源文档 `title: Masato Kato` ⇒ **gold 拼写错误**（Masata→Masato），已按标注缺陷修正"
+          },
+          "q450": {
+            "token": "Rubáiyát / Khayyám",
+            "source": "重音形缺失、无重音形存在",
+            "es": "与源文一致（同样只有无重音形，上下文逐字相同）",
+            "corpus_wide_docs": {
+              "Rubáiyát": 7,
+              "Khayyám": 12,
+              "Rubaiyat": 27,
+              "Khayyam": 45
+            },
+            "verdict": "重音/形态差异来自**语料本身**，ES 忠实保留 ⇒ 不是入库问题"
+          }
+        },
+        "conclusion": "三题的差异**没有一例是入库/解析丢失**：ES 与源语料逐项一致。差异都在语料/标注层——q253 语料不可答、q406 gold 笔误、q450 重音形态。⇒ 已据此裁定：q406、q450 判对并迁入 passed_suspicious_judge；q253 维持判错但归因标注为语料侧。"
+      },
+      "_unanswerable_scan_20260921": {
+        "method": "候选=参考文档缺词元 ∪ full-gold 串不在语料（15 题）；对每题 len>=6 的判别性 gold 词元做**全语料** `rg -l -i -F` 计数，并与本题参考文档（ES chunk 文本）比对。",
+        "result": {
+          "UNANSWERABLE": [
+            "253"
+          ],
+          "REFDOCS_GAP": [
+            "406"
+          ],
+          "OK": [
+            "25",
+            "109",
+            "156",
+            "349",
+            "450",
+            "521",
+            "942",
+            "1044",
+            "1110",
+            "1150",
+            "1185",
+            "1193",
+            "1252"
+          ]
+        },
+        "evidence": {
+          "253": "'Takanyariwa' 全语料 0 命中、参考文档也不含（参考文档只有 'Norman Mapeza'）⇒ 语料不可答",
+          "406": "'Masata' 全语料 26 篇（几乎都是 'Masataka' 子串）、参考文档不含；同篇源文档 `title: Masato Kato - Wikipedia` ⇒ gold 笔误，已 gold_override 修正并判对",
+          "others": "13 题的判别性词元都在参考文档中（full-gold 串不逐字多因排版/重音/标点差异，如 q25 的 typographic apostrophe、q450 的重音）"
+        },
+        "artifacts": "outputs/covsweep_20260921/unanswerable_scan.json；脚本 /tmp/scan_unanswerable.py（未落仓）。"
       }
     },
     "verdict_overrides": {
@@ -2217,7 +2457,7 @@
         "date": "2026-09-21",
         "kind": "god_eye",
         "grounds": "the question ends with 'Tell me the full name of this individual'; the delivered 'Norman Mapeza' drops the middle name 'Takanyariwa' that the gold requires, and that component's evidence never surfaced (recall 50%, gold_served 3/8). Missing a component the question explicitly demands is non-equivalence, not a formatting quibble.",
-        "bucket": "failed_evidence_in_hand"
+        "bucket": "failed_corpus_unanswerable"
       },
       "283": {
         "verdict": "correct",
@@ -2267,6 +2507,20 @@
         "kind": "god_eye",
         "grounds": "gold 'Lambros Vorloou' vs delivered 'Lambros Worloou'. Both are attested spellings of Georges Guetary's birth name inside the corpus ('Worloou' in 76281.md The Independent obituary and 14270.md; 'Vorloou' in 66994.md Wikipedia), the deliverable names the person and explicitly lists the variant, and W/V is a transliteration difference, not another name.",
         "bucket": "passed_suspicious_judge"
+      },
+      "406": {
+        "verdict": "correct",
+        "date": "2026-09-21",
+        "kind": "god_eye",
+        "bucket": "passed_suspicious_judge",
+        "grounds": "源文档 17394.md 自带 `title: Masato Kato - Wikipedia` / `Source URL: .../wiki/Masato_Kato`，全篇均为 Masato Kato；gold 'Masata Kato' 少一个 o，属标注笔误。交付 'Masato Kato (加藤 正人)' 与源文档一致且为该人物真实姓名 ⇒ 判对（同 q826/q283/q688 的 gold 缺陷家族）。"
+      },
+      "450": {
+        "verdict": "correct",
+        "date": "2026-09-21",
+        "kind": "god_eye",
+        "bucket": "passed_suspicious_judge",
+        "grounds": "gold 'The Rubáiyát of Omar Khayyám.'；交付 'The Great Omar (the jeweled binding of the Rubaiyat of Omar Khayyam, created by Sangorski & Sutcliffe)' —— 同一对象，交付在其括号中**逐字给出 gold 的题名**（无重音形，源文亦如此），并补上该装帧的通用名 'The Great Omar'（95811.md：'The book, known as the Great Omar, sank with the ship'）。按官方口径「允许更精确/更啰嗦只要额外细节正确」+「字符串变体」⇒ 判对。"
       }
     },
     "gold_overrides": {
@@ -2296,6 +2550,15 @@
         "date": "2026-09-21",
         "evidence": "Wikipedia 与语料 67183.md 作 'Ikechukwu Somtochukwu Diogu (born September 11, 1983)'；另 2 篇语料作 'Ikechukwa Somotochukwa Diogu'。属 Igbo 名转写变体。",
         "reason": "gold_annotation_variant"
+      },
+      "406": {
+        "gold_answer": "Masato Kato",
+        "also_accept": [
+          "Masata Kato"
+        ],
+        "date": "2026-09-21",
+        "reason": "gold_annotation_typo",
+        "evidence": "corpus/17394.md: `title: Masato Kato - Wikipedia`, `name: Masato Kato`, `Source URL: https://en.wikipedia.org/wiki/Masato_Kato`；全语料 'Masata' 仅作为 'Masataka' 的子串出现。"
       }
     }
   },
