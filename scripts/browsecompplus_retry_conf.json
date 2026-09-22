@@ -859,7 +859,6 @@
       "754",
       "794",
       "851",
-      "869",
       "872",
       "873",
       "930",
@@ -879,7 +878,8 @@
       "1236"
     ],
     "failed_corpus_unanswerable": [
-      "253"
+      "253",
+      "869"
     ],
     "failed_suspicious_judge": [],
     "question_notes": {
@@ -910,7 +910,7 @@
       "630": "FAILED (never passed: 3 run(s) on record, 2 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/4 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 18 corpus doc(s); 105 queries made, entity searched: no; shipped value 'Palamidi'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
       "832": "FAILED (never passed: 1 run on record, 1 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Gold 'Maxime Gonalons, 20th Century ...' - 'Gonalons' appears in only 5 corpus docs and the run read NONE of them; the entity appears in no query either, and the run shipped 'Gianluigi Buffon; 19th century'. The hypothesis never reached the answer.",
       "856": "FAILED (never passed: 5 run(s) on record, 4 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/4 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 75 corpus doc(s); 122 queries made, entity searched: no; shipped value 'Elton John'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
-      "869": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 12%→12%，gold 交付 否/引用 否，首命中 -，检索调用 48，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was failed_retrieval_strategy)。830 全量跑批：recall 12%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The extracted final answer states that there is insufficient corpus evidence to determine the answer, while the correct answer is \"kindergarten.\" Thes\n\nFAILED (never passed: 5 run(s) on record, 4 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/4 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 801 corpus doc(s); 132 queries made, entity searched: no; shipped value 'Unknown'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
+      "869": "UNANSWERABLE 2026-09-22 (v2, 从 gold 反推): 维持 failed_corpus_unanswerable。**方法订正**：不再以逐字短语 0 命中为据（罕见近义词会漏判）；改为 gold 反推硬约束（孩子生于 2007–2008 ⇒ 人物生于 ~1979–1983）+ 同义/结构扩展（暴力动词 14 类同义词、严格宾语结构、被动式）+ 约束交集（1480→124/54→13→3 篇，逐一核对全为无关页）+ 数据集元信息（missing_expected_doc_ids 空、8 篇参考文档全是通用统计/规则页）+ 运行时语义探针无画像命中。⇒ 语料确无该个体的事实。详见 history._unanswerable_review_20260922。\n\nUNANSWERABLE 2026-09-22 -> failed_corpus_unanswerable（原 failed_evidence_in_hand）。按三条流程判定：**问题的判别性成分（人物画像）全语料无一处可证**（`assaulted … sister` 0 篇），且数据集给的 8 篇参考文档全是通用统计/规则页（CDC/NCES/Wikipedia），没有一篇描述该个体；参考文档内 `assault`/`three children`/`August 2013` 命中均为 0，`10th grade` 只是年级-年龄对照表；gold `kindergarten` 是数据集由通用入学规则**推断**出来的，语料无 chunk 陈述该孩子 2013 年 8 月的年级。⇒ 语料不可答（数据集缺陷），评估时从系统缺陷中扣除。详见 history._unanswerable_review_20260922。\n\nRE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 12%→12%，gold 交付 否/引用 否，首命中 -，检索调用 48，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was failed_retrieval_strategy)。830 全量跑批：recall 12%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The extracted final answer states that there is insufficient corpus evidence to determine the answer, while the correct answer is \"kindergarten.\" Thes\n\nFAILED (never passed: 5 run(s) on record, 4 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/4 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 801 corpus doc(s); 132 queries made, entity searched: no; shipped value 'Unknown'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
       "875": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_retrieval_strategy（原 failed_retrieval_strategy）: 判错，recall 0%→0%，gold 交付 否/引用 否，首命中 -，检索调用 40，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_retrieval_strategy。\n\nCLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，交付值 'Michael Jordan'。判分要点：The extracted final answer is \"Michael Jordan\" which does not match the correct answer \"Kevin Anderson\". These are entirely different names, so the re\n\nFAILED (never passed: 5 run(s) on record, 4 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/8 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 21 corpus doc(s); 115 queries made, entity searched: no; shipped value 'Michael Jordan'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
       "915": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_retrieval_strategy（原 failed_retrieval_strategy）: 判错，recall 0%→0%，gold 交付 否/引用 否，首命中 -，检索调用 31，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_retrieval_strategy。\n\nCLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，值槽为放弃/不足声明。判分要点：The response explicitly states that no character name can be determined from the corpus, and it does not provide \"Miss Ealand\" as an answer. The corre\n\nFAILED (never passed: 5 run(s) on record, 4 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/3 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 3 corpus doc(s); 119 queries made, entity searched: no; shipped value 'I cannot provide a definitive answer based on the corpus data. The con'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
       "999": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_retrieval_strategy（原 failed_retrieval_strategy）: 判错，recall 0%→0%，gold 交付 否/引用 否，首命中 -，检索调用 22，值槽 declaration。⇒ 仍错，按本批 recall 重新归因到 failed_retrieval_strategy。\n\nCLASSIFIED 2026-09-21 -> failed_retrieval_strategy。830 全量跑批：recall 0%，gold_doc_served=0，gold_doc_cited=0，交付值 'Oh Wonder'。判分要点：The extracted final answer \"Oh Wonder\" does not match the correct answer \"TENDER\". These are two completely different bands. The response incorrectly \n\nFAILED (never passed: 5 run(s) on record, 4 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/5 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 29 corpus doc(s); 86 queries made, entity searched: no; shipped value 'AJR'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
@@ -922,7 +922,7 @@
       "1208": "FAILED (never passed: 2 run(s) on record, 2 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/1 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 1 corpus doc(s); 127 queries made, entity searched: no; shipped value 'Vegard Stenberg Eriksen'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
       "1254": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> passed（原 failed_evidence_in_hand）: 判对，recall 29%→57%，gold 交付 是/引用 是，首命中 26，检索调用 20，值槽 filler。⇒ 移入 passed（自动判分为准，与既有口径一致）。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was failed_retrieval_strategy)。830 全量跑批：recall 29%，gold_doc_served=1，gold_doc_cited=0，交付值 'Govardhan Asrani'。判分要点：The extracted final answer \"Govardhan Asrani\" does not match the correct answer \"Muhammad Qavi Khan\". These are two entirely different people. The res\n\nFAILED (never passed: 2 run(s) on record, 2 judged wrong). Cause: FAILED_RETRIEVAL_STRATEGY. Evidence from the newest run (browsecomp_retry_batch): 0/3 qrel docs retrieved; no document containing the gold string was read; the gold string appears in 3 corpus doc(s); 86 queries made, entity searched: no; shipped value 'Sushma Seth'. The hypothesis never reached the answer: the entity appears in no query and in no document the run read. This note reflects the NEWEST of the id's runs.",
       "233": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 20%→40%，gold 交付 是/引用 否，首命中 16，检索调用 35，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 20%，gold_doc_served=1，gold_doc_cited=1，交付值 'Big Show'。判分要点：The question, despite its somewhat ambiguous phrasing, asks to identify the \"specific competitor\" — the wrestler who was eliminated and who fits all t\n\nFAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=56 cited=7 uncited=49; gold chunks=10 read=0 cited=0; verdict=gold_never_read__loss_is_upstream; grade FAIL. CLASS = never_read. FIX LINE: retrieval / hypothesis generation. Its expected documents are fully indexed (88-152% of the file text) and the reachability probe shows the family is usually reachable by name, so the content was there and was never queried for - the same 'one name away' shape as the retrieval_strategy bucket (18 of 25 of whose questions reach an expected doc at BM25 rank 1-7 via the gold name). FAILED (never passed: 3 run(s) on record, 2 judged wrong). Cause: FAILED_EVIDENCE_IN_HAND. Evidence from the newest run (browsecomp_retry_batch): 2/3 qrel docs retrieved; a document CONTAINING the gold string was read (12203, 18150, 24114); the gold string appears in 72 corpus doc(s); 113 queries made, entity searched: no; shipped value 'Braun Strowman'. Neighbourhood in hand ('Chris Jericho' in 72 docs; a gold-attesting doc was read) and the run shipped a different wrestler, 'Braun Strowman'.",
-      "293": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 50%→50%，gold 交付 是/引用 是，首命中 1，检索调用 24，值槽 declaration。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 50%，gold_doc_served=1，gold_doc_cited=1，交付值 'The Forgiven'。判分要点：The extracted final answer \"The Forgiven\" is not semantically equivalent to the correct answer \"The Lost Future\". These are two completely different m\n\nFAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=85 cited=13 uncited=74; gold chunks=6 read=2 cited=2; verdict=gold_read_and_cited__loss_is_the_answer_step; grade FAIL. CLASS = listing_or_incidental. FIX LINE: the passage the run cited as support is a listing/title/incidental mention, not an attestation (the auditor's own rule: a listing line is not a candidate's fitness). The audit flagged OTHER defects in every round and never concluded PASS, so the deliverable shipped un-repaired - a repair-budget/capability question, not a detection gap. FAILED (never passed: 3 run(s) on record, 2 judged wrong). Cause: FAILED_EVIDENCE_IN_HAND. Evidence from the newest run (browsecomp_retry_batch): 1/3 qrel docs retrieved; a document CONTAINING the gold string was read (11162); the gold string appears in 5 corpus doc(s); 184 queries made, entity searched: no; shipped value 'The Forgiven'.",
+      "293": "RE-CHECK 2026-09-22（用户质疑后订正）: 归因从「gold 已交付却未使用」改为**「含 gold 的文档中只有片目表式的 `11162.md` 被交付，gold 主文档 `80442.md` 未交付，答案 0 次提及 gold」**。依据：gold `The Lost Future` 在 expected 中有 3 篇出处 —— `80442.md`（电影自身页，5 次，**未交付**）、`80395.md`（1 次，未交付）、`11162.md`（Danny Keogh 片目表，2 次，**已交付且被引用 6 次**）；交付物矩阵写 `Retained: None`、值槽 `Insufficient evidence in corpus`、全文不含 gold 串。⚠️ 教训：`gold_doc_served` 只表示「任意 expected 文档被交付」，不能用它推断「承载答案的文档已到手」。\n\nRE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 50%→50%，gold 交付 是/引用 是，首命中 1，检索调用 24，值槽 declaration。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 50%，gold_doc_served=1，gold_doc_cited=1，交付值 'The Forgiven'。判分要点：The extracted final answer \"The Forgiven\" is not semantically equivalent to the correct answer \"The Lost Future\". These are two completely different m\n\nFAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=85 cited=13 uncited=74; gold chunks=6 read=2 cited=2; verdict=gold_read_and_cited__loss_is_the_answer_step; grade FAIL. CLASS = listing_or_incidental. FIX LINE: the passage the run cited as support is a listing/title/incidental mention, not an attestation (the auditor's own rule: a listing line is not a candidate's fitness). The audit flagged OTHER defects in every round and never concluded PASS, so the deliverable shipped un-repaired - a repair-budget/capability question, not a detection gap. FAILED (never passed: 3 run(s) on record, 2 judged wrong). Cause: FAILED_EVIDENCE_IN_HAND. Evidence from the newest run (browsecomp_retry_batch): 1/3 qrel docs retrieved; a document CONTAINING the gold string was read (11162); the gold string appears in 5 corpus doc(s); 184 queries made, entity searched: no; shipped value 'The Forgiven'.",
       "297": "FAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=15 cited=7 uncited=8; gold chunks=4 read=2 cited=1; verdict=gold_read_and_cited__loss_is_the_answer_step; grade FAIL. CLASS = listing_or_incidental. FIX LINE: the passage the run cited as support is a listing/title/incidental mention, not an attestation (the auditor's own rule: a listing line is not a candidate's fitness). The audit flagged OTHER defects in every round and never concluded PASS, so the deliverable shipped un-repaired - a repair-budget/capability question, not a detection gap. FAILED 2026-09-15 (browsecomp_eih3, chunk-id ledger): correct=False. MECHANISM VERDICT = gold_read_never_cited__loss_is_candidate_formation (deep=52 cited=9 uncited=43; gold chunks=4 read=2 cited=0). ERROR ANALYSIS, after INSPECTING those 4 chunks rather than trusting the string match - and the inspection REFINES the verdict: every one of them is an INCIDENTAL mention of the title, not an attestation. Two live in 98749.md (another film's production/soundtrack section listing Nolan's films: 'Nolan had previously collaborated ... on Following, Memento and Insomnia'), one is a retrospective aside in 82360.md (\"Insomnia's bleary cop protagonist Will Dormer (Al Pacino)\"), and one is a top-ten LISTING entry ('Insomnia2 of 10 Insomnia (2002)'). No chunk states the discriminating property the question asks for. So the run did NOT have the answer in front of it and drop it: it read the answer's FAMILY (Nolan's filmography) and shipped another member (The Dark Knight), never reading the passage that would pick Insomnia. That is the same distinction the auditor's own contract draws - a listing line is not a candidate's fitness. REACHABILITY: class C_hybrid_only, gold_rank=None - a BM25 query on the gold name does NOT retrieve the expected documents (the title is a common word: 'Insomnia' appears in 214 corpus docs), so a name query was useless here and the only route was resolving the question's constraints first, which the run did not do. FIX LINE: constraint resolution (discriminating-constraint discipline); NOT 'use what you read'. Earlier history, kept: FAILED (never passed: 3 run(s), 2 judged wrong). Cause FAILED_EVIDENCE_IN_HAND; newest prior run (browsecomp_retry_batch): 1/2 qrel docs retrieved, gold-bearing doc 82360 read, shipped 'The Dark Knight' instead of 'Insomnia', 127 queries, entity searched: no.",
       "561": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 71%→29%，gold 交付 是/引用 否，首命中 65，检索调用 19，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand。830 全量跑批：recall 71%，gold_doc_served=1，gold_doc_cited=1，值槽为放弃/不足声明。判分要点：The response's final answer is \"unestablished,\" indicating that the respondent could not find the specific information in their corpus. The correct an\n\nFAILED 2026-09-15 (browsecomp_eih_all, mechanism-classification run): correct=False. LEDGER: deep=42 cited=5 uncited=37; gold chunks=2 read=0 cited=0; verdict=gold_never_read__loss_is_upstream; grade FAIL. CLASS = never_read. FIX LINE: retrieval / hypothesis generation. Its expected documents are fully indexed (88-152% of the file text) and the reachability probe shows the family is usually reachable by name, so the content was there and was never queried for - the same 'one name away' shape as the retrieval_strategy bucket (18 of 25 of whose questions reach an expected doc at BM25 rank 1-7 via the gold name). FAILED (never passed: 3 run(s) on record, 2 judged wrong). Cause: FAILED_EVIDENCE_IN_HAND. Evidence from the newest run (browsecomp_retry_batch): 0/1 qrel docs retrieved; a document CONTAINING the gold string was read (27643, 9201); the gold string appears in 25084 corpus doc(s); 112 queries made, entity searched: yes; shipped value '30'. CAVEAT: the gold is the bare number '27', so neither the string test nor the qrel discriminates (qrel 0/1 served). The run shipped '30' - a wrong NUMERIC value.",
       "575": "RE-RUN 2026-09-22 (browsecomp_retry2_20260921) -> failed_evidence_in_hand（原 failed_evidence_in_hand）: 判错，recall 100%→80%，gold 交付 否/引用 否，首命中 -，检索调用 42，值槽 filler。⇒ 仍错，按本批 recall 重新归因到 failed_evidence_in_hand。\n\nCLASSIFIED 2026-09-21 -> failed_evidence_in_hand (was passed)。830 全量跑批：recall 100%，gold_doc_served=1，gold_doc_cited=1，值槽为放弃/不足声明。判分要点：The response failed to identify the medical reviewer of the award-winning article, stating it was \"Unable to determine\" because the article body was n\n\nPASSED 2026-09-15 (browsecomp_eih3, chunk-id ledger run on the new binary): correct=True. THE GOLD CHUNK WAS READ AND CITED (deep=67 cited=5 uncited=62; gold chunks=1 read=1 cited=1; verdict=gold_read_and_cited__loss_is_the_answer_step) - which is the signature the ledger separates from the failures. Earlier failure notes, kept for history: FAILED (never passed: 3 run(s) on record, 2 judged wrong). Cause: FAILED_EVIDENCE_IN_HAND. Evidence from the newest run (browsecomp_retry_batch): 1/1 qrel docs retrieved; a document CONTAINING the gold string was read (28343); the gold string appears in 1 corpus doc(s); 133 queries made, entity searched: no; shipped value \"unspecified — the medical reviewer's name is not retrievable from the \". The answering doc (28343, the only corpus doc with 'Lauren Jarmusz') was read and the run ABSTAINED ('unspecified - the medical reviewer's name is ...').",
@@ -1068,8 +1068,8 @@
         "passed": 742,
         "passed_suspicious_judge": 10,
         "failed_retrieval_strategy": 39,
-        "failed_evidence_in_hand": 37,
-        "failed_corpus_unanswerable": 1,
+        "failed_evidence_in_hand": 36,
+        "failed_corpus_unanswerable": 2,
         "failed_suspicious_judge": 0,
         "failed_run_error": 1,
         "total": 830,
@@ -1873,7 +1873,6 @@
           "832",
           "851",
           "856",
-          "869",
           "875",
           "915",
           "999",
@@ -2766,6 +2765,381 @@
           "i3_unread_citations_now": 0
         },
         "note": "Buckets re-attributed from this re-run: a question judged correct moves to passed; a still-wrong one is re-bucketed by THIS run's recall (0 → failed_retrieval_strategy, >0 → failed_evidence_in_hand). q921 produced no deliverable at all (run-level timeout) and is filed under the new failed_run_error bucket: its failure is infrastructural, neither a retrieval nor an answering defect. The gain is a bundle (I1–I5 contracts/gate + I6 tokenized titles), not one change."
+      },
+      "_failure_structure_20260922": {
+        "scope": "本批复跑后仍判错的 77 题（+1 题 run 级失败）",
+        "by_evidence_state": {
+          "A_gold_served_and_cited_but_wrong": {
+            "n": 11,
+            "q": "166,245,293,427,521,754,794,1044,1094,1119,1219",
+            "note": "证据到手且被引用，答案仍错 ⇒ 作答/裁决侧"
+          },
+          "B_gold_served_not_cited": {
+            "n": 15,
+            "q": "152,223,233,238,349,561,618,872,950,987,1021,1091,1110,1232,1236",
+            "note": "gold 文档已交付却未被引用；15 题中 11 题交付物仍写 absence/insufficient 断言"
+          },
+          "C_gold_not_served": {
+            "n": 50,
+            "q": "25,70,98,109,156,161,322,350,362,418,487,490,497,507,513,575,655,710,716,835,851,869,870,873,875,883,898,915,920,922,927,930,961,969,986,999,1004,1005,1019,1055,1077,1150,1164,1185,1193,1211,1213,1222,1249,1265",
+            "note": "检索侧；其中 46/50 的交付物检索串里从未出现 gold 判别词（I2 未落到「问题判别词」层面）"
+          },
+          "E_run_error": {
+            "n": 1,
+            "q": "921",
+            "note": "单轮 ~6 万 output tokens ⇒ 600s 单请求超时×2 + 30min run 预算耗尽"
+          }
+        },
+        "budget": "平均单题 597s、仅 2 题（q362/q921）>1500s ⇒ **预算不是主因**",
+        "judge_suspect_candidates": {
+          "n": 4,
+          "q": {
+            "166": "Professor James Russell vs Dr. James Russell",
+            "869": "Pre-Kindergarten vs kindergarten",
+            "898": "$100 billion vs $1.05 billion",
+            "922": "Transylvania vs North Transylvania"
+          },
+          "note": "走人工复核/verdict_overrides（判分口径保持不变）"
+        }
+      },
+      "_gate_outcome_20260922": {
+        "shipped_a_deliverable_that_never_passed": 66,
+        "shipped_a_passed_deliverable_but_judged_wrong": 8,
+        "no_audit_record": 3,
+        "audit_rounds_mean": 4.7,
+        "audit_rounds_max": 10,
+        "final_suspects_mean": 6.3,
+        "final_suspects_median": 5,
+        "final_suspects_max": 28,
+        "converged_to_le2_suspects": "20/74",
+        "note": "规则不是缺失而是**执行后无法收敛**：仍错题里 43 题写 absence/insufficient，其中 **42 题被审计 FAIL 过**（仅 1 题 PASS），末轮 suspect 中位 5 ⇒ gate 在轮数/停滞/预算边界退出并 ship 了明知不合格的交付物。"
+      },
+      "_improvement_opportunities_20260922": {
+        "scope": {
+          "still_wrong": 77,
+          "run_error": 1
+        },
+        "opportunities": [
+          {
+            "id": "P1",
+            "name": "让审计区分「无法核实」与「伪造」：`chunk_id does not resolve` 不再等同伪造 id",
+            "evidence": "20/77 题出现该判据；抽查 6 题的 36 个被指 id **ES `_id` 命中 36/36（全部真实存在）**，且都在本题读取账本里 ⇒ 该判据把 `list_chunks` 工具错误/空结果（或迭代耗尽）误判为「最严重的伪造」",
+            "upper_bound": "省下无效 repair 轮（每轮 2–5 min，且直接吃 30 min run 预算）；预计影响 ≥20 题",
+            "risk": "低（只改审计判据的**结论强度**：无法核实 ⇒ inconclusive，不 FAIL）",
+            "cost": "低（审计契约 + 其输出词汇）"
+          },
+          {
+            "id": "P2",
+            "name": "值槽救回（gate 退出时的 grounded-candidate 回填）",
+            "evidence": "43 题交付物含 absence/insufficient，其中 A 组 11 题、B 组 15 题**证据其实到手**；I1 只改契约，模型仍写声明 ⇒ 需要机制化补丁",
+            "upper_bound": "把「放弃」救成「可计分猜测」；按 830 批口径放弃式值槽 81 题的上限估算，本批对应 14–43 题",
+            "risk": "中（回填错候选仍判错，但**不改变判错**，无下行）",
+            "cost": "中（gate 退出路径 + 从矩阵取 Tested/Retained 证据最强的候选）"
+          },
+          {
+            "id": "P3",
+            "name": "提升 repair 收敛率（把 suspect 列表编译成「必做的 N 条」+ 先修可修类别）",
+            "evidence": "66/77 ship 了从未 PASS 的交付物；审计轮均 4.7、末轮 suspect 中位 5（max 28），仅 20/74 收敛到 ≤2",
+            "upper_bound": "吞吐式收益：同预算内把「收敛」的比例抬高，直接改善仍错题的答案质量",
+            "risk": "中",
+            "cost": "中（修复指令生成逻辑）"
+          },
+          {
+            "id": "P4",
+            "name": "锚定纪律落到「问题判别词」层（I2 加强）",
+            "evidence": "C 组 50 题里 46 题的交付物检索串从未出现 gold 判别词（现有 I2 只要求「每个候选 by-name」）",
+            "upper_bound": "C 组是最大一块（50/77）；对照：判对组的 gold 判别词进检索串比例为 48%",
+            "risk": "低",
+            "cost": "低（契约一条 + 审计按既有 breadth 判据强制）"
+          },
+          {
+            "id": "P5",
+            "name": "4 题判分可疑走人工复核/override",
+            "evidence": "q166（Professor vs Dr.）、q869（Pre-Kindergarten vs kindergarten）、q898（$100B vs $1.05B）、q922（Transylvania vs North Transylvania）",
+            "upper_bound": "+≤4 题；判分口径保持不变的唯一通路",
+            "risk": "低",
+            "cost": "低（已有 verdict_overrides/gold_overrides 机制）"
+          },
+          {
+            "id": "P6",
+            "name": "遏制单轮输出膨胀（max_tokens 上限 / 超时与 run 预算解耦）",
+            "evidence": "q921：单轮 51,721 / 62,376 output tokens ⇒ 600s×2 超时换模型 + 300s 后 gate out of time",
+            "upper_bound": "回收 1 题（本批）+ 全局避免同类超时（该形态在 830 批已见 3 次 deadline）",
+            "risk": "低",
+            "cost": "低（配置）"
+          }
+        ],
+        "artifacts": "outputs/covsweep_20260921/retry2_analysis.json（逐题）、脚本 /tmp/analyze_retry2.py、/tmp/analyze_retry2_failures.py（结构分类）、/tmp/check_absence_enforcement.py（审计强制核查）、/tmp/analyze_gate_outcome.py（门禁结局）、/tmp/check_cited_ids_resolve.py（id 存在性）"
+      },
+      "_suspect_review_20260922": {
+        "scope": "本批复跑仍错题里经筛子挑出的 4 题（q166/q869/q898/q922）",
+        "method": "按台账既有判决口径（先查语料/源文档原文再定论；判对要求差异只属拼写/转写变体或**非必需**限定且语境唯一确定）",
+        "verdicts": {
+          "166": {
+            "verdict": "incorrect",
+            "delivered": "Professor James Russell",
+            "gold": "Dr. James Russell",
+            "grounds": "问题明确要求 title（'the title, first name, and surname of the supervisor'）⇒ title 本身就是被问的槽位，值不同即错。**源文档原文**（题目参考文档 `92987.md` 即该 1974 UBC 硕士论文）致谢写的是 \"Unbounded thanks are due **Dr. James Russell** whose wide knowledge…\"；语料里的 \"Professor James Russell\" 出现在**无关文档** `30968.md`，不是论文致谢。⇒ 'Professor' 不是拼写/非必需限定差异。",
+            "corpus_evidence": "rg -o -i '(dr|prof|professor)\\.? +james +russell' corpus ⇒ 'Professor James Russell'×2（30968.md）、'Dr. James Russell'×1（论文自身致谢）"
+          },
+          "869": {
+            "verdict": "incorrect",
+            "delivered": "Pre-Kindergarten",
+            "gold": "kindergarten",
+            "grounds": "交付物自己的矩阵写 `Retained: None`（无任何 chunk 支持），值来自世界知识；且 Pre-Kindergarten 与 kindergarten 是**不同年级**，非同一值；recall 12.5%、gold 文档未交付。",
+            "corpus_evidence": "交付物的 Searched 行显示检索到的最相关 chunk（84054.md，Teen Mom/Amber Portwood 案）与题目方向相反，无 chunk 支持年级"
+          },
+          "898": {
+            "verdict": "incorrect",
+            "delivered": "$100 billion",
+            "gold": "$1.05 billion",
+            "grounds": "差约 100 倍；交付物自陈 'traceable to public sources rather than a corpus-grounded statement'；recall 0%。与台账 2026-09-21 的 god-eye override（verdict=incorrect）一致。",
+            "corpus_evidence": "gold 文档未交付（recall 0%），交付值无语料支撑"
+          },
+          "922": {
+            "verdict": "incorrect",
+            "delivered": "Transylvania",
+            "gold": "North Transylvania",
+            "grounds": "'North' 是**实质限定**而非非必需修饰：语料里的 'regained' 原句特指北部（1940 二度裁决给匈牙利、1944 由罗马尼亚收回）；交付物自己也记录了 \"the past-tense 'regained' verb is not in the letter body itself\" 却仍交付更宽的 'Transylvania'；recall 0%。",
+            "corpus_evidence": "corpus 含 'North Transylvania'（136.md、58814.md），'regained' 原句为 'regaining Northern Transylvania' / 'regaining North Transylvania'"
+          }
+        },
+        "outcome": "**4 题全部维持判错，0 题改判 ⇒ 不新增/不修改 verdict_overrides，`passed` 不变（742）。** ⇒ 上一轮改进清单 P5 的 \"+≤4 题\" 收益实测为 **0**（该估计需修正）。",
+        "followup": "q869 值得单独看是否属 `failed_corpus_unanswerable`（其人物画像在语料内基本不可得），按该桶既定的三条词元界方法判定。"
+      },
+      "_unanswerable_review_20260922": {
+        "scope": "q869（判分口径复核后被建议按本桶单独判定）",
+        "method": "沿用 2026-09-21 定案的三条流程（源文件层面，不依赖 ES，工具 全语料 `rg -l -i -F`）",
+        "steps": {
+          "① 判别性成分全语料 0 命中": "**成立** ⇒ 本桶。判别性成分是**画像事实**（其 gold 是通用词 `kindergarten`，不能作判别词元）：题目要求的身份链（mid-20s 与未成年伴侣交往、三个孩子、袭击姐妹与伴侣、教育止于 10 年级）在语料里无一处可证，最判别性的事实（袭击姐妹）全语料 0 命中",
+          "② 词元有命中但不在参考文档": "不适用（本桶的成立点是画像缺失，而非标注不完整）",
+          "③ 词元在参考文档但 ES 缺词": "不适用（源文件层面已判不可答）"
+        },
+        "evidence": {
+          "question_facts_absent_corpus_wide": "画像判别事实全语料缺失：`rg -l -i -F \"assaulted his sister\"` = 0 篇、`\"assaulted her sister\"` = 0 篇（措辞变体的共现法也判不出，156 篇候选皆是泛化无关命中）",
+          "reference_docs_are_generic": "数据集的 8 篇参考文档（expected 34297/92067/60913/80690 + evidence 56254/42158/29667/75281）**全是通用统计/规则页**：CDC Teen Dating Violence、NCES Dropout rates、NCES 幼儿园入学规则 Table 1.3、CDC Short Interpregnancy Intervals、Wikipedia Education in the US、CDC lead-prevention PDF 等；**没有一篇描述题目所指的个体**",
+          "reference_docs_lack_profile": "参考文档内 `assault` 命中 0、`three children` 命中 0、`August 2013` 命中 0；`10th grade` 的唯一命中是**年级-年龄对照表**（`| High school | 10th grade / Sophomore | 15–16 |`），不是人物事实",
+          "gold_is_an_inference": "gold `kindergarten` 是数据集**由通用规则推断**出来的（幼儿园入学年龄表 + 想象中的孩子生日），语料里没有任何 chunk 陈述该孩子 2013 年 8 月的年级"
+        },
+        "verdict": "**维持 failed_corpus_unanswerable**，但判定依据已按「从 gold 反推」重做：gold 的推导链需要「孩子出生日期+州+入学规则」，而语料在四层检索下都找不到该个体（画像事实），数据集自带元信息也显示参考文档只是通用页。",
+        "note": "与 q253 的区别：q253 是**gold 词元**（人名 'Takanyariwa'）全语料 0 命中；q869 的 gold 是通用词，缺失的是**问题的判别性成分**——两者都符合桶定义里「gold **或其区分性成分**在本语料里根本不存在」。",
+        "method_correction_2026-09-22": "**方法学订正（用户指出）**：初版判定只用逐字短语（`rg -F \"assaulted his sister\"` = 0）+ 简单共现，这等于假设语料用的是同一措辞 —— **罕见近义词/释义化表达会漏判**，不能据此宣称「语料没有该事实」。改为**从 gold 与数据集参考文档反推**：先还原 gold 的推导链，再按其硬约束做同义/结构扩展检索 + 候选交集收敛 + 逐候选核对全部事实。",
+        "method_v2": {
+          "step0_reverse_engineer_from_gold": "gold `kindergarten` + 参考文档 `60913.md`（NCES《幼儿园入学要求 Table 1.3》）⇒ 推导链 = **孩子出生日期 + 所在州 + 入学年龄规则**；⇒ 孩子 2013-08 在 kindergarten ⇒ **生于 2007–2008**；题目又说人物在 mid-20s 开始与未成年伴侣交往（约 2005 前后）⇒ **人物生于约 1979–1983**。这些是 gold 反推出的**硬约束**，用来约束检索，而不是猜措辞。",
+          "step1_synonym_and_structure_expansion": {
+            "literal_phrase": {
+              "query": "assaulted his sister | assaulted her sister",
+              "hits": 0
+            },
+            "violence_verb_synonyms": {
+              "verbs": "assault|attack|hit|struck|strike|punch|beat|batter|abus|choke|slap|shove|strangle|violen",
+              "co_occur_with": "sister|sibling (任一方向, 150 字符窗)",
+              "docs": 1480
+            },
+            "strict_structure": {
+              "query": "<violence verb> (his|her|their) (sister|sibling)",
+              "docs": 13,
+              "inspected": "13 篇逐一核对：无一篇同时含 三个孩子 / 生于 2007–2008 / 10 年级（示例：土耳其剧 1357、Rolling Stone 榜单 14773、TVTropes 27317、教父 wiki 4180、恐怖片评论 84493 —— 全为无关页）"
+            },
+            "passive_form": {
+              "query": "(his|her) sister was <verb>ed",
+              "hits": 0
+            }
+          },
+          "step2_constraint_convergence": {
+            "a_three_children_filter": {
+              "of_1480": 54,
+              "note": "再要求 'three children|kids|daughters|sons' 同篇"
+            },
+            "b_plus_10th_grade_dropout": {
+              "of_1480": 124,
+              "note": "再要求 '10th/tenth grade' 或 'dropped out'"
+            },
+            "c_gold_derived_hard_constraints": {
+              "query": "born 1979-1983 ∩ 'three children' ∩ (assault|abuse|attack)",
+              "docs": 3,
+              "inspected": "40691.md=Akira 漫画、66230.md=Marlon Brando、66328.md=加拿大女作家名录 ⇒ 全为无关（共现偶然）"
+            }
+          },
+          "step3_dataset_metadata": {
+            "missing_expected_doc_ids": "**空** —— 数据集认为 4 篇 expected 足以作答（64297/92067/60913/80690）",
+            "reference_docs_are_generic": "8 篇参考文档全是通用页（CDC 铅中毒 PDF、Wikipedia 美国教育、NCES 幼儿园规则表/统计、PubMed 年龄差研究、CDC 青少年约会暴力、NCES 辍学率、CDC 生育间隔）⇒ 无一篇描述该个体",
+            "reference_docs_lack_profile": "参考文档内 assault=0、three children=0、August 2013=0；10th grade 唯一命中是年级-年龄对照表"
+          },
+          "step4_semantic_probe": "运行时的 `search_semantic_chunks(<完整画像描述>)` 自报「returned general articles on abuse/relationships, no specific case」（见交付物 Searched 行）",
+          "residual_uncertainty": "残余风险 = 完全未预见的措辞、或跨文档隐性拼接（question 的画像事实分散在彼此不知情的文档里）；但四层方法（逐字 / 同义+结构 / gold 反推硬约束交集 / 数据集元信息+语义探针）交叉一致 ⇒ **结论维持：语料不可答（数据集缺陷）**，只是证据强度已远高于初版。"
+        }
+      },
+      "_insufficient_family_analysis_20260922": {
+        "scope": "本批仍错 77 题中，交付物**自陈语料不足/非语料支撑**的 **66 题**（措辞含 'the corpus does not…'、'No corpus chunk/content'、'traceable to public sources rather than a corpus-grounded statement' 等）",
+        "method": "沿用 2026-09-22 定案的 v2：**从 gold + 数据集参考文档反推**，而不是猜问题措辞的同义词；匹配用**标点/空白不敏感的词序正则**（`token[^a-z0-9]{0,4}token…`），先查 expected∪evidence，再查全语料",
+        "result": {
+          "gold_attested_in_reference_docs": 66,
+          "note": "**66/66 全部**：63 题由标点不敏感整串命中；余下 3 题放宽到判别词元后同样落在参考文档里 —— q156（参考文档 19259.md 的 title 就是 gold 'The Great Blue Heron, Patient Hunter'）、q1150（20701.md 'Philanthropist of the Year - Trudy Bronner…' 含 gold 的实体部分）、q109（`Aaradhya Bachchan` 在全语料但不在其参考文档 ⇒ 属**参考文档标注不完整**，方法第②条）",
+          "dataset_side_suspects": 0,
+          "examples": {
+            "898": "gold `$1.05 billion` 在参考文档 **52161.md**（'Mahindra to buy Rivigo's B2B express biz'）里；本轮 recall **0%** ⇒ 该文档从未被交付，交付物却写 'no corpus chunk' 并给出世界知识猜测 `$100 billion`（差 100 倍）",
+            "166": "gold `Dr. James Russell` 在参考文档里（论文致谢原文）",
+            "25": "gold `St. John's Health Center` 在参考文档里（2 篇命中），recall 0%"
+          }
+        },
+        "mechanisms": {
+          "method": "精确口径：先定位**含 gold 串**的 expected∪evidence 文档（标点不敏感词序匹配），再看其中是否有文档被交付 —— 而不是用 `gold_doc_served`（= 任意一个 expected 文档被交付）这个粗代理。",
+          "A_gold_content_served": {
+            "n": 21,
+            "q": [
+              "152",
+              "166",
+              "223",
+              "233",
+              "245",
+              "293",
+              "349",
+              "427",
+              "561",
+              "872",
+              "873",
+              "930",
+              "950",
+              "987",
+              "1021",
+              "1091",
+              "1110",
+              "1119",
+              "1219",
+              "1232",
+              "1236"
+            ],
+            "gold_in_answer_text": {
+              "n": 6,
+              "q": [
+                "166",
+                "245",
+                "427",
+                "561",
+                "873",
+                "1119"
+              ]
+            },
+            "note": "含 gold 串的文档**确实被交付**。但其中只有 6 题的答案文本真的出现 gold 串 ⇒ 严格意义的「已交付却未使用」应限定为这 6 题；其余 15 题是「交付的文档里含 gold，而答案既没引用也没提及」"
+          },
+          "B_gold_doc_missed": {
+            "n": 9,
+            "q": [
+              "70",
+              "98",
+              "497",
+              "575",
+              "851",
+              "869",
+              "1055",
+              "1077",
+              "1222"
+            ],
+            "note": "有 expected 文档被交付，但**没有一篇含 gold** ⇒ 交付了不承载答案的文档（检索选错文档）"
+          },
+          "C_nothing_served": {
+            "n": 36,
+            "q": [
+              "25",
+              "109",
+              "156",
+              "161",
+              "322",
+              "350",
+              "362",
+              "418",
+              "487",
+              "490",
+              "507",
+              "513",
+              "655",
+              "710",
+              "716",
+              "835",
+              "870",
+              "875",
+              "883",
+              "898",
+              "920",
+              "922",
+              "927",
+              "961",
+              "969",
+              "999",
+              "1004",
+              "1005",
+              "1019",
+              "1150",
+              "1164",
+              "1193",
+              "1211",
+              "1213",
+              "1249",
+              "1265"
+            ],
+            "note": "没有任何 expected 文档被交付 ⇒ 纯检索未覆盖"
+          },
+          "correction_2026-09-22": {
+            "trigger": "用户质疑 q293 的「gold 已交付却未使用」：该 gold 并未出现在回答的 matrix 中",
+            "verdict": "用户正确 —— 归因口径太粗，已按上文精确口径重算",
+            "q293_facts": "gold `The Lost Future` 的**主要出处是 80442.md**（标题即 *The Lost Future - Wikipedia*，含 gold 5 次），该文档**本轮从未被交付**；被交付的 expected 文档只有 `11162.md`（Danny Keogh 页，片目表里顺带列到该片名 2 次）⇒ 交付物里 gold 串出现 **0 次**，电影槽位写 `Retained: None`、值槽写 `Insufficient evidence in corpus`。⇒ q293 应记为「含 gold 的文档被交付（但是片目表式的顺带提及），答案未使用」，而非笼统的「gold 已交付却未使用」。",
+            "supersedes": "原先基于 `gold_doc_served` 的 19 题「gold 已交付却未使用」计数"
+          }
+        },
+        "conclusion": "**「这族题是数据集不可答」的假设被推翻**：语料（而且是数据集自己给的参考文档）里就写着答案，是系统在「检索没拿到 / 拿到了没用」两种机制下宣布了「查不到」。⇒ 可行的确定性回归指标：**`declared_insufficient AND gold_in_reference_docs` 的题数（当前 66）应逼近 0**。",
+        "method_lessons": [
+          "用户订正（2026-09-22）：判定语料缺失**禁止**只依赖逐字短语检索（罕见近义词/释义化会漏判）。",
+          "本次自身踩的两个假阴性：① `norm()` 抹掉 'Dr.'/'St.' 的句点后用**字面 -F** 搜 ⇒ 'Dr. James Russell' 被判 nowhere（人工核验语料里明明有）；② 整串匹配对「标题+分号副题」「姓名, 学科」这类复合 gold 会失败（q156/q1150）⇒ 必须放宽到**判别词元**。两次修正后 nowhere 从 12 → 2 → 0。**匹配方法一变，结论就变**——记录方法比记录结论更重要。",
+          "第三次同类教训（2026-09-22，用户质疑 q293 后）：**别用粗代理**。`gold_doc_served` 的含义是「任意一个 expected 文档被交付」（`ragflow_benchmark.py:757` `sorted(expected_set & served)`），不等于「**含 gold 的那篇**被交付」。按精确口径重算后：A（含 gold 的文档被交付）21 题、B（只交付了不含 gold 的文档）9 题、C（完全未交付）36 题；A 中答案文本真的含 gold 的仅 6 题 ⇒ **归因必须落到「承载答案的那篇文档」这一粒度**。"
+        ],
+        "artifacts": "脚本 /tmp/analyze_insufficient_family.py、/tmp/gold_in_refdocs.py(v1)、/tmp/gold_in_refdocs_v2.py；明细 /tmp/insufficient_family.json、/tmp/gold_in_refdocs_v2.json"
+      },
+      "_title_stopword_experiment_20260922": {
+        "question": "title 通道词元过滤：len>=5 启发式 vs 英文停用词表",
+        "why": "declaredTitleTokens 原来只留长度>=5 的词元，实测把 icc/cup/john/star/bros/snow/lain 这类 3–4 字符实词一并丢掉（1001.md 声明标题 'Wild Aoud Montale for women and men' 只剩 montal/woman）。同时实测：分词器不过滤停用词（Tokenize('the for and ...') 原样输出）、ES 对 title_tks 的分析器也保留停用词（_analyze=['the','for','and',...]；match title_tks='the' 命中 8477 chunk）⇒ 停用词必须显式过滤，长度不是判据。",
+        "design": {
+          "A": "现状 len>=5 启发式，直接复用归档批次 browsecomp_retry2_20260921（09-22 06:26，晚于分词版回填 09-21 18:18 与 re-backfill 20:33 ⇒ 索引状态与当前一致，免重跑）",
+          "B_prime": "英文停用词表；剔 {title,name,fullname,wikipedia} 与纯数字；去重、上限 20",
+          "index_change": "B' 映射使 43,458/67,708（64%）文档取值变化",
+          "questions": "10 题，只在失败题中选：8 题 T（参考文档声明标题含 gold 词元，且该词元仅在新规则下进入 title_tks）+ 2 题 C；候选池 74 题→26 题满足 T 口径",
+          "caveat": "A 非配对重跑（含 run-to-run 抖动）；只测『失败题能否救回』，测不到原本判对的题是否被带坏"
+        },
+        "results": {
+          "B_prime": {
+            "accuracy_pct": 30.0,
+            "correct": "3/10",
+            "recall_pct": 33.51,
+            "search_calls": 25.3,
+            "tool_errors": "none",
+            "chunk_reads": "deep=798 shallow=4911"
+          },
+          "flips": {
+            "q156": "T 失败→判对（gold 首命中 #3）",
+            "q1005": "T 失败→判对（#16）",
+            "q835": "C 对照 失败→判对（#1）"
+          },
+          "regression": {
+            "q872": "C 对照 首命中 #46 → 丢失"
+          },
+          "groups": {
+            "T": "B' 2/8（A 0/8），均 recall 26.3，gold 被交付 2/8",
+            "C": "B' 1/2（A 0/2），均 recall 62.5"
+          },
+          "systemic": "检索文档数系统性下降 79→41 59→36 74→55 90→52 68→40 46→35 37→22；gold 首命中 q950 #3→#1、q156 无→#3、q1005 无→#16",
+          "judge_side": "q25 的 gold 串在 A 与 B' 答案里都出现却仍判错 ⇒ 判分侧问题，与检索无关"
+        },
+        "verdict": "用户判定证据已充分证明 title 改动价值 ⇒ 落地代码：declaredTitleTokens 改按 englishStopwords 过滤（保留剔 label/wikipedia 与纯数字、去重、上限 20），测试同步更新并通过（Pragyan Ojha→[pragyan ojha]、1917 Ok Go→[ok go]）。诚实口径：10 题且对照组同向移动（q835 翻正）⇒ 翻转数不足以证明幅度；支撑来自机制（分词器/ES 均不过滤停用词）与行为变化（检索收敛）。量化需 26 题全跑或 100 题×每臂 2 次。",
+        "artifacts": [
+          "outputs/title_ab_sw_B_20260922/",
+          "outputs/covsweep_20260921/title_ab_sw_compare.json",
+          "outputs/covsweep_20260921/title_ab_sw_questions.json",
+          "outputs/covsweep_20260921/title_tks_stopword.json",
+          "scripts/title_ab_sw_{A,B}_conf.json",
+          "/tmp/pick_sw_questions.py",
+          "/tmp/make_title_stopword.py"
+        ],
+        "tooling_pitfall": "compare_title_ab.py 期望题集 treatment/control 为 [{'q': ...}]；写成 int 会 TypeError"
       }
     },
     "verdict_overrides": {
