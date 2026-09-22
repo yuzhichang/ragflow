@@ -165,6 +165,15 @@ type GateAuditRecord struct {
 	// separately from Rejections so a benchmark can tell a citation-only matrix from
 	// a missing-value one.
 	CitationGroundings int `json:"citation_groundings,omitempty"`
+	// UnreadCitations counts the deliverables the gate refused because they cited a
+	// chunk the run never received (neither a deep read nor a triage snippet). It is
+	// the observable half of the citation discipline: a cited id outside the read
+	// ledger is a fabricated or mis-transcribed identifier, and unlike a value
+	// precheck this reading is membership, not phrasing - see unreadCitations for
+	// why that makes it admissible where the value heuristics were not. Recorded
+	// apart from Rejections so a benchmark can tell "cited evidence I never read"
+	// from "no deliverable at all".
+	UnreadCitations int `json:"unread_citations,omitempty"`
 	// AuditVerdicts holds an excerpt of EVERY audit verdict, oldest first, in
 	// step with Suspects. The counts alone say a curve moved 5→3→1→0 but never
 	// WHAT was contested, so a failure could only be explained by re-reading the
@@ -864,6 +873,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		final:          final,
 		auditMaxPass:   auditMaxPass,
 		toolCallCounts: in.ToolCallCounts,
+		reads:          in.ChunkReads,
 		audit:          in.GateAudit,
 	})
 	if runErr != nil && gateFinal != preGateFinal {
@@ -1027,6 +1037,14 @@ func countCitationGrounding(audit *GateAuditRecord) {
 	}
 }
 
+// countUnreadCitation records a deliverable refused for citing chunks the run
+// never received. See GateAuditRecord.UnreadCitations.
+func countUnreadCitation(audit *GateAuditRecord) {
+	if audit != nil {
+		audit.UnreadCitations++
+	}
+}
+
 func countGateAuditFailure(audit *GateAuditRecord) {
 	if audit != nil {
 		audit.AuditFailures++
@@ -1120,6 +1138,11 @@ type deliveryGateInput struct {
 	// Input.ToolCallCounts). Repair turns and auditor passes append to the
 	// SAME ledger so per-question usage accounting covers the whole turn.
 	toolCallCounts map[string]int
+	// reads is the run's chunk-read ledger — the ids of every chunk the corpus
+	// retrieval tools put in front of the model in this run (Input.ChunkReads).
+	// The gate compares the deliverable's cited ids against it: the one citation
+	// question that needs no reading of content (see unreadCitations).
+	reads *chunkReadLedger
 	// audit, when non-nil, receives the per-round suspect accounting of every
 	// audit this gate runs (see GateAuditRecord).
 	audit *GateAuditRecord
@@ -1202,7 +1225,22 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		// answerLabel). The label rides into the payload as evidence for the
 		// label-consistency rules.
 		answerLbl := answerLabel(final)
+		// Citation grounding, before the audit: every id the deliverable cites must be
+		// a chunk this run actually received. This is membership in the read ledger,
+		// not a reading of the deliverable's prose, so it is safe to enforce - the
+		// auditor cannot see what the producer read, and a fabricated id is the defect
+		// its contract calls the most damaging one (a snippet beside an unread id can
+		// never be verbatim). Refusing here buys the repair turn the finding needs.
+		unreadDirective := ""
 		if strings.TrimSpace(final) != "" {
+			if unread := unreadCitations(final, in.reads); len(unread) > 0 {
+				countUnreadCitation(in.audit)
+				unreadDirective = unreadCitationDirective(unread)
+				common.WarnCtx(ctx, "agentic_rag: delivery gate refused the deliverable — cited chunks the run never read",
+					zap.Int("pass", pass+1), zap.Strings("unread_chunk_ids", unread))
+			}
+		}
+		if strings.TrimSpace(final) != "" && unreadDirective == "" {
 			// The gate audits the deliverable it actually holds — audit-target
 			// freshness is structural, not tracked. The question lives in the
 			// auditor's system prompt, so the payload carries the deliverable
@@ -1293,6 +1331,11 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				"If a retrieval call errored or came back empty, rephrase the query and try again BEFORE " +
 				"answering: an answer drawn from memory instead of the corpus is not acceptable, and " +
 				"ending the turn on narration or on another tool call leaves the user with nothing.")
+		} else if unreadDirective != "" {
+			// No audit ran this pass: the gate's own reading already names the defect,
+			// and re-auditing a deliverable it just refused would spend a pass on a
+			// verdict it can predict.
+			directive = unreadDirective
 		} else {
 			directive = auditRepairDirective(auditSuspectCount(verdict), verdict, suspectHist)
 		}

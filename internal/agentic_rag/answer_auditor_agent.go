@@ -51,7 +51,7 @@ const answerAuditorMaxIterations = 10
 // Zero here would only remove the sampling; it does not make the verdict
 // reproducible (MoE routing, batching and the auditor's own cross-pass session
 // memory all remain), so this lowers variance rather than guaranteeing it.
-const answerAuditorTemperature = 0.0
+const answerAuditorTemperature = 0.1
 
 // AuditTemperature resolves the temperature the auditor must run at: the
 // auditor template's `temperature` when it declares one, else

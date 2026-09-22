@@ -363,6 +363,62 @@ type auditPayload struct {
 	GateAnswerLabel string `json:"gate_answer_label,omitempty"`
 }
 
+// unreadCitations returns the chunk ids the deliverable cites that the run never
+// received, sorted - the difference between what the matrix claims to have read
+// and what the tools actually put in front of the model.
+//
+// It is the ONE citation question the gate answers without reading content, which
+// is why it can be enforced mechanically where the removed value prechecks could
+// not: a cited id is either in the run's chunk-read ledger or it is not - no
+// phrasing to bet on, no well-formed deliverable to misread (the failure mode that
+// retired the gate's text heuristics, see answerLineLabelRe). The ledger holds
+// every chunk the four corpus retrieval tools rendered, deep reads and triage
+// snippets alike, so an id outside it was never served: it is a fabricated or
+// mis-transcribed identifier, and the snippet beside it cannot be verbatim from it.
+//
+// A nil ledger, or one that recorded nothing at all, yields nil: a run whose reads
+// were never accounted for cannot testify about what it read, and refusing
+// deliverables on the absence of a record would punish the archive, not the answer.
+func unreadCitations(final string, reads *chunkReadLedger) []string {
+	cited := ExtractCitedChunkIDs(final)
+	if len(cited) == 0 {
+		return nil
+	}
+	deep, shallow := reads.ChunkIDs()
+	if len(deep)+len(shallow) == 0 {
+		return nil
+	}
+	served := make(map[string]struct{}, len(deep)+len(shallow))
+	for _, id := range deep {
+		served[id] = struct{}{}
+	}
+	for _, id := range shallow {
+		served[id] = struct{}{}
+	}
+	var out []string
+	for _, id := range cited {
+		if _, ok := served[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unreadCitationDirective is the repair directive for a deliverable that cites
+// chunks the run never read: read them, or drop the lines. It says BOTH, because
+// from the gate's side a mis-typed id and a remembered one are the same defect -
+// the producer is the one who can tell which fix applies.
+func unreadCitationDirective(unread []string) string {
+	return "Your deliverable CITES chunk ids this run never received: " + strings.Join(unread, ", ") + ". " +
+		"A cited chunk must be one the tools actually put in front of you (a list_chunks deep read, or a locate " +
+		"result's snippet window); an id you never received cannot support a line, and the snippet beside it " +
+		"cannot be verbatim from it. Fix each one: either read that chunk now - `list_chunks` with its doc_id " +
+		"and `anchor_chunk_ids=[<the id>]` - and correct the line's doc/doc_id/chunk_id/snippet against what " +
+		"comes back, or replace that line with evidence you did read. Then re-render the COMPLETE deliverable " +
+		"(`## Candidate Matrix`, `## Reasoning Chain`, and the Final/Guessed Answer line) in this same turn."
+}
+
 // buildAuditPayload serializes the deliverable into answer_auditor's JSON - the
 // shape the audit contract advertises. It is a verbatim passthrough, not an
 // extraction: the auditor reads the FINAL message's own md structure (##
