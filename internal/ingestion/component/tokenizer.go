@@ -780,11 +780,28 @@ func normalizeChunkTextFallback(chunks []schema.ChunkDoc) {
 //
 // Only the first non-empty chunk is inspected, because the header block (when present at all)
 // belongs to the head of the document.
+// englishStopwords are dropped from declared-title metadata. The tokenizer keeps
+// function words ("the", "for", "and", ...) as-is — verified via the ES _analyze
+// API on title_tks and via tokenizer.Tokenize — so they have to be filtered here.
+// This replaces an earlier length heuristic (keep only tokens >= 5 chars) which
+// also removed real content words such as "icc", "cup", "john", "star", "bros".
+var englishStopwords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true, "be": true, "been": true,
+	"but": true, "by": true, "d": true, "for": true, "from": true, "had": true, "has": true, "have": true,
+	"he": true, "her": true, "him": true, "his": true, "i": true, "if": true, "in": true, "into": true,
+	"is": true, "it": true, "its": true, "ll": true, "m": true, "me": true, "my": true, "no": true,
+	"not": true, "of": true, "on": true, "or": true, "our": true, "re": true, "s": true, "she": true,
+	"so": true, "t": true, "that": true, "the": true, "their": true, "them": true, "then": true,
+	"there": true, "these": true, "they": true, "this": true, "to": true, "too": true, "up": true,
+	"us": true, "ve": true, "was": true, "we": true, "were": true, "what": true, "when": true,
+	"where": true, "which": true, "who": true, "will": true, "with": true, "y": true,
+	"you": true, "your": true,
+}
+
 func declaredTitleTokens(chunks []schema.ChunkDoc) []string {
 	const (
 		headerLines = 20
 		maxTokens   = 20
-		minLen      = 5
 	)
 	var values []string
 	for i := range chunks {
@@ -819,7 +836,17 @@ func declaredTitleTokens(chunks []schema.ChunkDoc) []string {
 		for _, w := range strings.FieldsFunc(v, func(r rune) bool {
 			return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
 		}) {
-			if len(w) < minLen || skip[w] || seen[w] {
+			// Pure numbers stay out (years, ids, and the corpus file stem are all
+			// numeric noise for the title channel); everything else is kept unless
+			// it is an English stopword, a label or a duplicate.
+			allDigits := true
+			for _, r := range w {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if englishStopwords[w] || skip[w] || seen[w] || allDigits {
 				continue
 			}
 			seen[w] = true

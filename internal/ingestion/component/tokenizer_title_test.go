@@ -33,11 +33,12 @@ func TestDeclaredTitleTokens(t *testing.T) {
 	}{
 		{
 			// Only the declared-title lines feed the field ("Source URL", "date", "| Full Name |"
-			// are not title lines), label words are dropped, and so is a token shorter than five
-			// characters ("ojha"): the >=5 rule is the one validated in the ranking experiment.
-			name:   "declared title is tokenised, labels and short tokens dropped",
+			// are not title lines) and label words are dropped. Short content words are KEPT:
+			// the >=5 length rule was replaced by English stopword filtering (2026-09-22), because
+			// the length rule also removed real words such as "icc", "cup", "john", "star".
+			name:   "declared title is tokenised, labels dropped, short words kept",
 			chunks: []schema.ChunkDoc{{Text: header}},
-			want:   []string{"pragyan"},
+			want:   []string{"pragyan", "ojha"},
 		},
 		{
 			name:   "title/name/fullname are all read, duplicates and wikipedia dropped",
@@ -50,9 +51,12 @@ func TestDeclaredTitleTokens(t *testing.T) {
 			want:   nil,
 		},
 		{
-			name:   "short and numeric tokens are not title material",
+			// Pure numbers are still dropped (the corpus file stem is numeric, so a
+			// numeric title token would match every document), but the short words that
+			// the old >=5 rule removed are now kept.
+			name:   "numeric tokens dropped, short words kept",
 			chunks: []schema.ChunkDoc{{Text: "title: 1917 Ok Go\n"}},
-			want:   nil,
+			want:   []string{"ok", "go"},
 		},
 		{
 			name:   "empty chunks are skipped safely",
