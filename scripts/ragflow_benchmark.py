@@ -1327,7 +1327,8 @@ def _delivery_checks(text: str, question: str, signatures: dict[str, Any] | None
             with_by_name += 1
         elif keys:
             # A block that tests or retains a candidate owes a query on that
-            # candidate's own name (CC11); with candidates and no by-name query
+            # candidate's own name (the by-name query strategy in "How to resolve a sub-question");
+            # with candidates and no by-name query
             # it verified none of them.
             pivot_missing += 1
         for raw in block["searched"]:
@@ -1909,7 +1910,7 @@ def build_leaderboard(
             "pivot_missing_blocks": delivery_totals["pivot_missing_blocks"],
             "rows_with_a_missing_pivot": pivot_rows,
             "single_term_searches": delivery_totals["single_term_searches"],
-            "note": "CC11's by-name query, counted from the deliverable's own `Searched` patterns against its own "
+            "note": 'the by-name query strategy (in "How to resolve a sub-question"), counted from the deliverable\'s own `Searched` patterns against its own '
             "candidate names: a block with candidates and no by-name query verified none of them. "
             "`single_term_searches` is the crude proxy for the clue-anchor query (<=3 words in the pattern). "
             "On the 2026-09-23 runs every measurable FAILURE had zero by-name queries while every pass had at "
