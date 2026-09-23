@@ -1123,6 +1123,7 @@ DELIVERY_TOTALS: tuple[str, ...] = (
     "blocks_total",
     "constraint_number_reused",
     "decomposition_detached_blocks",
+    "decomposition_orphan_roots",
     "decomposition_from_none_after_first",
     "decomposition_prose_block_refs",
     "leaked_docnames",
@@ -1346,8 +1347,17 @@ def _delivery_checks(text: str, question: str, signatures: dict[str, Any] | None
     if answer_block is not None:
         main = union_root(answer_block)
         detached = sum(1 for block in blocks if union_root(block["number"]) != main)
+    # A root (`From: none`) is lawful: the flat shape's naming block is one, and a
+    # parallel plan starts from SEVERAL. What is not lawful is a root whose variable no
+    # block ever consumes - that is a second, disconnected question. `?answer` is exempt
+    # because a chain-shaped plan legitimately ends on it. Measured 2026-09-23 over 18
+    # archived deliveries: 4 lawful roots after the first block against 6 orphans, and
+    # two deliveries ran connected graphs with more than one root.
+    consumed_names = {name.lower() for block in blocks for name, _ in block["from_entries"]}
+    orphan_roots = sum(1 for block in blocks if not block["from_entries"] and block["binds"] and block["binds"].strip().lower() not in consumed_names and block["binds"].strip().lower() != "?answer")
     return {
         "decomposition_detached_blocks": detached,
+        "decomposition_orphan_roots": orphan_roots,
         "decomposition_from_none_after_first": from_none_after_first,
         "decomposition_prose_block_refs": prose_refs,
         "from_pointers": pointers,
@@ -1805,7 +1815,7 @@ def build_leaderboard(
             reuse_rows += 1
         if structure.get("leaked_docnames") or structure.get("leaked_values") or structure.get("example_value_shipped"):
             leak_rows += 1
-        if structure.get("decomposition_detached_blocks") or structure.get("decomposition_from_none_after_first") or structure.get("decomposition_prose_block_refs"):
+        if structure.get("decomposition_detached_blocks") or structure.get("decomposition_orphan_roots") or structure.get("decomposition_prose_block_refs"):
             decomposition_rows += 1
         for key in DELIVERY_TOTALS:
             delivery_totals[key] += int(structure.get(key) or 0)
@@ -1908,14 +1918,17 @@ def build_leaderboard(
         "decomposition_graph": {
             "rows_with_a_defect": decomposition_rows,
             "detached_blocks": delivery_totals["decomposition_detached_blocks"],
-            "from_none_after_first": delivery_totals["decomposition_from_none_after_first"],
+            "orphan_roots": delivery_totals["decomposition_orphan_roots"],
+            "roots_after_the_first": delivery_totals["decomposition_from_none_after_first"],
             "prose_block_refs": delivery_totals["decomposition_prose_block_refs"],
-            "note": "The decomposition must be ONE chain that carries `?answer`: a block whose variable nobody "
-            "consumes and which consumes nothing is a second, disconnected question; `From: none` is lawful in the "
-            "first block only; and only a VARIABLE may cross a block boundary (a title or constraint saying "
-            "`block 1` / `the above` writes an edge in prose). Measured 2026-09-23 over 18 archived deliveries: "
-            "2 rows with detached blocks (5 of 6 blocks in one of them), 10 `From: none` blocks after the first, "
-            "1 prose reference - and the two detached rows are the runs whose REQUIRED audit spent every round on "
+            "note": "The decomposition must be ONE connected acyclic graph that carries `?answer`, and nothing more: "
+            "sequence, fan-out, join and nesting all combine, and a root (`From: none`) is lawful - the flat shape's "
+            "naming block is one and a parallel plan starts from several. The defects are the two that break the "
+            "graph: an ORPHAN ROOT whose variable no block consumes (a second, disconnected question) and a block "
+            "outside the `?answer` component; plus one that breaks resolution: an edge written in prose (`block 1`, "
+            "`the above`) instead of the variable. Measured 2026-09-23 over 18 archived deliveries: 4 lawful roots "
+            "after the first block against 6 orphans, 2 rows with detached blocks (5 of their 6 blocks in one), and "
+            "1 prose reference - the detached rows being exactly the runs whose REQUIRED audit spent every round on "
             "item opinions while the shape stayed broken. Counted, not enforced: the auditor names these as "
             "`schema integrity` failures only once the prevalence and the false-positive rate are known.",
         },
