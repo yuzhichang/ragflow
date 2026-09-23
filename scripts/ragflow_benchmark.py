@@ -1073,6 +1073,7 @@ def _leaderboard_with_judgements(
 STRUCTURE_FIELDS: tuple[str, ...] = (
     "blocks",
     "titles_anchored",
+    "titles_use_vars",
     "slot",
     "kind",
     "op",
@@ -1129,6 +1130,9 @@ def structure_metrics(answer: str) -> dict[str, Any]:
         # or distinctive term) so a reviewer can read them without re-deriving
         # the chain; a bare slot tag ("which hospital") names none.
         "titles_anchored": sum(1 for title in titles if _title_names_anchor(title)),
+        # Titles that state the plan with a variable (?person) instead of inlining
+        # another block's current candidate: the decomposition stays reproducible.
+        "titles_use_vars": sum(1 for title in titles if "?" in title),
         "kind": sum(1 for title in titles if re.search(r"kind:\s*\S", title)),
         "op": count(r"^\s*-\s*Op:\s*[A-Za-z_]"),
         # Blocks binding the reserved answer variable: the answer path's entry
