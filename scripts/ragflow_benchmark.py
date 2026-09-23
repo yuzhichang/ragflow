@@ -1171,13 +1171,20 @@ def _title_names_anchor(title: str) -> bool:
     optional wording: a number, a capitalised name inside the sentence, or a
     distinctive term. A bare slot tag ("which hospital", "the person") has none.
     The check is deliberately loose — it counts anchors, it never grades style —
-    and the `- slot:`/`- kind:` suffix is stripped before it runs.
+    and the `slot:`/`kind:` suffix is stripped before it runs.
     """
     # The heading (### Sub-question 2:) and the slot/kind suffix are metadata,
     # never anchors — leaving the sub-question NUMBER in would make every title
     # look anchored, since it carries a digit.
     text = re.sub(r"^\s*#{2,4}\s*Sub-question\s+[0-9]+\s*:\s*", "", title)
-    text = re.sub(r"\s*-\s*(?:slot|kind)\s*:.*$", "", text).strip()
+    # The separator in front of the tag is punctuation, and the producer picks
+    # its glyph freely: measured 2026-09-23, titles arrived with `- slot:` 8
+    # times and `— slot:` 6 times in a single 3-question run. The earlier
+    # hyphen-only strip left the whole `— slot: … — kind: …` tail in the text
+    # for em-dash titles, which is a silent glyph dependence in a metric; that
+    # it did NOT change `titles_anchored` on those three questions was verified
+    # by recomputing both ways, so this is robustness, not a measured fix.
+    text = re.sub(r"\s*[-–—]?\s*(?:slot|kind)\s*:.*$", "", text).strip()
     if re.search(r"[0-9]", text):
         return True
     words = re.findall(r"[A-Za-z][A-Za-z''-]+", text)
