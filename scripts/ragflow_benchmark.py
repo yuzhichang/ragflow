@@ -1122,6 +1122,9 @@ DELIVERY_TOTALS: tuple[str, ...] = (
     "blocks_parsed",
     "blocks_total",
     "constraint_number_reused",
+    "decomposition_detached_blocks",
+    "decomposition_from_none_after_first",
+    "decomposition_prose_block_refs",
     "leaked_docnames",
     "leaked_values",
     "example_value_shipped",
@@ -1153,6 +1156,15 @@ _CANDIDATE_LINE_RE = re.compile(r"(?m)^\s*-\s*(?:Tested|Eliminated|Retained):\s*
 # _CLAIM_LINE_RE finds the lines that assert something ABOUT THE CORPUS in one block:
 # each owes a recorded search (see the Searched-line requirement).
 _CLAIM_LINE_RE = re.compile(r"^\s*-\s*(?:Tested|Eliminated|Retained|Failure):")
+# Emphasis markers are TYPOGRAPHY, not structure: a measured delivery wrote
+# `- **Op:** lookup` and `- **From:** none`, and the prefix matches below read every
+# block as EMPTY — a whole matrix scored as zero adopted fields. Strip the emphasis
+# before matching a prefix, never before judging what the text says.
+_DEEMPHASIS_RE = re.compile(r"\*+")
+# Only a VARIABLE crosses a block boundary: a title or a constraint that says "block 1"
+# or "the above" writes an edge in prose, where nothing resolves it. Measured
+# 2026-09-23: 1 occurrence, in the delivery whose two blocks had ZERO edges between them.
+_PROSE_BLOCK_REF_RE = re.compile(r"(?i)\bblock\s*\d+\b|the above|previous sub-question|sub-question above")
 _DEPENDS_TAIL_RE = re.compile(r"(?i)[—\s-]+\s*depends_on\s*:.*$")
 # _PATTERN_RE pulls the query text out of one recorded `Searched:` payload, so a short
 # single-term query can be told from a multi-clue paraphrase.
@@ -1181,9 +1193,10 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
         searched: list[str] = []
         constraints: list[str] = []
         constraint_defs: list[tuple[str, str]] = []
+        constraint_texts: list[str] = []
         from_entries: list[tuple[str, int | None]] = []
         for line in lines[1:]:
-            stripped = line.strip()
+            stripped = _DEEMPHASIS_RE.sub("", line).strip()
             if not op and stripped.startswith("- Op:"):
                 op = stripped[len("- Op:") :].strip()
             elif not binds and stripped.startswith("- Binds:"):
@@ -1200,15 +1213,16 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 constraint_line = _DEPENDS_TAIL_RE.sub("", stripped)
                 constraint_defs = [(cid, re.sub(r"\s+", " ", claim).strip().lower()) for cid, claim in re.findall(r"\b(c\d+)\s*=\s*([^;]*)", constraint_line)]
                 constraints = [cid for cid, _ in constraint_defs]
+                constraint_texts.append(constraint_line)
             elif stripped.startswith("- Searched:"):
                 searched.append(stripped[len("- Searched:") :].strip())
             elif _CLAIM_LINE_RE.match(stripped):
                 asserts_corpus = True
-        candidates = [head for head in (_line_head(match) for match in _CANDIDATE_LINE_RE.findall(body)) if head]
+        candidates = [head for head in (_line_head(match) for match in _CANDIDATE_LINE_RE.findall(_DEEMPHASIS_RE.sub("", body))) if head]
         blocks.append(
             {
                 "number": int(mark.group(1)),
-                "title": lines[0].strip() if lines else "",
+                "title": _DEEMPHASIS_RE.sub("", lines[0]).strip() if lines else "",
                 "op": op,
                 "binds": binds,
                 "has_from_line": has_from_line,
@@ -1217,6 +1231,7 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 "searched": searched,
                 "constraints": constraints,
                 "constraint_defs": constraint_defs,
+                "constraint_texts": constraint_texts,
                 "asserts_corpus": asserts_corpus,
             }
         )
@@ -1241,6 +1256,17 @@ def _delivery_checks(text: str, question: str, signatures: dict[str, Any] | None
         name = block["binds"].strip().lower()
         if name.startswith("?") and name not in bindings:
             bindings[name] = block["number"]
+    # The decomposition is ONE chain: union the blocks each edge joins, then read whether
+    # every block belongs to the component that carries `?answer`. Measured 2026-09-23:
+    # 2 of 18 archived deliveries had detached blocks, and those are exactly the two runs
+    # whose audit spent every round on item opinions while the shape stayed broken.
+    union = {block["number"]: block["number"] for block in blocks}
+
+    def union_root(x: int) -> int:
+        while union[x] != x:
+            union[x] = union[union[x]]
+            x = union[x]
+        return x
 
     pointers = 0
     without_pointer = 0
@@ -1254,14 +1280,30 @@ def _delivery_checks(text: str, question: str, signatures: dict[str, Any] | None
     pivot_missing = 0
     single_term = 0
     without_constraint = 0
+    from_none_after_first = 0
+    prose_refs = 0
     defined: dict[str, int] = {}
     definitions: dict[str, set[str]] = {}
     question_lower = (question or "").lower()
     for block in blocks:
         if block["op"] and block["binds"] and block["has_from_line"] and re.search(r"slot:\s*\S", block["title"]):
             parsed += 1
+        if block["number"] > 1 and not block["from_entries"]:
+            # `From` names what a block consumes, and the contract allows `none` in the
+            # FIRST block only: a later block that consumes nothing starts a second,
+            # disconnected question, or restates one already made. Measured 2026-09-23:
+            # 10 such blocks across 18 archived deliveries.
+            from_none_after_first += 1
+        # Only a VARIABLE crosses a block boundary: a title or a constraint that says
+        # "block 1" / "the above" states an edge in prose, where nothing resolves it.
+        # Measured 2026-09-23: 1 occurrence, in the delivery whose two blocks had ZERO
+        # edges between them.
+        prose_refs += len(_PROSE_BLOCK_REF_RE.findall(block["title"]))
+        prose_refs += sum(len(_PROSE_BLOCK_REF_RE.findall(line)) for line in block.get("constraint_texts") or [])
         for name, pointer in block["from_entries"]:
             producer = bindings.get(name.lower())
+            if producer is not None:
+                union[union_root(block["number"])] = union_root(producer)
             if pointer is None:
                 without_pointer += 1
             else:
@@ -1299,7 +1341,15 @@ def _delivery_checks(text: str, question: str, signatures: dict[str, Any] | None
             # something the search returned.
             if len(lowered) >= 3 and lowered in block["title"].lower() and lowered not in question_lower:
                 inlined += 1
+    answer_block = bindings.get("?answer")
+    detached = 0
+    if answer_block is not None:
+        main = union_root(answer_block)
+        detached = sum(1 for block in blocks if union_root(block["number"]) != main)
     return {
+        "decomposition_detached_blocks": detached,
+        "decomposition_from_none_after_first": from_none_after_first,
+        "decomposition_prose_block_refs": prose_refs,
         "from_pointers": pointers,
         "from_entries": pointers + without_pointer,
         "from_entries_without_pointer": without_pointer,
@@ -1419,9 +1469,12 @@ def structure_metrics(answer: str, question: str = "", signatures: dict[str, Any
     returned for the grounding check the caller runs.
     """
     text = re.sub(r"<think>.*?</think>", "", answer or "", flags=re.DOTALL)
+    # Field prefixes are matched on a de-emphasised copy (see _DEEMPHASIS_RE): the
+    # bolded-header delivery of 2026-09-23 read as zero adopted fields otherwise.
+    plain = _DEEMPHASIS_RE.sub("", text)
 
     def count(pattern: str) -> int:
-        return len(re.findall(pattern, text, flags=re.MULTILINE))
+        return len(re.findall(pattern, plain, flags=re.MULTILINE))
 
     titles = re.findall(r"^\s*#{2,4}\s*Sub-question\s+\d+\s*:(.*)$", text, flags=re.MULTILINE)
     metrics: dict[str, Any] = {
@@ -1444,7 +1497,9 @@ def structure_metrics(answer: str, question: str = "", signatures: dict[str, Any
         # name twice is a shape defect the header rules name explicitly; the
         # counter is here so the rule's landing is measurable offline.
         "binds_unique": (
-            1 if len({name.lower() for name in re.findall(r"^\s*-\s*Binds:\s*([^\s(]+)", text, flags=re.MULTILINE)}) == len(re.findall(r"^\s*-\s*Binds:\s*([^\s(]+)", text, flags=re.MULTILINE)) else 0
+            1
+            if len({name.lower() for name in re.findall(r"^\s*-\s*Binds:\s*([^\s(]+)", plain, flags=re.MULTILINE)}) == len(re.findall(r"^\s*-\s*Binds:\s*([^\s(]+)", plain, flags=re.MULTILINE))
+            else 0
         ),
         "from_lines": count(r"^\s*-\s*From:\s*"),
         "constraints": count(r"^\s*-\s*Constraints:\s*"),
@@ -1646,6 +1701,7 @@ def build_leaderboard(
     partition_rows = 0
     reuse_rows = 0
     leak_rows = 0
+    decomposition_rows = 0
     prompt_signatures = _prompt_signatures()
     prompt_signature_total = len(prompt_signatures["docnames"]) + len(prompt_signatures["values"])
 
@@ -1749,6 +1805,8 @@ def build_leaderboard(
             reuse_rows += 1
         if structure.get("leaked_docnames") or structure.get("leaked_values") or structure.get("example_value_shipped"):
             leak_rows += 1
+        if structure.get("decomposition_detached_blocks") or structure.get("decomposition_from_none_after_first") or structure.get("decomposition_prose_block_refs"):
+            decomposition_rows += 1
         for key in DELIVERY_TOTALS:
             delivery_totals[key] += int(structure.get(key) or 0)
 
@@ -1846,6 +1904,20 @@ def build_leaderboard(
             "`single_term_searches` is the crude proxy for the clue-anchor query (<=3 words in the pattern). "
             "On the 2026-09-23 runs every measurable FAILURE had zero by-name queries while every pass had at "
             "least one, and q875 retrieved 129 documents without touching its expected family.",
+        },
+        "decomposition_graph": {
+            "rows_with_a_defect": decomposition_rows,
+            "detached_blocks": delivery_totals["decomposition_detached_blocks"],
+            "from_none_after_first": delivery_totals["decomposition_from_none_after_first"],
+            "prose_block_refs": delivery_totals["decomposition_prose_block_refs"],
+            "note": "The decomposition must be ONE chain that carries `?answer`: a block whose variable nobody "
+            "consumes and which consumes nothing is a second, disconnected question; `From: none` is lawful in the "
+            "first block only; and only a VARIABLE may cross a block boundary (a title or constraint saying "
+            "`block 1` / `the above` writes an edge in prose). Measured 2026-09-23 over 18 archived deliveries: "
+            "2 rows with detached blocks (5 of 6 blocks in one of them), 10 `From: none` blocks after the first, "
+            "1 prose reference - and the two detached rows are the runs whose REQUIRED audit spent every round on "
+            "item opinions while the shape stayed broken. Counted, not enforced: the auditor names these as "
+            "`schema integrity` failures only once the prevalence and the false-positive rate are known.",
         },
         "constraint_partition": {
             "defined": delivery_totals["constraints_defined"],
