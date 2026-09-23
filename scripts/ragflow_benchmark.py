@@ -1051,6 +1051,228 @@ def _leaderboard_with_judgements(
 # --------------------------------------------------------------------------
 # Leaderboard export (BrowseComp-Plus submission format)
 # --------------------------------------------------------------------------
+# --- Structure metrics (the run's state, kept in markdown) -------------------
+#
+# The deliverable's Candidate Matrix IS the run's state: one block per
+# sub-question, each with the answer TYPE it declared (`slot:`), the operation
+# it ran (`Op:`), the variables it bound and consumed (`Binds:` / `From:`), the
+# numbered constraints it addresses, one line per candidate
+# (Searched / Tested / Eliminated / Retained), the value it derived, and — when
+# a block ends without a filler — the failure it classified. Those shapes are
+# countable, and counting them answers questions the accuracy figure cannot:
+# whether the agent committed to an answer type BEFORE searching, whether every
+# hop consumed a bound input, whether a failure was classified at all, and
+# whether a run stopped early because it had found the document or because it
+# gave up.
+#
+# The counts are reported, never scored. A field the prompt asks for and a run
+# does not write is a fact about that run, and the number that matters is the
+# PAIR (adoption, accuracy): a 100%-adopted schema tells you the format landed,
+# not that the answers are right — measured 2026-09-23, `## Candidate Matrix`
+# appeared in 24/24 deliveries while accuracy was 4/24.
+STRUCTURE_FIELDS: tuple[str, ...] = (
+    "blocks",
+    "titles_anchored",
+    "slot",
+    "kind",
+    "op",
+    "target_binds",
+    "binds",
+    "binds_unique",
+    "from_lines",
+    "constraints",
+    "satisfied",
+    "depends_on",
+    "searched",
+    "tested",
+    "eliminated",
+    "retained",
+    "derived",
+    "failure",
+    "reasoning_chain",
+    "answer_label",
+)
+
+# EARLY_STOP_DOCS is the breadth below which a run counts as having stopped
+# early. It is a SYMPTOM threshold, not a quality bar: a run that found the right
+# document stops early, and a run that found nothing also stops early, so the
+# number is only readable beside accuracy (see the diagnostics note).
+EARLY_STOP_DOCS = 10
+
+# _DOC_TEXT_LIMIT caps how much of one corpus document is read for the
+# intermediate-node grounding check. The union of a run's retrieved documents
+# can run to megabytes per question, and a value's distinctive tokens are almost
+# always in the document's opening half; the cap keeps a full 830-question run
+# from spending its time in file I/O.
+_DOC_TEXT_LIMIT = 400_000
+
+
+def structure_metrics(answer: str) -> dict[str, Any]:
+    """Count the structure a deliverable DECLARED, from its own text.
+
+    Every counter is a regex over the markdown the producer shipped, so the
+    result is reproducible from `answers.jsonl` alone and comparable across
+    runs. Nothing here judges whether the structure is true — that is the answer
+    auditor's job — and nothing here reads the corpus except `values`, which is
+    returned for the grounding check the caller runs.
+    """
+    text = re.sub(r"<think>.*?</think>", "", answer or "", flags=re.DOTALL)
+
+    def count(pattern: str) -> int:
+        return len(re.findall(pattern, text, flags=re.MULTILINE))
+
+    titles = re.findall(r"^\s*#{2,4}\s*Sub-question\s+\d+\s*:(.*)$", text, flags=re.MULTILINE)
+    metrics: dict[str, Any] = {
+        "blocks": len(titles),
+        "slot": sum(1 for title in titles if re.search(r"slot:\s*[A-Za-z_\[\]]", title)),
+        # Sub-question titles must carry their own anchors (proper noun, number
+        # or distinctive term) so a reviewer can read them without re-deriving
+        # the chain; a bare slot tag ("which hospital") names none.
+        "titles_anchored": sum(1 for title in titles if _title_names_anchor(title)),
+        "kind": sum(1 for title in titles if re.search(r"kind:\s*\S", title)),
+        "op": count(r"^\s*-\s*Op:\s*[A-Za-z_]"),
+        # Blocks binding the reserved answer variable: the answer path's entry
+        # points, and the one header fact the label rules now key on.
+        "target_binds": count(r"^\s*-\s*Binds:\s*\?answer\b"),
+        "binds": count(r"^\s*-\s*Binds:\s*"),
+        # Variable names are unique question-wide, so a run that binds the same
+        # name twice is a shape defect the header rules name explicitly; the
+        # counter is here so the rule's landing is measurable offline.
+        "binds_unique": (
+            1 if len({name.lower() for name in re.findall(r"^\s*-\s*Binds:\s*([^\s(]+)", text, flags=re.MULTILINE)}) == len(re.findall(r"^\s*-\s*Binds:\s*([^\s(]+)", text, flags=re.MULTILINE)) else 0
+        ),
+        "from_lines": count(r"^\s*-\s*From:\s*"),
+        "constraints": count(r"^\s*-\s*Constraints:\s*"),
+        "satisfied": count(r"satisfied:\s*\["),
+        "depends_on": count(r"depends_on:"),
+        "searched": count(r"^\s*-\s*Searched:\s*"),
+        "tested": count(r"^\s*-\s*Tested:\s*"),
+        "eliminated": count(r"^\s*-\s*Eliminated:\s*"),
+        "retained": count(r"^\s*-\s*Retained:\s*"),
+        "derived": count(r"^\s*-\s*Derived:\s*"),
+        "failure": count(r"^\s*-\s*Failure:\s*"),
+        "reasoning_chain": 1 if re.search(r"^\s*#{1,4}\s*Reasoning Chain\b", text, flags=re.MULTILINE) else 0,
+        "answer_label": 1 if re.search(r"(?i)\b(?:Final|Guessed)\s+Answer\b", text) else 0,
+    }
+    metrics["failure_types"] = sorted({match.lower() for match in re.findall(r"^\s*-\s*Failure:\s*([A-Za-z_-]+)", text, flags=re.MULTILINE)})
+    metrics["values"] = _intermediate_values(text)
+    return metrics
+
+
+def _title_names_anchor(title: str) -> bool:
+    """Whether a sub-question title names an anchor of its own.
+
+    The title must state the sub-question in resolved prose a reviewer can check
+    without re-deriving the chain, so it needs at least one anchor that is not
+    optional wording: a number, a capitalised name inside the sentence, or a
+    distinctive term. A bare slot tag ("which hospital", "the person") has none.
+    The check is deliberately loose — it counts anchors, it never grades style —
+    and the `- slot:`/`- kind:` suffix is stripped before it runs.
+    """
+    # The heading (### Sub-question 2:) and the slot/kind suffix are metadata,
+    # never anchors — leaving the sub-question NUMBER in would make every title
+    # look anchored, since it carries a digit.
+    text = re.sub(r"^\s*#{2,4}\s*Sub-question\s+[0-9]+\s*:\s*", "", title)
+    text = re.sub(r"\s*-\s*(?:slot|kind)\s*:.*$", "", text).strip()
+    if re.search(r"[0-9]", text):
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z''-]+", text)
+    if len(words) < 3:
+        return False
+    return any(word[:1].isupper() for word in words[1:])
+
+
+def _line_head(line: str) -> str:
+    """The candidate name at the head of a matrix line, before its fields."""
+    cut = len(line)
+    for separator in ("—", " - ", "satisfied:", "(doc:", "doc:", "(source:"):
+        index = line.lower().find(separator.lower())
+        if 0 <= index < cut:
+            cut = index
+    return line[:cut].strip().strip('`*" ')
+
+
+def _intermediate_values(text: str) -> list[str]:
+    """The entity values a run committed to mid-chain.
+
+    Retained candidates and the first clause of every Derived line, deduplicated:
+    these are the intermediate nodes an accuracy check can look for in the
+    corpus, where the final answer alone only says whether the last hop landed.
+    """
+    values: list[str] = []
+    for line in re.findall(r"^\s*-\s*Retained:\s*(.+)$", text, flags=re.MULTILINE):
+        candidate = _line_head(line)
+        if candidate and not re.fullmatch(r"(?i)none", candidate):
+            values.append(candidate)
+    for line in re.findall(r"^\s*-\s*Derived:\s*(.+)$", text, flags=re.MULTILINE):
+        head = line.split(";")[0].strip()
+        if 3 <= len(head) <= 60:
+            values.append(head)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(value)
+    return unique
+
+
+def _value_tokens(value: str) -> list[str]:
+    """The distinctive tokens of a value: what a corpus has to carry for the
+    value to have come from it, ignoring numbers (dates and counts match
+    everywhere) and short grammatical filler."""
+    return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if len(token) >= 4 and not token.isdigit()]
+
+
+def _doc_text(doc_id: str, corpus_dir: Path, cache: dict[str, str]) -> str:
+    """One corpus document's lower-cased text, cached across questions."""
+    key = str(doc_id)
+    if key in cache:
+        return cache[key]
+    name = key if key.endswith(".md") else f"{key}.md"
+    text = ""
+    try:
+        with (corpus_dir / name).open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(_DOC_TEXT_LIMIT).lower()
+    except OSError:
+        text = ""
+    cache[key] = text
+    return text
+
+
+def _ground_values(
+    values: list[str],
+    doc_ids: list[str],
+    corpus_dir: Path | None,
+    cache: dict[str, str],
+) -> tuple[int, int]:
+    """Count how many committed values occur in the documents the run retrieved.
+
+    Returns (grounded, checked). A value counts as checked only when it has at
+    least one distinctive token, and as grounded when ALL of those tokens appear
+    somewhere in the union of the retrieved documents — a proxy for "this
+    intermediate node came from the corpus the run actually read", which is the
+    closest offline reading of the intermediate-node accuracy WebShaper's
+    evaluation section asks for.
+    """
+    if corpus_dir is None or not values or not doc_ids:
+        return 0, 0
+    union = "".join(_doc_text(doc_id, corpus_dir, cache) for doc_id in doc_ids)
+    if not union:
+        return 0, 0
+    grounded = 0
+    checked = 0
+    for value in values:
+        tokens = _value_tokens(value)
+        if not tokens:
+            continue
+        checked += 1
+        if all(token in union for token in tokens):
+            grounded += 1
+    return grounded, checked
+
+
 def build_leaderboard(
     rows: list[dict[str, Any]],
     cfg: dict[str, Any],
@@ -1085,6 +1307,19 @@ def build_leaderboard(
     stats_missing = 0
     judged = 0
     per_query_judgements: list[dict[str, Any]] = []
+    # Structure / behaviour accounting (see STRUCTURE_FIELDS above): kept out of
+    # per_query_metrics so that key stays byte-compatible with the leaderboard's
+    # parser, exactly as per_query_usage is.
+    per_query_structure: list[dict[str, Any]] = []
+    structure_seen: dict[str, int] = defaultdict(int)
+    failure_type_counts: dict[str, int] = defaultdict(int)
+    early_stop_hits = 0
+    early_stop_rows = 0
+    intermediate_grounded = 0
+    intermediate_checked = 0
+    corpus_path = (cfg.get("dataset") or {}).get("corpus_path")
+    corpus_dir = Path(str(corpus_path)) if corpus_path else None
+    doc_text_cache: dict[str, str] = {}
 
     for row in rows:
         query_id = str(row.get("question_id") or _row_run_key(row) or "")
@@ -1159,6 +1394,31 @@ def build_leaderboard(
 
         per_query_usage.append(_usage_row(query_id, row, search_tools))
 
+        # Structure: what the deliverable DECLARED, counted rather than judged.
+        structure = structure_metrics(row.get("ragflow_answer") or "")
+        committed_values = structure.pop("values", [])
+        failure_types = structure.pop("failure_types", [])
+        per_query_structure.append({"query_id": query_id, "run_key": _row_run_key(row), **structure})
+        for field in STRUCTURE_FIELDS:
+            if structure.get(field):
+                structure_seen[field] += 1
+        for failure_type in failure_types:
+            failure_type_counts[failure_type] += 1
+
+        # Early stop: a run that concluded inside a handful of retrieved
+        # documents. Symptom, not score - see EARLY_STOP_DOCS.
+        retrieved_now = _unique_doc_ids(row.get("retrieved_docids") or [])
+        if row.get("retrieved_docids") is not None:
+            early_stop_rows += 1
+            if len(retrieved_now) <= EARLY_STOP_DOCS:
+                early_stop_hits += 1
+
+        # Intermediate nodes: did the entities the deliverable committed to
+        # mid-chain come from the documents it actually retrieved?
+        grounded, checked = _ground_values(committed_values, retrieved_now, corpus_dir, doc_text_cache)
+        intermediate_grounded += grounded
+        intermediate_checked += checked
+
     correct_count = sum(1 for entry in per_query_metrics if entry["correct"])
     accuracy_percent = round(correct_count / total * 100.0, 2) if total else 0.0
     # Rows that actually received a verdict (the headline number counts the
@@ -1178,6 +1438,22 @@ def build_leaderboard(
         calibration_note = f"{len(confidences)} scored confidence(s), bin size {beta}"
     if len(confidences) < CALIBRATION_MIN_SAMPLES:
         print(f"[leaderboard] calibration error {calibration_note}")
+
+    structure_adoption = {field: round(structure_seen[field] / total * 100.0, 1) if total else 0.0 for field in STRUCTURE_FIELDS}
+    if corpus_dir is None:
+        intermediate_note = "not computed: dataset.corpus_path is not configured, so no corpus text can back the check."
+    else:
+        intermediate_note = (
+            "A committed value counts as grounded when every distinctive token of it (>=4 chars) "
+            "occurs in the union of the documents the run retrieved: the offline reading of whether the "
+            "mid-chain entities the deliverable committed to came from the corpus it read. Values with no "
+            "distinctive token are skipped, and a value that is grounded may still be the wrong one."
+        )
+    early_stop_note = (
+        "A run that concludes inside a handful of retrieved documents is a SYMPTOM, not a score: finding "
+        "the document and giving up look identical here, so read this beside Accuracy and beside "
+        "structure_adoption_percent's 'failure' field."
+    )
 
     return {
         "LLM": str(lb_cfg.get("llm") or "change me when submitting"),
@@ -1201,6 +1477,9 @@ def build_leaderboard(
         # byte-compatible with what the leaderboard parses.
         "per_query_usage": per_query_usage,
         "per_query_judgements": per_query_judgements,
+        # Extension, not part of the submission schema: the declared structure
+        # of each deliverable (state in markdown), counted per question.
+        "per_query_structure": per_query_structure,
         "_diagnostics": {
             "questions": total,
             "judged": judged,
@@ -1216,6 +1495,24 @@ def build_leaderboard(
             "search_tools": list(search_tools),
             "calibration": calibration_note,
             "run_stats_missing": stats_missing,
+            # Structure adoption: how many questions declared each field. Report
+            # it with accuracy, never instead of it - a schema can be fully
+            # adopted while the answers stay wrong.
+            "structure_adoption_percent": structure_adoption,
+            "failure_types": dict(sorted(failure_type_counts.items())) if failure_type_counts else {},
+            "early_stop": {
+                "threshold_docs": EARLY_STOP_DOCS,
+                "rows": early_stop_rows,
+                "rows_at_or_below": early_stop_hits,
+                "percent": round(early_stop_hits / early_stop_rows * 100.0, 1) if early_stop_rows else None,
+                "note": early_stop_note,
+            },
+            "intermediate_nodes": {
+                "values_checked": intermediate_checked,
+                "values_grounded": intermediate_grounded,
+                "percent": round(intermediate_grounded / intermediate_checked * 100.0, 1) if intermediate_checked else None,
+                "note": intermediate_note,
+            },
             "note": " ".join(
                 [
                     "Accuracy counts every question of the run; failed and unjudged rows",
