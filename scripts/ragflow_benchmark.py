@@ -1193,8 +1193,12 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 for name, pointer in _FROM_ENTRY_RE.findall(stripped[len("- From:") :]):
                     from_entries.append((name, int(pointer) if pointer else None))
             elif stripped.startswith("- Constraints:"):
-                body = _DEPENDS_TAIL_RE.sub("", stripped)
-                constraint_defs = [(cid, re.sub(r"\s+", " ", text).strip().lower()) for cid, text in re.findall(r"\b(c\d+)\s*=\s*([^;]*)", body)]
+                # Never reuse `body` here: it holds the WHOLE block and is read further
+                # down for the candidate heads, so shadowing it emptied `candidates` and
+                # silently zeroed every metric built on them (by-name queries, pivot
+                # misses, inlining) — measured over six runs the moment it was noticed.
+                constraint_line = _DEPENDS_TAIL_RE.sub("", stripped)
+                constraint_defs = [(cid, re.sub(r"\s+", " ", claim).strip().lower()) for cid, claim in re.findall(r"\b(c\d+)\s*=\s*([^;]*)", constraint_line)]
                 constraints = [cid for cid, _ in constraint_defs]
             elif stripped.startswith("- Searched:"):
                 searched.append(stripped[len("- Searched:") :].strip())
