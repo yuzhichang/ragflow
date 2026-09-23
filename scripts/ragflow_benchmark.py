@@ -1117,8 +1117,14 @@ DELIVERY_TOTALS: tuple[str, ...] = (
     "blocks_with_by_name_query",
     "pivot_missing_blocks",
     "single_term_searches",
+    "blocks_without_constraint",
+    "constraint_number_reused",
     "blocks_parsed",
     "blocks_total",
+    "constraint_number_reused",
+    "leaked_docnames",
+    "leaked_values",
+    "example_value_shipped",
 )
 
 # EARLY_STOP_DOCS is the breadth below which a run counts as having stopped
@@ -1174,6 +1180,7 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
         asserts_corpus = False
         searched: list[str] = []
         constraints: list[str] = []
+        constraint_defs: list[tuple[str, str]] = []
         from_entries: list[tuple[str, int | None]] = []
         for line in lines[1:]:
             stripped = line.strip()
@@ -1186,7 +1193,9 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 for name, pointer in _FROM_ENTRY_RE.findall(stripped[len("- From:") :]):
                     from_entries.append((name, int(pointer) if pointer else None))
             elif stripped.startswith("- Constraints:"):
-                constraints = re.findall(r"\b(c\d+)\s*=", _DEPENDS_TAIL_RE.sub("", stripped))
+                body = _DEPENDS_TAIL_RE.sub("", stripped)
+                constraint_defs = [(cid, re.sub(r"\s+", " ", text).strip().lower()) for cid, text in re.findall(r"\b(c\d+)\s*=\s*([^;]*)", body)]
+                constraints = [cid for cid, _ in constraint_defs]
             elif stripped.startswith("- Searched:"):
                 searched.append(stripped[len("- Searched:") :].strip())
             elif _CLAIM_LINE_RE.match(stripped):
@@ -1203,13 +1212,14 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 "candidates": candidates,
                 "searched": searched,
                 "constraints": constraints,
+                "constraint_defs": constraint_defs,
                 "asserts_corpus": asserts_corpus,
             }
         )
     return blocks
 
 
-def _delivery_checks(text: str, question: str) -> dict[str, Any]:
+def _delivery_checks(text: str, question: str, signatures: dict[str, Any] | None = None) -> dict[str, Any]:
     """Counts for the delivery questions that CAN be answered mechanically.
 
     Each is membership, not phrasing: a pointer either names the block that
@@ -1241,6 +1251,7 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
     single_term = 0
     without_constraint = 0
     defined: dict[str, int] = {}
+    definitions: dict[str, set[str]] = {}
     question_lower = (question or "").lower()
     for block in blocks:
         if block["op"] and block["binds"] and block["has_from_line"] and re.search(r"slot:\s*\S", block["title"]):
@@ -1255,8 +1266,9 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
                     unbound += 1
                 elif producer != pointer:
                     mismatch += 1
-        for cid in block["constraints"]:
+        for cid, ctext in block.get("constraint_defs") or []:
             defined[cid] = defined.get(cid, 0) + 1
+            definitions.setdefault(cid, set()).add(ctext)
         if not block["constraints"]:
             without_constraint += 1
         searched_lines += len(block["searched"])
@@ -1293,6 +1305,12 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
         "searched_lines": searched_lines,
         "constraints_defined": sum(defined.values()),
         "constraints_duplicated": sum(1 for count in defined.values() if count > 1),
+        # A number defined twice with the SAME text is a duplicate; with DIFFERENT text
+        # it is a restarted numbering, and every `satisfied: [...]` plus the whole
+        # unestablished-set aggregation is read by number, so they all stop meaning
+        # anything. Measured 2026-09-23: a passing delivery had `c1` mean five
+        # different claims in its five blocks.
+        "constraint_number_reused": sum(1 for texts in definitions.values() if len(texts) > 1),
         "blocks_without_constraint": without_constraint,
         "blocks_without_searched": without_searched,
         "blocks_with_by_name_query": with_by_name,
@@ -1300,6 +1318,7 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
         "single_term_searches": single_term,
         "blocks_parsed": parsed,
         "blocks_total": len(blocks),
+        **_leakage_counts(text, signatures),
     }
 
 
@@ -1319,7 +1338,74 @@ def _candidate_keys(head: str) -> list[str]:
     return [key for key in keys if len(key) >= 6]
 
 
-def structure_metrics(answer: str, question: str = "") -> dict[str, Any]:
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "conf" / "agentic_rag.yaml"
+# _EXAMPLE_VALUE_RE pulls the value a prompt EXAMPLE writes into a field — the
+# `Tested:`/`Retained:`/`Derived:`/`Evidence:` heads. Whatever a prompt prints as a
+# worked example is in the model's context, and a name or a document id printed
+# there can come back out as an answer (measured 2026-09-23: a delivery shipped the
+# prompt example's own hospital name and cited the document the example printed).
+_EXAMPLE_VALUE_RE = re.compile(r"(?:Tested|Retained|Derived|Evidence):\s*([^—\n`/(]{4,80})")
+_DOCNAME_RE = re.compile(r"\b\d{3,}\.md\b")
+LEAKAGE_SIGNATURES: dict[str, Any] | None = None
+
+
+def _prompt_signatures(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """The names and document ids the PROMPT itself prints in its examples.
+
+    A canary, not a judgement: it exists so that re-introducing a real entity into
+    an example cannot pass unnoticed. De-identified examples yield an empty set,
+    which is the healthy reading — report the signature COUNT beside every zero so
+    "nothing leaked" can be told from "nothing was looked for".
+    """
+    global LEAKAGE_SIGNATURES
+    if path is None and LEAKAGE_SIGNATURES is not None:
+        return LEAKAGE_SIGNATURES
+    docnames: set[str] = set()
+    values: set[str] = set()
+    try:
+        raw = Path(path or PROMPT_PATH).read_text(encoding="utf-8")
+    except OSError:
+        result = {"docnames": docnames, "values": values, "loaded": False}
+        LEAKAGE_SIGNATURES = result if path is None else LEAKAGE_SIGNATURES
+        return result
+    docnames.update(_DOCNAME_RE.findall(raw))
+    for match in _EXAMPLE_VALUE_RE.findall(raw):
+        value = match.strip().strip('"').strip()
+        # Only names can leak: a lowercase phrase ("the institution slot") is schema
+        # vocabulary a delivery is SUPPOSED to repeat, and flagging it would drown
+        # the canary in false positives.
+        if len(value) >= 6 and not value.startswith("<") and len(re.findall(r"[A-Z]", value)) >= 2:
+            values.add(value)
+    result = {"docnames": docnames, "values": values, "loaded": True}
+    if path is None:
+        LEAKAGE_SIGNATURES = result
+    return result
+
+
+def _leakage_counts(text: str, signatures: dict[str, Any] | None) -> dict[str, Any]:
+    """Whether the deliverable reused anything the PROMPT prints in its examples."""
+    signatures = signatures or _prompt_signatures()
+    docnames = signatures.get("docnames") or set()
+    values = signatures.get("values") or set()
+    answer = "\n".join(re.findall(r"(?im)^.*(?:Final|Guessed)\s+Answer.*$", text))
+    lowered = text.lower()
+    leaked_values = 0
+    shipped = 0
+    for value in values:
+        needle = value.lower()
+        count = lowered.count(needle)
+        if count:
+            leaked_values += count
+            if needle in answer.lower():
+                shipped = 1
+    return {
+        "leaked_docnames": sum(1 for docname in docnames if docname.lower() in lowered),
+        "leaked_values": leaked_values,
+        "example_value_shipped": shipped,
+    }
+
+
+def structure_metrics(answer: str, question: str = "", signatures: dict[str, Any] | None = None) -> dict[str, Any]:
     """Count the structure a deliverable DECLARED, from its own text.
 
     Every counter is a regex over the markdown the producer shipped, so the
@@ -1373,7 +1459,7 @@ def structure_metrics(answer: str, question: str = "") -> dict[str, Any]:
     }
     metrics["failure_types"] = sorted({match.lower() for match in re.findall(r"^\s*-\s*Failure:\s*([A-Za-z_-]+)", text, flags=re.MULTILINE)})
     metrics["values"] = _intermediate_values(text)
-    metrics.update(_delivery_checks(text, question))
+    metrics.update(_delivery_checks(text, question, signatures))
     return metrics
 
 
@@ -1554,6 +1640,10 @@ def build_leaderboard(
     pivot_rows = 0
     unrecorded_rows = 0
     partition_rows = 0
+    reuse_rows = 0
+    leak_rows = 0
+    prompt_signatures = _prompt_signatures()
+    prompt_signature_total = len(prompt_signatures["docnames"]) + len(prompt_signatures["values"])
 
     for row in rows:
         query_id = str(row.get("question_id") or _row_run_key(row) or "")
@@ -1629,7 +1719,7 @@ def build_leaderboard(
         per_query_usage.append(_usage_row(query_id, row, search_tools))
 
         # Structure: what the deliverable DECLARED, counted rather than judged.
-        structure = structure_metrics(row.get("ragflow_answer") or "", row.get("question") or "")
+        structure = structure_metrics(row.get("ragflow_answer") or "", row.get("question") or "", prompt_signatures)
         committed_values = structure.pop("values", [])
         failure_types = structure.pop("failure_types", [])
         per_query_structure.append({"query_id": query_id, "run_key": _row_run_key(row), **structure})
@@ -1651,6 +1741,10 @@ def build_leaderboard(
             unrecorded_rows += 1
         if structure.get("constraints_duplicated"):
             partition_rows += 1
+        if structure.get("constraint_number_reused"):
+            reuse_rows += 1
+        if structure.get("leaked_docnames") or structure.get("leaked_values") or structure.get("example_value_shipped"):
+            leak_rows += 1
         for key in DELIVERY_TOTALS:
             delivery_totals[key] += int(structure.get(key) or 0)
 
@@ -1754,10 +1848,25 @@ def build_leaderboard(
             "duplicated": delivery_totals["constraints_duplicated"],
             "blocks_without_constraint": delivery_totals["blocks_without_constraint"],
             "rows_with_a_duplicate": partition_rows,
+            "number_reused": delivery_totals["constraint_number_reused"],
+            "rows_with_a_reused_number": reuse_rows,
             "note": "The numbered constraints form a PARTITION: each `c<k>` is defined by exactly one block, and a "
             "number two blocks define leaves the unsatisfied-set aggregation ambiguous, since it works by that "
             "number. Measured 2026-09-23 (with the retired dependency tails excluded, which is what inflation "
             "from the old field looked like): 26 of 186 definitions were duplicates.",
+        },
+        "prompt_leakage": {
+            "signature_total": prompt_signature_total,
+            "signatures_loaded": bool(prompt_signatures.get("loaded")),
+            "rows": leak_rows,
+            "leaked_docnames": delivery_totals["leaked_docnames"],
+            "leaked_values": delivery_totals["leaked_values"],
+            "example_value_shipped": delivery_totals["example_value_shipped"],
+            "note": "A CANARY over the prompt's own examples, not a judgement: the names and document ids a "
+            "prompt prints in a worked example sit in the model's context, and one measured delivery "
+            "shipped the example's hospital name as its answer while citing the document the example "
+            "printed. `signature_total` counts what was looked for — read it beside the zeros, since a "
+            "de-identified prompt and an unloaded prompt both report none.",
         },
         "parse_coverage": {
             "blocks_parsed": delivery_totals["blocks_parsed"],
