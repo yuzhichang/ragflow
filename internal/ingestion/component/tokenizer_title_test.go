@@ -22,7 +22,8 @@ import (
 )
 
 // A corpus named by id ("93372.md") leaves title_tks with the id alone; when the document
-// declares a title in its header block that title must reach the field, filtered.
+// declares a title in its header block that title must reach the field, filtered — in whatever
+// script the document is written.
 func TestDeclaredTitleTokens(t *testing.T) {
 	header := "Document 44250\nSource URL: https://www.sportskeeda.com/player/pp-ojha\n" +
 		"title: Pragyan Ojha\ndate: 2025-01-01\nPersonal Information\n| Full Name | Pragyan Prayash Ojha |\n"
@@ -57,6 +58,54 @@ func TestDeclaredTitleTokens(t *testing.T) {
 			name:   "numeric tokens dropped, short words kept",
 			chunks: []schema.ChunkDoc{{Text: "title: 1917 Ok Go\n"}},
 			want:   []string{"ok", "go"},
+		},
+		{
+			// A declared title is kept whatever script writes it. The ASCII-boundary
+			// splitter this replaced produced nothing at all for these titles, which
+			// left the title channel empty for every non-Latin document.
+			name:   "Chinese title is kept whole",
+			chunks: []schema.ChunkDoc{{Text: "title: 三国演义\n"}},
+			want:   []string{"三国演义"},
+		},
+		{
+			name:   "Chinese title keeps its book-title marks out and the date line stays untouched",
+			chunks: []schema.ChunkDoc{{Text: "title: 《三国演义》\ndate: 2025-01-01\n"}},
+			want:   []string{"三国演义"},
+		},
+		{
+			name:   "a localised wikipedia suffix is a separate word, not a label",
+			chunks: []schema.ChunkDoc{{Text: "title: 《三国演义》 - 维基百科\n"}},
+			want:   []string{"三国演义", "维基百科"},
+		},
+		{
+			name:   "Japanese and Korean titles are kept whole",
+			chunks: []schema.ChunkDoc{{Text: "name: 吾輩は猫である\nfullname: 태백산맥\n"}},
+			want:   []string{"吾輩は猫である", "태백산맥"},
+		},
+		{
+			// No multilingual stopword list exists, so a non-English function word
+			// survives: "и" is here on purpose, to pin that residual.
+			name:   "Cyrillic title is split on whitespace and quoted form is trimmed",
+			chunks: []schema.ChunkDoc{{Text: "title: «Война и мир»\n"}},
+			want:   []string{"война", "и", "мир"},
+		},
+		{
+			// Diacritics used to be ASCII-boundary separators: "José" came out as
+			// "jos"+"é" (and "Müller" as "m"+"ller", with "m" then dropped as a
+			// stopword). The whole accented word is what belongs in the index.
+			name:   "accented Latin words survive intact",
+			chunks: []schema.ChunkDoc{{Text: "fullname: José Müller\n"}},
+			want:   []string{"josé", "müller"},
+		},
+		{
+			name:   "a mixed-script title keeps both sides and still drops English stopwords",
+			chunks: []schema.ChunkDoc{{Text: "title: 三国演义 Romance of the Three Kingdoms\n"}},
+			want:   []string{"三国演义", "romance", "three", "kingdoms"},
+		},
+		{
+			name:   "pure numbers are dropped in any script",
+			chunks: []schema.ChunkDoc{{Text: "title: ٣٤٥\n"}},
+			want:   nil,
 		},
 		{
 			name:   "empty chunks are skipped safely",

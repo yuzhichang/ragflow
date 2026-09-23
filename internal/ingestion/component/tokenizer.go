@@ -775,16 +775,24 @@ func normalizeChunkTextFallback(chunks []schema.ChunkDoc) {
 // Why it exists: a corpus whose files are named by id ("93372.md") otherwise leaves title_tks
 // holding nothing but the id, while the retriever weights title_tks on a par with content_ltks -
 // so the declared title is a ranking signal that costs nothing to index. Label words, the word
-// "wikipedia", tokens shorter than five characters and pure numbers are dropped: they are noise
-// that would match unrelated queries once the field is weighted.
+// "wikipedia", English stopwords and pure numbers are dropped: they are noise that would match
+// unrelated queries once the field is weighted.
 //
 // Only the first non-empty chunk is inspected, because the header block (when present at all)
 // belongs to the head of the document.
-// englishStopwords are dropped from declared-title metadata. The tokenizer keeps
-// function words ("the", "for", "and", ...) as-is — verified via the ES _analyze
-// API on title_tks and via tokenizer.Tokenize — so they have to be filtered here.
-// This replaces an earlier length heuristic (keep only tokens >= 5 chars) which
-// also removed real content words such as "icc", "cup", "john", "star", "bros".
+//
+// The extraction is script-agnostic. A word that is not pure ASCII — Chinese, Japanese, Korean,
+// Cyrillic, Arabic, Greek, Hebrew, Thai, or Latin carrying diacritics — is kept whole and handed
+// to the analyzer downstream, which is what segments it. Splitting such a word here, on ASCII
+// boundaries, is the older behaviour and it dissolved the whole title into nothing.
+// Tokens that ARE pure ASCII keep the older treatment: englishStopwords are dropped (the
+// tokenizer keeps function words such as "the", "for" and "and" as-is — verified via the ES
+// _analyze API on title_tks and via tokenizer.Tokenize — so they have to be filtered here), and
+// so are the label words and pure numbers. The stopword list stays English-only on purpose: a
+// multilingual one would have to be invented, and getting a language wrong silently deletes real
+// content words from that language's titles.
+// This replaced an earlier length heuristic (keep only tokens >= 5 chars) which also removed real
+// content words such as "icc", "cup", "john", "star", "bros".
 var englishStopwords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true, "be": true, "been": true,
 	"but": true, "by": true, "d": true, "for": true, "from": true, "had": true, "has": true, "have": true,
@@ -796,6 +804,39 @@ var englishStopwords = map[string]bool{
 	"us": true, "ve": true, "was": true, "we": true, "were": true, "what": true, "when": true,
 	"where": true, "which": true, "who": true, "will": true, "with": true, "y": true,
 	"you": true, "your": true,
+}
+
+// asciiOnly reports whether s is made of ASCII bytes alone. A pure-ASCII string is the only thing
+// ASCII decoding produces, so a byte scan decides it.
+func asciiOnly(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// allDigits reports whether s is non-empty and made only of decimal digits, in any script.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// trimWordEdges drops leading and trailing runes that are neither letters nor digits, so the
+// punctuation a title tends to carry — 《三国演义》, «Война и мир», (1917), a trailing comma — does
+// not reach the token stream.
+func trimWordEdges(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 func declaredTitleTokens(chunks []schema.ChunkDoc) []string {
@@ -832,27 +873,44 @@ func declaredTitleTokens(chunks []schema.ChunkDoc) []string {
 	skip := map[string]bool{"title": true, "name": true, "fullname": true, "wikipedia": true}
 	seen := map[string]bool{}
 	var out []string
+	// keep records one accepted token and reports whether the cap is now reached.
+	keep := func(token string) bool {
+		if seen[token] {
+			return false
+		}
+		seen[token] = true
+		out = append(out, token)
+		return len(out) >= maxTokens
+	}
 	for _, v := range values {
-		for _, w := range strings.FieldsFunc(v, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
-		}) {
-			// Pure numbers stay out (years, ids, and the corpus file stem are all
-			// numeric noise for the title channel); everything else is kept unless
-			// it is an English stopword, a label or a duplicate.
-			allDigits := true
-			for _, r := range w {
-				if r < '0' || r > '9' {
-					allDigits = false
-					break
-				}
-			}
-			if englishStopwords[w] || skip[w] || seen[w] || allDigits {
+		// Split on whitespace, NOT on ASCII boundaries. A word in another script is a word, and
+		// the analyzer downstream segments it (RAGFlow's tokenizer handles CJK); the
+		// ASCII-boundary splitter dissolved such a word into fragments of length zero.
+		for _, word := range strings.Fields(v) {
+			word = trimWordEdges(word)
+			if word == "" {
 				continue
 			}
-			seen[w] = true
-			out = append(out, w)
-			if len(out) >= maxTokens {
-				return out
+			if !asciiOnly(word) {
+				// Pure numbers stay out of the title channel whichever script writes them: the
+				// corpus file stem is numeric, so a numeric title token matches every document.
+				if !allDigits(word) && keep(word) {
+					return out
+				}
+				continue
+			}
+			for _, w := range strings.FieldsFunc(word, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+			}) {
+				// Pure numbers stay out (years, ids, and the corpus file stem are all numeric
+				// noise for the title channel); everything else is kept unless it is an English
+				// stopword, a label or a duplicate.
+				if englishStopwords[w] || skip[w] || allDigits(w) {
+					continue
+				}
+				if keep(w) {
+					return out
+				}
 			}
 		}
 	}
