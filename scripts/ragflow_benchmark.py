@@ -1109,6 +1109,14 @@ DELIVERY_TOTALS: tuple[str, ...] = (
     "from_unbound",
     "inlined_candidate",
     "depends_on_written",
+    "searched_lines",
+    "constraints_defined",
+    "constraints_duplicated",
+    "blocks_without_constraint",
+    "blocks_without_searched",
+    "blocks_with_by_name_query",
+    "pivot_missing_blocks",
+    "single_term_searches",
     "blocks_parsed",
     "blocks_total",
 )
@@ -1136,6 +1144,13 @@ _BLOCK_HEAD_RE = re.compile(r"(?m)^[^\S\n]*#{2,4}[^\S\n]*Sub-question[^\S\n]+(\d
 _FROM_ENTRY_RE = re.compile(r"(\?[A-Za-z_][A-Za-z0-9_]*)\s*(?:\(block\s*(\d+)\))?")
 # _CANDIDATE_LINE_RE finds the lines that name a candidate inside one block.
 _CANDIDATE_LINE_RE = re.compile(r"(?m)^\s*-\s*(?:Tested|Eliminated|Retained):\s*(.+)$")
+# _CLAIM_LINE_RE finds the lines that assert something ABOUT THE CORPUS in one block:
+# each owes a recorded search (see the Searched-line requirement).
+_CLAIM_LINE_RE = re.compile(r"^\s*-\s*(?:Tested|Eliminated|Retained|Failure):")
+_DEPENDS_TAIL_RE = re.compile(r"(?i)[—\s-]+\s*depends_on\s*:.*$")
+# _PATTERN_RE pulls the query text out of one recorded `Searched:` payload, so a short
+# single-term query can be told from a multi-clue paraphrase.
+_PATTERN_RE = re.compile(r'[("`]([^"`)]+)')
 
 
 def _block_headers(text: str) -> list[dict[str, Any]]:
@@ -1156,6 +1171,9 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
         op = ""
         binds = ""
         has_from_line = False
+        asserts_corpus = False
+        searched: list[str] = []
+        constraints: list[str] = []
         from_entries: list[tuple[str, int | None]] = []
         for line in lines[1:]:
             stripped = line.strip()
@@ -1167,6 +1185,12 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 has_from_line = True
                 for name, pointer in _FROM_ENTRY_RE.findall(stripped[len("- From:") :]):
                     from_entries.append((name, int(pointer) if pointer else None))
+            elif stripped.startswith("- Constraints:"):
+                constraints = re.findall(r"\b(c\d+)\s*=", _DEPENDS_TAIL_RE.sub("", stripped))
+            elif stripped.startswith("- Searched:"):
+                searched.append(stripped[len("- Searched:") :].strip())
+            elif _CLAIM_LINE_RE.match(stripped):
+                asserts_corpus = True
         candidates = [head for head in (_line_head(match) for match in _CANDIDATE_LINE_RE.findall(body)) if head]
         blocks.append(
             {
@@ -1177,6 +1201,9 @@ def _block_headers(text: str) -> list[dict[str, Any]]:
                 "has_from_line": has_from_line,
                 "from_entries": from_entries,
                 "candidates": candidates,
+                "searched": searched,
+                "constraints": constraints,
+                "asserts_corpus": asserts_corpus,
             }
         )
     return blocks
@@ -1207,6 +1234,13 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
     unbound = 0
     inlined = 0
     parsed = 0
+    searched_lines = 0
+    without_searched = 0
+    with_by_name = 0
+    pivot_missing = 0
+    single_term = 0
+    without_constraint = 0
+    defined: dict[str, int] = {}
     question_lower = (question or "").lower()
     for block in blocks:
         if block["op"] and block["binds"] and block["has_from_line"] and re.search(r"slot:\s*\S", block["title"]):
@@ -1221,6 +1255,26 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
                     unbound += 1
                 elif producer != pointer:
                     mismatch += 1
+        for cid in block["constraints"]:
+            defined[cid] = defined.get(cid, 0) + 1
+        if not block["constraints"]:
+            without_constraint += 1
+        searched_lines += len(block["searched"])
+        if block["asserts_corpus"] and not block["searched"]:
+            without_searched += 1
+        recorded = " || ".join(block["searched"]).lower()
+        keys = [key for candidate in block["candidates"] for key in _candidate_keys(candidate)]
+        if any(key in recorded for key in keys):
+            with_by_name += 1
+        elif keys:
+            # A block that tests or retains a candidate owes a query on that
+            # candidate's own name (CC11); with candidates and no by-name query
+            # it verified none of them.
+            pivot_missing += 1
+        for raw in block["searched"]:
+            match = _PATTERN_RE.search(raw)
+            if match and 0 < len(re.findall(r"[A-Za-z0-9']+", match.group(1))) <= 3:
+                single_term += 1
         for candidate in block["candidates"]:
             lowered = candidate.lower()
             # A name the QUESTION itself supplies is not an inlined finding:
@@ -1236,9 +1290,33 @@ def _delivery_checks(text: str, question: str) -> dict[str, Any]:
         "from_pointer_mismatch": mismatch,
         "from_unbound": unbound,
         "inlined_candidate": inlined,
+        "searched_lines": searched_lines,
+        "constraints_defined": sum(defined.values()),
+        "constraints_duplicated": sum(1 for count in defined.values() if count > 1),
+        "blocks_without_constraint": without_constraint,
+        "blocks_without_searched": without_searched,
+        "blocks_with_by_name_query": with_by_name,
+        "pivot_missing_blocks": pivot_missing,
+        "single_term_searches": single_term,
         "blocks_parsed": parsed,
         "blocks_total": len(blocks),
     }
+
+
+def _candidate_keys(head: str) -> list[str]:
+    """Keys under which one candidate counts as searched by name.
+
+    A candidate head can be a bare name ("Kevin Anderson (tennis)") or a whole
+    clause ("Both mothers named Barbara (c2 established)"), so testing the head
+    verbatim against a query misses almost every real by-name search. The head is
+    therefore reduced to its own tokens: the whole string when it is short, plus
+    every two-word run inside it — long enough to be distinctive, short enough to
+    survive the parentheses, qualifiers and outcome a `Searched:` line carries.
+    """
+    words = re.findall(r"[A-Za-z0-9'’-]+", head.lower())
+    keys = [" ".join(words)] if 2 <= len(words) <= 4 else []
+    keys += [" ".join(words[index : index + 2]) for index in range(len(words) - 1)]
+    return [key for key in keys if len(key) >= 6]
 
 
 def structure_metrics(answer: str, question: str = "") -> dict[str, Any]:
@@ -1473,6 +1551,9 @@ def build_leaderboard(
     inline_rows = 0
     pointer_rows = 0
     retired_rows = 0
+    pivot_rows = 0
+    unrecorded_rows = 0
+    partition_rows = 0
 
     for row in rows:
         query_id = str(row.get("question_id") or _row_run_key(row) or "")
@@ -1564,6 +1645,12 @@ def build_leaderboard(
             pointer_rows += 1
         if structure.get("depends_on_written"):
             retired_rows += 1
+        if structure.get("pivot_missing_blocks"):
+            pivot_rows += 1
+        if structure.get("blocks_without_searched"):
+            unrecorded_rows += 1
+        if structure.get("constraints_duplicated"):
+            partition_rows += 1
         for key in DELIVERY_TOTALS:
             delivery_totals[key] += int(structure.get(key) or 0)
 
@@ -1641,6 +1728,36 @@ def build_leaderboard(
             "rows": retired_rows,
             "occurrences": delivery_totals["depends_on_written"],
             "note": "The field is RETIRED (the chain is stated by From); a nonzero count is the old contract still being written, not an adoption.",
+        },
+        "searched_record": {
+            "lines": delivery_totals["searched_lines"],
+            "blocks_without_searched": delivery_totals["blocks_without_searched"],
+            "rows": unrecorded_rows,
+            "note": "A block that asserts anything about the corpus (Tested/Eliminated/Retained/Failure) owes at "
+            "least one recorded `Searched:` line. Measured 2026-09-23: a deliverable can retain six candidates "
+            "while recording no search at all, and every search-discipline check reads those lines, so an "
+            "unrecorded run is unauditable rather than clean.",
+        },
+        "pivot": {
+            "blocks_with_by_name_query": delivery_totals["blocks_with_by_name_query"],
+            "pivot_missing_blocks": delivery_totals["pivot_missing_blocks"],
+            "rows_with_a_missing_pivot": pivot_rows,
+            "single_term_searches": delivery_totals["single_term_searches"],
+            "note": "CC11's by-name query, counted from the deliverable's own `Searched` patterns against its own "
+            "candidate names: a block with candidates and no by-name query verified none of them. "
+            "`single_term_searches` is the crude proxy for the clue-anchor query (<=3 words in the pattern). "
+            "On the 2026-09-23 runs every measurable FAILURE had zero by-name queries while every pass had at "
+            "least one, and q875 retrieved 129 documents without touching its expected family.",
+        },
+        "constraint_partition": {
+            "defined": delivery_totals["constraints_defined"],
+            "duplicated": delivery_totals["constraints_duplicated"],
+            "blocks_without_constraint": delivery_totals["blocks_without_constraint"],
+            "rows_with_a_duplicate": partition_rows,
+            "note": "The numbered constraints form a PARTITION: each `c<k>` is defined by exactly one block, and a "
+            "number two blocks define leaves the unsatisfied-set aggregation ambiguous, since it works by that "
+            "number. Measured 2026-09-23 (with the retired dependency tails excluded, which is what inflation "
+            "from the old field looked like): 26 of 186 definitions were duplicates.",
         },
         "parse_coverage": {
             "blocks_parsed": delivery_totals["blocks_parsed"],
