@@ -1083,7 +1083,10 @@ STRUCTURE_FIELDS: tuple[str, ...] = (
     "from_lines",
     "constraints",
     "satisfied",
-    "depends_on",
+    # Replaces `depends_on`: the field is retired (it stated a DERIVED edge in a
+    # second currency and no consumer ever read it), and the chain now rides on
+    # the block pointer each `From:` entry carries.
+    "from_pointers",
     "searched",
     "tested",
     "eliminated",
@@ -1092,6 +1095,22 @@ STRUCTURE_FIELDS: tuple[str, ...] = (
     "failure",
     "reasoning_chain",
     "answer_label",
+)
+
+# DELIVERY_TOTALS are the per-question check counters summed over the run. They
+# are DIAGNOSTIC, never gate material: a count that fires on most rows is not a
+# defect a pipeline can act on (unrecordedLocateTools was kept out of the gate for
+# firing on 69% of 703 rows), so these exist to measure prevalence first.
+DELIVERY_TOTALS: tuple[str, ...] = (
+    "from_entries",
+    "from_pointers",
+    "from_entries_without_pointer",
+    "from_pointer_mismatch",
+    "from_unbound",
+    "inlined_candidate",
+    "depends_on_written",
+    "blocks_parsed",
+    "blocks_total",
 )
 
 # EARLY_STOP_DOCS is the breadth below which a run counts as having stopped
@@ -1107,8 +1126,122 @@ EARLY_STOP_DOCS = 10
 # from spending its time in file I/O.
 _DOC_TEXT_LIMIT = 400_000
 
+# _BLOCK_HEAD_RE finds the one marker the schema fixes for a block boundary. Its
+# whitespace runs are `[^\S\n]`, never `\s`: `\s*` would swallow the newline
+# before the heading too, so the slice of a block would begin with blank lines and
+# its title would read as empty.
+_BLOCK_HEAD_RE = re.compile(r"(?m)^[^\S\n]*#{2,4}[^\S\n]*Sub-question[^\S\n]+(\d+)[^\S\n]*:")
+# _FROM_ENTRY_RE reads one `From:` entry: its variable, and the block pointer the
+# producer wrote after it (absent when the entry carries none).
+_FROM_ENTRY_RE = re.compile(r"(\?[A-Za-z_][A-Za-z0-9_]*)\s*(?:\(block\s*(\d+)\))?")
+# _CANDIDATE_LINE_RE finds the lines that name a candidate inside one block.
+_CANDIDATE_LINE_RE = re.compile(r"(?m)^\s*-\s*(?:Tested|Eliminated|Retained):\s*(.+)$")
 
-def structure_metrics(answer: str) -> dict[str, Any]:
+
+def _block_headers(text: str) -> list[dict[str, Any]]:
+    """Split a deliverable into blocks and read each block's own header lines.
+
+    Blocks are delimited by their `### Sub-question N:` headings; everything
+    else is read by line prefix. A block whose header cannot be read keeps its
+    missing parts empty instead of being dropped, so the caller can report
+    COVERAGE rather than silently scoring "unparsed" as "clean" — the failure
+    mode that lets a metric look green over text nothing actually read.
+    """
+    marks = list(_BLOCK_HEAD_RE.finditer(text))
+    blocks: list[dict[str, Any]] = []
+    for index, mark in enumerate(marks):
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+        body = text[mark.start() : end]
+        lines = body.splitlines()
+        op = ""
+        binds = ""
+        has_from_line = False
+        from_entries: list[tuple[str, int | None]] = []
+        for line in lines[1:]:
+            stripped = line.strip()
+            if not op and stripped.startswith("- Op:"):
+                op = stripped[len("- Op:") :].strip()
+            elif not binds and stripped.startswith("- Binds:"):
+                binds = stripped[len("- Binds:") :].strip()
+            elif stripped.startswith("- From:"):
+                has_from_line = True
+                for name, pointer in _FROM_ENTRY_RE.findall(stripped[len("- From:") :]):
+                    from_entries.append((name, int(pointer) if pointer else None))
+        candidates = [head for head in (_line_head(match) for match in _CANDIDATE_LINE_RE.findall(body)) if head]
+        blocks.append(
+            {
+                "number": int(mark.group(1)),
+                "title": lines[0].strip() if lines else "",
+                "op": op,
+                "binds": binds,
+                "has_from_line": has_from_line,
+                "from_entries": from_entries,
+                "candidates": candidates,
+            }
+        )
+    return blocks
+
+
+def _delivery_checks(text: str, question: str) -> dict[str, Any]:
+    """Counts for the delivery questions that CAN be answered mechanically.
+
+    Each is membership, not phrasing: a pointer either names the block that
+    binds the variable or it does not, and a candidate name is either inside the
+    block's own title or it is not. That is what makes these countable exactly —
+    and they are still counted HERE, not enforced in the gate. Two reasons: a
+    gate opinion costs a whole repair turn, and the prevalence of each defect is
+    not measured yet (unrecordedLocateTools stayed out of the gate for firing on
+    69% of 703 rows). Read `blocks_parsed` beside every count: a count taken over
+    an unparsed block is not evidence of compliance.
+    """
+    blocks = _block_headers(text)
+    bindings: dict[str, int] = {}
+    for block in blocks:
+        name = block["binds"].strip().lower()
+        if name.startswith("?") and name not in bindings:
+            bindings[name] = block["number"]
+
+    pointers = 0
+    without_pointer = 0
+    mismatch = 0
+    unbound = 0
+    inlined = 0
+    parsed = 0
+    question_lower = (question or "").lower()
+    for block in blocks:
+        if block["op"] and block["binds"] and block["has_from_line"] and re.search(r"slot:\s*\S", block["title"]):
+            parsed += 1
+        for name, pointer in block["from_entries"]:
+            producer = bindings.get(name.lower())
+            if pointer is None:
+                without_pointer += 1
+            else:
+                pointers += 1
+                if producer is None:
+                    unbound += 1
+                elif producer != pointer:
+                    mismatch += 1
+        for candidate in block["candidates"]:
+            lowered = candidate.lower()
+            # A name the QUESTION itself supplies is not an inlined finding:
+            # "Confirm the two individuals share the name Kevin Anderson" names
+            # the question's own anchor, while "first name (Barbara)" names
+            # something the search returned.
+            if len(lowered) >= 3 and lowered in block["title"].lower() and lowered not in question_lower:
+                inlined += 1
+    return {
+        "from_pointers": pointers,
+        "from_entries": pointers + without_pointer,
+        "from_entries_without_pointer": without_pointer,
+        "from_pointer_mismatch": mismatch,
+        "from_unbound": unbound,
+        "inlined_candidate": inlined,
+        "blocks_parsed": parsed,
+        "blocks_total": len(blocks),
+    }
+
+
+def structure_metrics(answer: str, question: str = "") -> dict[str, Any]:
     """Count the structure a deliverable DECLARED, from its own text.
 
     Every counter is a regex over the markdown the producer shipped, so the
@@ -1148,7 +1281,9 @@ def structure_metrics(answer: str) -> dict[str, Any]:
         "from_lines": count(r"^\s*-\s*From:\s*"),
         "constraints": count(r"^\s*-\s*Constraints:\s*"),
         "satisfied": count(r"satisfied:\s*\["),
-        "depends_on": count(r"depends_on:"),
+        # Retired field: a nonzero count is the OLD contract still being written,
+        # so it is counted as a violation rather than as an adoption.
+        "depends_on_written": count(r"depends_on\s*:"),
         "searched": count(r"^\s*-\s*Searched:\s*"),
         "tested": count(r"^\s*-\s*Tested:\s*"),
         "eliminated": count(r"^\s*-\s*Eliminated:\s*"),
@@ -1160,6 +1295,7 @@ def structure_metrics(answer: str) -> dict[str, Any]:
     }
     metrics["failure_types"] = sorted({match.lower() for match in re.findall(r"^\s*-\s*Failure:\s*([A-Za-z_-]+)", text, flags=re.MULTILINE)})
     metrics["values"] = _intermediate_values(text)
+    metrics.update(_delivery_checks(text, question))
     return metrics
 
 
@@ -1331,6 +1467,12 @@ def build_leaderboard(
     corpus_path = (cfg.get("dataset") or {}).get("corpus_path")
     corpus_dir = Path(str(corpus_path)) if corpus_path else None
     doc_text_cache: dict[str, str] = {}
+    # Delivery checks: totals over the run, plus a per-question count of the rows
+    # that tripped each one (the prevalence figure the gate decision needs).
+    delivery_totals: dict[str, int] = defaultdict(int)
+    inline_rows = 0
+    pointer_rows = 0
+    retired_rows = 0
 
     for row in rows:
         query_id = str(row.get("question_id") or _row_run_key(row) or "")
@@ -1406,7 +1548,7 @@ def build_leaderboard(
         per_query_usage.append(_usage_row(query_id, row, search_tools))
 
         # Structure: what the deliverable DECLARED, counted rather than judged.
-        structure = structure_metrics(row.get("ragflow_answer") or "")
+        structure = structure_metrics(row.get("ragflow_answer") or "", row.get("question") or "")
         committed_values = structure.pop("values", [])
         failure_types = structure.pop("failure_types", [])
         per_query_structure.append({"query_id": query_id, "run_key": _row_run_key(row), **structure})
@@ -1415,6 +1557,15 @@ def build_leaderboard(
                 structure_seen[field] += 1
         for failure_type in failure_types:
             failure_type_counts[failure_type] += 1
+        # Delivery checks: measured here, never enforced here — see DELIVERY_TOTALS.
+        if structure.get("inlined_candidate"):
+            inline_rows += 1
+        if structure.get("from_entries_without_pointer") or structure.get("from_pointer_mismatch"):
+            pointer_rows += 1
+        if structure.get("depends_on_written"):
+            retired_rows += 1
+        for key in DELIVERY_TOTALS:
+            delivery_totals[key] += int(structure.get(key) or 0)
 
         # Early stop: a run that concluded inside a handful of retrieved
         # documents. Symptom, not score - see EARLY_STOP_DOCS.
@@ -1465,6 +1616,47 @@ def build_leaderboard(
         "the document and giving up look identical here, so read this beside Accuracy and beside "
         "structure_adoption_percent's 'failure' field."
     )
+    delivery_checks = {
+        "rows": total,
+        "inlined_candidate": {
+            "rows": inline_rows,
+            "occurrences": delivery_totals["inlined_candidate"],
+            "note": "A candidate name written into a block's own title (a value the search returned, not one the "
+            "question supplies) freezes a finding into the plan, so the same question decomposes differently "
+            "on another run. Membership, not phrasing: the name comes from the block's own Tested/Eliminated/"
+            "Retained lines.",
+        },
+        "from_pointer": {
+            "entries": delivery_totals["from_entries"],
+            "with_pointer": delivery_totals["from_pointers"],
+            "without_pointer": delivery_totals["from_entries_without_pointer"],
+            "mismatch": delivery_totals["from_pointer_mismatch"],
+            "unbound": delivery_totals["from_unbound"],
+            "rows_with_a_defect": pointer_rows,
+            "note": "Each `From: ?x (block N)` should name the block that binds ?x — a DERIVED pointer, checkable "
+            "against Binds. `without_pointer` counts entries that carry no pointer (the pre-2026-09-23 shape), "
+            "`mismatch` counts pointers naming another block, `unbound` counts names no block binds.",
+        },
+        "depends_on_written": {
+            "rows": retired_rows,
+            "occurrences": delivery_totals["depends_on_written"],
+            "note": "The field is RETIRED (the chain is stated by From); a nonzero count is the old contract still being written, not an adoption.",
+        },
+        "parse_coverage": {
+            "blocks_parsed": delivery_totals["blocks_parsed"],
+            "blocks_total": delivery_totals["blocks_total"],
+            "percent": round(delivery_totals["blocks_parsed"] / delivery_totals["blocks_total"] * 100.0, 1) if delivery_totals["blocks_total"] else None,
+            "note": "A block counts as parsed when its title carries `slot:` and it carries `Op:`, `Binds:` and "
+            "`From:`. READ THIS BESIDE EVERY COUNT ABOVE: a count taken over an unparsed block is not "
+            "evidence of compliance, and a metric that cannot report its own coverage turns 'unreadable' "
+            "into 'clean'.",
+        },
+        "note": "Measured, never enforced: these three checks are membership, not phrasing, so the gate COULD carry "
+        "them — but a gate opinion costs a whole repair turn on every run, and prevalence is not measured yet "
+        "(unrecordedLocateTools stayed out of the gate for firing on 69% of 703 rows). Collect the prevalence "
+        "here first; move a check into the gate only when its false-positive rate is ~zero, its coverage is "
+        "high, and it fires rarely.",
+    }
 
     return {
         "LLM": str(lb_cfg.get("llm") or "change me when submitting"),
@@ -1524,6 +1716,7 @@ def build_leaderboard(
                 "percent": round(intermediate_grounded / intermediate_checked * 100.0, 1) if intermediate_checked else None,
                 "note": intermediate_note,
             },
+            "delivery_checks": delivery_checks,
             "note": " ".join(
                 [
                     "Accuracy counts every question of the run; failed and unjudged rows",
