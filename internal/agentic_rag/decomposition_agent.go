@@ -44,8 +44,12 @@ const questionDecompositionTemplateID = "question-decomposition"
 const decompositionNoPlanMarker = "NO-DECOMPOSITION"
 
 // decompositionMaxIterations bounds the planner's own ReAct loop: it writes
-// one plan and runs the checker a few times, so twelve rounds are generous.
-const decompositionMaxIterations = 12
+// one plan, calls the checker once per revision and emits the plan once the
+// checker is clean. Twenty leaves room for a duplicate call and two repair
+// rounds - twelve was measured to be too tight (q1005, smoke #16: the planner
+// called the checker twice per iteration and ran out of iterations with a
+// clean plan in hand, so the stage returned nothing).
+const decompositionMaxIterations = 20
 
 // decompositionMaxRepairRounds caps the Go-side repair loop: after the agent
 // returns a plan, checkDecomposition is run HERE (deterministic, free - the
