@@ -663,7 +663,12 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 	fields := []zap.Field{
 		zap.String("tool", name),
 		zap.Float64("cost_ms", float64(cost.Milliseconds())),
-		zap.String("args", truncateForLog(args, 200)),
+		// Args are logged IN FULL: the decomposition plan rides check_decomposition's
+		// args, and it is the run's single variable state - a truncated copy makes
+		// stage-one-vs-delivered comparisons impossible after the fact. Tool args
+		// are bounded by construction (queries, ids, the plan), so the volume cost
+		// is a few kilobytes per call at most.
+		zap.String("args", args),
 	}
 	if err == nil && t.watch != nil {
 		// The locate watchdog rides the result, not the prompt: a rule read
