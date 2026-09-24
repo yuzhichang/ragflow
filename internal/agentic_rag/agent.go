@@ -707,6 +707,19 @@ func Run(ctx context.Context, in Input) (string, error) {
 		return "", errT
 	}
 
+	// Stage one: the question-decomposition agent writes the block plan and
+	// has it verified BEFORE the explorer runs, so decomposition is never left
+	// to the explorer's discipline - two measured runs (#11/#12) showed an
+	// in-prompt call contract the model never exercised (zero
+	// check_decomposition calls) and shipped a merged two-variable block (q875)
+	// and a plan of four disconnected roots (q1005). The stage is skipped for
+	// caller-owned toolsets (a different product shape, like the auditor) and
+	// for templates that do not decompose.
+	plan := ""
+	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
+		plan = runDecompositionStage(ctx, in, lastUserQuestion(in.Messages))
+	}
+
 	// Answer-audit gate state: created for templates that declare
 	// `audit_max_pass: N` (N > 0), which is both the switch and the budget —
 	// how many audit passes the gate may spend. The auditor is a STANDALONE
@@ -841,7 +854,18 @@ func Run(ctx context.Context, in Input) (string, error) {
 
 	// EnableStreaming lives on RunnerConfig, not ChatModelAgentConfig.
 	explorerHead := sess.explorer.head(ctx)
-	iter := sess.explorer.runner(ctx, explorerAgent, in.Stream).Run(ctx, in.Messages)
+	// The verified plan (when the decomposition stage produced one) is pinned
+	// as the LAST user message: the explorer's prompt tells it to treat that
+	// plan as the run's single variable state and to follow it, never to
+	// re-decompose.
+	runMessages := in.Messages
+	if plan != "" {
+		pin := "## Your decomposition (from the question-decomposition stage, mechanically verified)\n\n" +
+			plan + "\n\nThis plan is the run's single variable state: follow it as written, read the chain " +
+			"between blocks from `From`, and fill its schema one block at a time (see the given decomposition)."
+		runMessages = append(append([]*schema.Message{}, in.Messages...), schema.UserMessage(pin))
+	}
+	iter := sess.explorer.runner(ctx, explorerAgent, in.Stream).Run(ctx, runMessages)
 	final, evidence, runErr := consumeAgentEvents(ctx, iter, in.OnDelta, in.ToolCallCounts, in.ToolCallErrors, in.ToolErrorSamples)
 	if runErr != nil {
 		// The aborted turn's events must not reach the next one: a tool call
