@@ -58,6 +58,14 @@ const (
 	decompositionMaxConstraintsPerBlock = 10
 )
 
+// The advisory tier's thresholds: at this size the planner is HINTED to merge
+// or split; the hard caps above are where the plan FAILS. The hint text reads
+// the constants, so the two never drift apart.
+const (
+	decompositionHintBlocks      = 10
+	decompositionHintConstraints = 10
+)
+
 const checkDecompositionToolDescription = `Mechanically checks a DRAFT decomposition (the block plan, written before any search) and returns the structural findings it contains. It reads the plan's header fields only - variables, edges, constraint numbers - and every check below is a membership or counting test over them, so it holds whatever the wording.
 
 The checks:
@@ -71,7 +79,7 @@ The checks:
 8. Constraint form: every constraint uses its own block's variable plus zero or more of the variables its ` + "`From:`" + ` declares - nothing else - so the claim is a proposition one chunk can confirm or refute on its own.
 9. ` + "`From:`" + ` faithfulness: the declared set is EXACTLY the upstream variables the constraints use - an undeclared reference and an unused declaration are both findings.
 
-Two sizes are HINTS on the output, never findings - invitations to keep editing the plan rather than verdicts: a plan of five or more blocks hints that some of them could share one block (merge them), and a block of five or more constraints hints that part of them settles its own variable with its own anchors (split it off). Two sizes are HARD CAPS and fail as findings: a plan of more than ten blocks, and a block of more than ten constraints. What is deliberately NOT checked, because it is a judgment about wording rather than a mechanical fact: whether a sub-question is EQUIVALENT to its constraint set, whether a title names a real anchor of the question, whether a value inlines another block's candidate - you make those when you draft the plan, and the auditor re-checks them on the delivery.
+Two sizes are HINTS on the output, never findings - invitations to keep editing the plan rather than verdicts: a plan of ten or more blocks hints that some of them could share one block (merge them), and a block of ten or more constraints hints that part of them settles its own variable with its own anchors (split it off). Two sizes are HARD CAPS and fail as findings: a plan of more than ten blocks, and a block of more than ten constraints. What is deliberately NOT checked, because it is a judgment about wording rather than a mechanical fact: whether a sub-question is EQUIVALENT to its constraint set, whether a title names a real anchor of the question, whether a value inlines another block's candidate - you make those when you draft the plan, and the auditor re-checks them on the delivery.
 
 Call this IMMEDIATELY after writing the decomposition and BEFORE any retrieval: at that moment the plan is only these header lines, and a defect in it costs a whole run - a name bound twice voids every later reference to it, and a title that names no variable leaves every later reader guessing what the block holds.
 
@@ -627,22 +635,23 @@ var decompositionSlots = map[string]bool{
 }
 
 // decompositionSizeHints reports the blocks whose constraint load suggests a
-// further split. Five or more constraints on one block usually mean part of them
-// settles its own variable with its own anchors, and a deeper DAG is worth
-// considering - but the call is the planner's, so this is a HINT on the tool's
-// output and never a finding: it cannot turn an OK into a rejection.
+// further split. At decompositionHintConstraints on one block the planner is
+// hinted that part of them may settle its own variable with its own anchors,
+// and a deeper DAG is worth considering - but the call is the planner's, so
+// this is a HINT on the tool's output and never a finding: it cannot turn an
+// OK into a rejection.
 func decompositionSizeHints(plain string) []string {
 	blocks, _ := decompositionParse(strings.ReplaceAll(plain, "*", ""))
 	hints := []string{}
-	// The plan-level warning is the mirror of the block-level one: five or more
-	// blocks usually means some of them settle variables that could share a block,
-	// and the plan has been split finer than its evidence supports.
-	if len(blocks) >= 5 {
-		hints = append(hints, fmt.Sprintf("hint: the plan carries %d blocks - at five or more, consider whether some of them settle variables that could share one block, and the plan has been split too fine", len(blocks)))
+	// The plan-level hint is the mirror of the block-level one: at
+	// decompositionHintBlocks the plan may have been split finer than its
+	// evidence supports.
+	if len(blocks) >= decompositionHintBlocks {
+		hints = append(hints, fmt.Sprintf("hint: the plan carries %d blocks - at %d or more, consider whether some of them settle variables that could share one block, and the plan has been split too fine", len(blocks), decompositionHintBlocks))
 	}
 	for _, b := range blocks {
-		if len(b.constraintDefs) >= 5 {
-			hints = append(hints, fmt.Sprintf("hint: block %s carries %d constraints - at five or more, consider whether part of them settles their own variable with their own anchors, and deserves a block of their own", b.number, len(b.constraintDefs)))
+		if len(b.constraintDefs) >= decompositionHintConstraints {
+			hints = append(hints, fmt.Sprintf("hint: block %s carries %d constraints - at %d or more, consider whether part of them settles their own variable with their own anchors, and deserves a block of their own", b.number, len(b.constraintDefs), decompositionHintConstraints))
 		}
 	}
 	return hints

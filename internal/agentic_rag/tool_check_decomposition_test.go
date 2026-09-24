@@ -334,13 +334,13 @@ func TestCheckDecompositionNotesHeavyBlocks(t *testing.T) {
 	}
 	heavy := strings.Replace(lawfulPlan,
 		"- Constraints: c1 = ?school has 3 founders; c2 = ?school's name is the birthplace of one of those 3 founders",
-		"- Constraints: c1 = ?school has 3 founders; c2 = ?school's name is the birthplace of one of those 3 founders; c3 = ?school is in Europe; c4 = ?school is a boarding school; c5 = ?school is over a century old", 1)
+		"- Constraints: c1 = ?school has 3 founders; c2 = ?school's name is the birthplace of one of those 3 founders; c3 = ?school is in Europe; c4 = ?school is a boarding school; c5 = ?school is over a century old; c6 = ?school was founded in the 1900s; c7 = ?school's campus is listed as historic; c8 = ?school teaches in German; c9 = ?school has under 500 pupils; c10 = ?school competes in regional leagues", 1)
 	args, _ = json.Marshal(checkDecompositionArgs{Plan: heavy})
 	out, err = tool.invokableRun(context.Background(), string(args))
 	if err != nil {
 		t.Fatalf("invokableRun: %v", err)
 	}
-	if !strings.Contains(out, "block 1 carries 5 constraints") {
+	if !strings.Contains(out, "block 1 carries 10 constraints") {
 		t.Fatalf("missed the size hint; got:\n%s", out)
 	}
 }
@@ -408,10 +408,10 @@ func TestCheckDecompositionConstraintCap(t *testing.T) {
 	}
 }
 
-// The plan-level mirror: five or more blocks gets the split-too-fine hint.
+// The plan-level mirror: ten or more blocks gets the split-too-fine hint.
 func TestCheckDecompositionNotesFinePlans(t *testing.T) {
 	var b strings.Builder
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= decompositionHintBlocks; i++ {
 		prev := ""
 		if i > 1 {
 			prev = fmt.Sprintf("- From: ?v%d (block %d)\n", i-1, i-1)
@@ -425,7 +425,7 @@ func TestCheckDecompositionNotesFinePlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invokableRun: %v", err)
 	}
-	if !strings.Contains(out, "the plan carries 5 blocks") {
+	if !strings.Contains(out, fmt.Sprintf("the plan carries %d blocks", decompositionHintBlocks)) {
 		t.Fatalf("missed the plan-size hint; got:\n%s", out)
 	}
 }
