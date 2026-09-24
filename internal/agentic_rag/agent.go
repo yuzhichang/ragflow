@@ -868,6 +868,16 @@ func Run(ctx context.Context, in Input) (string, error) {
 
 	// EnableStreaming lives on RunnerConfig, not ChatModelAgentConfig.
 	explorerHead := sess.explorer.head(ctx)
+	// For the smart-reasoning pipeline the decomposition stage has ALREADY
+	// produced the plan: reaching this point without one means the stage failed
+	// after its retries. Assert the plan instead of degrading to an unpinned
+	// explorer - the unpinned run is exactly how the merged-block and
+	// guessed-answer defects reached the deliverable in #11/#12. Other shapes
+	// (caller-owned toolsets, non-decomposing templates) legitimately have no
+	// plan and skip the message formatting below.
+	if plan == "" && in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
+		return "", fmt.Errorf("agentic_rag: decomposition stage returned no plan for question %q", lastUserQuestion(in.Messages))
+	}
 	// The run's input, when the decomposition stage produced a plan, is ONE user
 	// message in a fixed two-section format the smart-reasoning prompt declares:
 	// `## The original question` (the question verbatim) and `## The question
@@ -880,14 +890,11 @@ func Run(ctx context.Context, in Input) (string, error) {
 	if plan != "" {
 		formatted := "## The original question\n\n" + lastUserQuestion(in.Messages) +
 			"\n\n## The question decomposition\n\n" + plan
-		msgs := append([]*schema.Message{}, in.Messages...)
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i] != nil && msgs[i].Role == schema.User {
-				msgs[i] = schema.UserMessage(formatted)
-				break
-			}
+		if n := len(in.Messages); n > 0 && in.Messages[n-1] != nil && in.Messages[n-1].Role == schema.User {
+			runMessages = append(in.Messages[:n-1], schema.UserMessage(formatted))
+		} else {
+			runMessages = append(in.Messages, schema.UserMessage(formatted))
 		}
-		runMessages = msgs
 	}
 	iter := sess.explorer.runner(ctx, explorerAgent, in.Stream).Run(ctx, runMessages)
 	final, evidence, runErr := consumeAgentEvents(ctx, iter, in.OnDelta, in.ToolCallCounts, in.ToolCallErrors, in.ToolErrorSamples)
