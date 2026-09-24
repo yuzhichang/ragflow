@@ -48,6 +48,16 @@ import (
 // is appended in parentheses so the audited prefix is still a substring of it.
 const checkDecompositionToolName = "check_decomposition"
 
+// The plan's size caps. Five or more blocks / five or more constraints on one
+// block draw an advisory HINT (the planner decides how deep to split); beyond
+// the caps the plan FAILS - a decomposition this wide is not a plan but the
+// question restated, and no checker finding inside it is actionable. The
+// defaults are 10; raise them only with a measured reason.
+const (
+	decompositionMaxBlocks              = 10
+	decompositionMaxConstraintsPerBlock = 10
+)
+
 const checkDecompositionToolDescription = `Mechanically checks a DRAFT decomposition (the block plan, written before any search) and returns the structural findings it contains. It reads the plan's header fields only - variables, edges, constraint numbers - and every check below is a membership or counting test over them, so it holds whatever the wording.
 
 The checks:
@@ -61,7 +71,7 @@ The checks:
 8. Constraint form: every constraint uses its own block's variable plus zero or more of the variables its ` + "`From:`" + ` declares - nothing else - so the claim is a proposition one chunk can confirm or refute on its own.
 9. ` + "`From:`" + ` faithfulness: the declared set is EXACTLY the upstream variables the constraints use - an undeclared reference and an unused declaration are both findings.
 
-Two sizes are HINTS on the output, never findings - invitations to keep editing the plan rather than verdicts: a plan of five or more blocks hints that some of them could share one block (merge them), and a block of five or more constraints hints that part of them settles its own variable with its own anchors (split it off). What is deliberately NOT checked, because it is a judgment about wording rather than a mechanical fact: whether a sub-question is EQUIVALENT to its constraint set, whether a title names a real anchor of the question, whether a value inlines another block's candidate - you make those when you draft the plan, and the auditor re-checks them on the delivery.
+Two sizes are HINTS on the output, never findings - invitations to keep editing the plan rather than verdicts: a plan of five or more blocks hints that some of them could share one block (merge them), and a block of five or more constraints hints that part of them settles its own variable with its own anchors (split it off). Two sizes are HARD CAPS and fail as findings: a plan of more than ten blocks, and a block of more than ten constraints. What is deliberately NOT checked, because it is a judgment about wording rather than a mechanical fact: whether a sub-question is EQUIVALENT to its constraint set, whether a title names a real anchor of the question, whether a value inlines another block's candidate - you make those when you draft the plan, and the auditor re-checks them on the delivery.
 
 Call this IMMEDIATELY after writing the decomposition and BEFORE any retrieval: at that moment the plan is only these header lines, and a defect in it costs a whole run - a name bound twice voids every later reference to it, and a title that names no variable leaves every later reader guessing what the block holds.
 
@@ -193,6 +203,9 @@ func checkDecomposition(plan string) []string {
 	blocks, findings := decompositionParse(plain)
 	if len(blocks) == 0 {
 		return []string{"schema integrity: the plan declares no `### Sub-question N:` block - write the decomposition before retrieving"}
+	}
+	if len(blocks) > decompositionMaxBlocks {
+		findings = append(findings, fmt.Sprintf("schema integrity: the plan carries %d blocks - more than the cap of %d; merge the blocks that settle the same variable", len(blocks), decompositionMaxBlocks))
 	}
 
 	// (a) header shape, then the variable bindings: names are unique
@@ -354,6 +367,9 @@ func checkDecomposition(plan string) []string {
 	for _, b := range blocks {
 		if len(b.constraintDefs) == 0 {
 			findings = append(findings, fmt.Sprintf("schema integrity: block defines no constraint (block %s)", b.number))
+		}
+		if len(b.constraintDefs) > decompositionMaxConstraintsPerBlock {
+			findings = append(findings, fmt.Sprintf("schema integrity: block %s carries %d constraints - more than the cap of %d; split the block that settles its own variable with its own anchors", b.number, len(b.constraintDefs), decompositionMaxConstraintsPerBlock))
 		}
 		for _, c := range b.constraintDefs {
 			defined[c.id] = append(defined[c.id], b)

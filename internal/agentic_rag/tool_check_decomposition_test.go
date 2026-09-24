@@ -372,6 +372,42 @@ func TestCheckDecompositionCJKPlan(t *testing.T) {
 	}
 }
 
+// The size caps are FINDINGS, unlike the five-or-more hints: a plan of more
+// than ten blocks, or a block with more than ten constraints, is the question
+// restated rather than decomposed.
+func TestCheckDecompositionPlanBlockCap(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= decompositionMaxBlocks+1; i++ {
+		binds := fmt.Sprintf("?v%d", i)
+		cons := fmt.Sprintf("c%d = %s is the %d-th clue of the question that ?v1 anchors", i, binds, i)
+		prev := ""
+		if i > 1 {
+			prev = "- From: ?v1 (block 1)\n"
+		}
+		if i == 2 {
+			binds = "?answer"
+			cons = fmt.Sprintf("c%d = ?answer is the answer that ?v1 anchors", i)
+		}
+		fmt.Fprintf(&b, "### Sub-question %d: %s is the %d-th clue of the question — slot: name — kind: person\n- Op: lookup\n- Binds: %s\n%s- Constraints: %s\n\n", i, binds, i, binds, prev, cons)
+	}
+	got := strings.Join(checkDecomposition(b.String()), "\n")
+	if !strings.Contains(got, fmt.Sprintf("schema integrity: the plan carries %d blocks - more than the cap of %d", decompositionMaxBlocks+1, decompositionMaxBlocks)) {
+		t.Fatalf("missed the block-cap finding; got:\n%s", got)
+	}
+}
+
+func TestCheckDecompositionConstraintCap(t *testing.T) {
+	cons := make([]string, 0, decompositionMaxConstraintsPerBlock+1)
+	for i := 1; i <= decompositionMaxConstraintsPerBlock+1; i++ {
+		cons = append(cons, fmt.Sprintf("c%d = ?answer is the %d-th clause of the question", i, i))
+	}
+	plan := "### Sub-question 1: ?answer is the one the question asks for — slot: name — kind: person\n- Op: lookup\n- Binds: ?answer\n- From: none\n- Constraints: " + strings.Join(cons, "; ") + "\n"
+	got := strings.Join(checkDecomposition(plan), "\n")
+	if !strings.Contains(got, fmt.Sprintf("schema integrity: block 1 carries %d constraints - more than the cap of %d", decompositionMaxConstraintsPerBlock+1, decompositionMaxConstraintsPerBlock)) {
+		t.Fatalf("missed the constraint-cap finding; got:\n%s", got)
+	}
+}
+
 // The plan-level mirror: five or more blocks gets the split-too-fine hint.
 func TestCheckDecompositionNotesFinePlans(t *testing.T) {
 	var b strings.Builder
