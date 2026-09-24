@@ -743,9 +743,16 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// accounting as the explorer's. The stage is skipped for caller-owned
 	// toolsets (a different product shape, like the auditor) and for templates
 	// that do not decompose.
-	plan := ""
+	plan, conversational := "", false
 	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
-		plan = runDecompositionStage(ctx, in, lastUserQuestion(in.Messages))
+		plan, conversational = runDecompositionStage(ctx, in, lastUserQuestion(in.Messages))
+	}
+	if conversational {
+		// The stage classified the message as purely conversational: the
+		// explorer-auditor pipeline does not run for a greeting - no ReAct
+		// loop, no retrieval tools, no delivery gate. One direct generation
+		// over the caller's history answers it in plain prose.
+		return runConversationalReply(ctx, in)
 	}
 
 	tools := in.Tools

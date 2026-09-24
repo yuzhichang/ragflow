@@ -115,11 +115,13 @@ func NewQuestionDecompositionAgent(
 	return agent, nil
 }
 
-// runDecompositionStage runs stage one end to end and returns the plan text to
-// pin into the explorer's context, or "" when there is nothing to pin: the
-// message was purely conversational, the agent returned no readable plan, or
-// the stage failed (availability over perfection - the explorer then works
-// without a pinned plan exactly as it did before this stage existed).
+// runDecompositionStage runs stage one end to end. It returns the plan text to
+// pin into the explorer's context, or "" with conversational=true when the
+// stage ruled the message purely conversational - the caller then skips the
+// explorer-auditor pipeline entirely and answers directly. It also returns ""
+// (conversational=false) when there is a plan to pin but the stage failed or
+// returned nothing readable: the explorer then works unpinned, exactly as it
+// did before this stage existed (availability over perfection).
 //
 // The agent's own checker calls are only half the verification: after every
 // agent round the plan is re-checked HERE with the same deterministic
@@ -127,14 +129,14 @@ func NewQuestionDecompositionAgent(
 // an in-prompt call contract the model simply never exercised. A plan that
 // still carries findings after the repair budget is pinned anyway, with a
 // warning in the log - the explorer is told the plan may be imperfect.
-func runDecompositionStage(ctx context.Context, in Input, question string) string {
+func runDecompositionStage(ctx context.Context, in Input, question string) (string, bool) {
 	if strings.TrimSpace(question) == "" {
-		return ""
+		return "", false
 	}
 	agent, err := NewQuestionDecompositionAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
 	if err != nil {
 		common.WarnCtx(ctx, "agentic_rag: question-decomposition agent unavailable", zap.Error(err))
-		return ""
+		return "", false
 	}
 	// The stage owns a private conversation: one planner session per Run, no
 	// history reuse (the explorer's session semantics do not apply here).
@@ -149,29 +151,51 @@ func runDecompositionStage(ctx context.Context, in Input, question string) strin
 		if err != nil {
 			conv.discardFailedTurn(ctx, conv.head(ctx))
 			common.WarnCtx(ctx, "agentic_rag: question-decomposition run failed", zap.Error(err))
-			return ""
+			return "", false
 		}
 		plan = extractPlan(final)
 		if plan == "" {
 			if strings.Contains(final, decompositionNoPlanMarker) {
 				common.InfoCtx(ctx, "agentic_rag: question-decomposition skipped (conversational message)")
-			} else {
-				common.WarnCtx(ctx, "agentic_rag: question-decomposition returned no readable plan")
+				return "", true
 			}
-			return ""
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition returned no readable plan")
+			return "", false
 		}
 		findings := checkDecomposition(plan)
 		if len(findings) == 0 {
 			common.InfoCtx(ctx, "agentic_rag: question-decomposition verified",
 				zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
-			return plan
+			return plan, false
 		}
 		common.WarnCtx(ctx, "agentic_rag: question-decomposition plan failed the mechanical check",
 			zap.Int("round", round+1), zap.Strings("findings", findings))
 		directive = "check_decomposition reports:\n- " + strings.Join(findings, "\n- ") +
 			"\n\nFix every finding and return ONLY the corrected plan."
 	}
-	return plan
+	return plan, false
+}
+
+// runConversationalReply answers a purely conversational message WITHOUT the
+// explorer-auditor pipeline: no ReAct loop, no retrieval tools, no delivery
+// gate - the decomposition stage has already ruled that nothing here needs
+// facts. One direct generation over the caller's own history produces the
+// plain-prose reply; the same emit convention as Run ships it.
+func runConversationalReply(ctx context.Context, in Input) (string, error) {
+	instruction := "You are RAGFlow. The last message is purely conversational - a greeting, thanks or farewell, nothing that needs facts or retrieval. Reply in plain prose, briefly and naturally. Do not use tools, and do not produce a Candidate Matrix, evidence lines or a Final Answer label."
+	msgs := make([]*schema.Message, 0, len(in.Messages)+1)
+	msgs = append(msgs, schema.SystemMessage(instruction))
+	msgs = append(msgs, in.Messages...)
+	res, err := in.Model.Generate(ctx, msgs)
+	if err != nil {
+		return "", fmt.Errorf("conversational reply: %w", err)
+	}
+	reply := ""
+	if res != nil {
+		reply = res.Content
+	}
+	emit(ctx, in.OnDelta, reply, "")
+	return reply, nil
 }
 
 // extractPlan returns the plan portion of the agent's final message: everything
