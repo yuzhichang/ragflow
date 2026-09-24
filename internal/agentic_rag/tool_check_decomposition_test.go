@@ -332,15 +332,22 @@ func TestCheckDecompositionNotesHeavyBlocks(t *testing.T) {
 	if strings.Contains(out, "planning hint") {
 		t.Fatalf("a two-block plan should carry no size hint, got:\n%s", out)
 	}
+	parts := []string{
+		"c1 = ?school has 3 founders",
+		"c2 = ?school's name is the birthplace of one of those 3 founders",
+	}
+	for i := 3; i <= decompositionMaxConstraintsPerBlock; i++ {
+		parts = append(parts, fmt.Sprintf("c%d = ?school holds its %d-th additional property", i, i))
+	}
 	heavy := strings.Replace(lawfulPlan,
 		"- Constraints: c1 = ?school has 3 founders; c2 = ?school's name is the birthplace of one of those 3 founders",
-		"- Constraints: c1 = ?school has 3 founders; c2 = ?school's name is the birthplace of one of those 3 founders; c3 = ?school is in Europe; c4 = ?school is a boarding school; c5 = ?school is over a century old; c6 = ?school was founded in the 1900s; c7 = ?school's campus is listed as historic; c8 = ?school teaches in German; c9 = ?school has under 500 pupils; c10 = ?school competes in regional leagues", 1)
+		"- Constraints: "+strings.Join(parts, "; "), 1)
 	args, _ = json.Marshal(checkDecompositionArgs{Plan: heavy})
 	out, err = tool.invokableRun(context.Background(), string(args))
 	if err != nil {
 		t.Fatalf("invokableRun: %v", err)
 	}
-	if !strings.Contains(out, "block 1 carries 10 constraints") {
+	if !strings.Contains(out, fmt.Sprintf("block 1 carries %d constraints", decompositionMaxConstraintsPerBlock)) {
 		t.Fatalf("missed the size hint; got:\n%s", out)
 	}
 }
@@ -411,7 +418,7 @@ func TestCheckDecompositionConstraintCap(t *testing.T) {
 // The plan-level mirror: ten or more blocks gets the split-too-fine hint.
 func TestCheckDecompositionNotesFinePlans(t *testing.T) {
 	var b strings.Builder
-	for i := 1; i <= decompositionHintBlocks; i++ {
+	for i := 1; i <= decompositionMaxBlocks; i++ {
 		prev := ""
 		if i > 1 {
 			prev = fmt.Sprintf("- From: ?v%d (block %d)\n", i-1, i-1)
@@ -425,7 +432,7 @@ func TestCheckDecompositionNotesFinePlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invokableRun: %v", err)
 	}
-	if !strings.Contains(out, fmt.Sprintf("the plan carries %d blocks", decompositionHintBlocks)) {
+	if !strings.Contains(out, fmt.Sprintf("the plan carries %d blocks", decompositionMaxBlocks)) {
 		t.Fatalf("missed the plan-size hint; got:\n%s", out)
 	}
 }

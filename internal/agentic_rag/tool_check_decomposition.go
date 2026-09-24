@@ -48,22 +48,14 @@ import (
 // is appended in parentheses so the audited prefix is still a substring of it.
 const checkDecompositionToolName = "check_decomposition"
 
-// The plan's size caps. Five or more blocks / five or more constraints on one
-// block draw an advisory HINT (the planner decides how deep to split); beyond
-// the caps the plan FAILS - a decomposition this wide is not a plan but the
-// question restated, and no checker finding inside it is actionable. The
-// defaults are 10; raise them only with a measured reason.
+// The plan's size budget, in one pair of constants: AT the budget the plan
+// draws an advisory HINT (the planner decides how deep to split), PAST it the
+// plan FAILS - a decomposition this wide is not a plan but the question
+// restated, and no checker finding inside it is actionable. The default is 10;
+// raise it only with a measured reason.
 const (
 	decompositionMaxBlocks              = 10
 	decompositionMaxConstraintsPerBlock = 10
-)
-
-// The advisory tier's thresholds: at this size the planner is HINTED to merge
-// or split; the hard caps above are where the plan FAILS. The hint text reads
-// the constants, so the two never drift apart.
-const (
-	decompositionHintBlocks      = 10
-	decompositionHintConstraints = 10
 )
 
 const checkDecompositionToolDescription = `Mechanically checks a DRAFT decomposition (the block plan, written before any search) and returns the structural findings it contains. It reads the plan's header fields only - variables, edges, constraint numbers - and every check below is a membership or counting test over them, so it holds whatever the wording.
@@ -125,8 +117,8 @@ func (t *CheckDecompositionTool) invokableRun(_ context.Context, argumentsInJSON
 	if strings.TrimSpace(args.Plan) == "" {
 		return "", fmt.Errorf("check_decomposition: plan must be a non-empty string")
 	}
-	findings := checkDecomposition(args.Plan)
-	hints := decompositionSizeHints(args.Plan)
+	blocks, findings := checkDecompositionBlocks(args.Plan)
+	hints := decompositionSizeHints(blocks)
 	if len(findings) == 0 {
 		if len(hints) == 0 {
 			return "OK - no structural finding: the plan is one DAG, every block reaches the ?answer block, every title carries the variable its block binds, and the constraint numbers are a partition. Start retrieving.", nil
@@ -204,13 +196,21 @@ var (
 
 // checkDecomposition returns the plan's findings, sorted for a stable report.
 func checkDecomposition(plan string) []string {
+	_, findings := checkDecompositionBlocks(plan)
+	return findings
+}
+
+// checkDecompositionBlocks parses the plan ONCE and runs every check over the
+// parsed blocks, returning them so callers that also need the size hints (the
+// hint thresholds read the same parse) never parse the plan a second time.
+func checkDecompositionBlocks(plan string) ([]*decompositionBlock, []string) {
 	// Markdown bold is stripped before any prefix match: a run that wrote
 	// `- **Op:**` emptied every header-derived metric it had, so tolerating the
 	// emphasis is a precondition of reading a plan at all.
 	plain := strings.ReplaceAll(plan, "*", "")
 	blocks, findings := decompositionParse(plain)
 	if len(blocks) == 0 {
-		return []string{"schema integrity: the plan declares no `### Sub-question N:` block - write the decomposition before retrieving"}
+		return nil, []string{"schema integrity: the plan declares no `### Sub-question N:` block - write the decomposition before retrieving"}
 	}
 	if len(blocks) > decompositionMaxBlocks {
 		findings = append(findings, fmt.Sprintf("schema integrity: the plan carries %d blocks - more than the cap of %d; merge the blocks that settle the same variable", len(blocks), decompositionMaxBlocks))
@@ -456,7 +456,7 @@ func checkDecomposition(plan string) []string {
 	}
 
 	sort.Strings(findings)
-	return findings
+	return blocks, findings
 }
 
 // decompositionParse reads the block headings and their header fields.
@@ -635,23 +635,24 @@ var decompositionSlots = map[string]bool{
 }
 
 // decompositionSizeHints reports the blocks whose constraint load suggests a
-// further split. At decompositionHintConstraints on one block the planner is
-// hinted that part of them may settle its own variable with its own anchors,
-// and a deeper DAG is worth considering - but the call is the planner's, so
-// this is a HINT on the tool's output and never a finding: it cannot turn an
-// OK into a rejection.
-func decompositionSizeHints(plain string) []string {
-	blocks, _ := decompositionParse(strings.ReplaceAll(plain, "*", ""))
+// further split. At decompositionMaxConstraintsPerBlock on one block the
+// planner is hinted that part of them may settle its own variable with its
+// own anchors, and a deeper DAG is worth considering - but the call is the
+// planner's, so this is a HINT on the tool's output and never a finding: it
+// cannot turn an OK into a rejection. It takes the ALREADY-PARSED blocks (see
+// checkDecompositionBlocks): the hint thresholds are evaluated over the same
+// single parse as the findings, never over a second parse of the plan.
+func decompositionSizeHints(blocks []*decompositionBlock) []string {
 	hints := []string{}
 	// The plan-level hint is the mirror of the block-level one: at
-	// decompositionHintBlocks the plan may have been split finer than its
+	// decompositionMaxBlocks the plan may have been split finer than its
 	// evidence supports.
-	if len(blocks) >= decompositionHintBlocks {
-		hints = append(hints, fmt.Sprintf("hint: the plan carries %d blocks - at %d or more, consider whether some of them settle variables that could share one block, and the plan has been split too fine", len(blocks), decompositionHintBlocks))
+	if len(blocks) >= decompositionMaxBlocks {
+		hints = append(hints, fmt.Sprintf("hint: the plan carries %d blocks - at %d or more, consider whether some of them settle variables that could share one block, and the plan has been split too fine", len(blocks), decompositionMaxBlocks))
 	}
 	for _, b := range blocks {
-		if len(b.constraintDefs) >= decompositionHintConstraints {
-			hints = append(hints, fmt.Sprintf("hint: block %s carries %d constraints - at %d or more, consider whether part of them settles their own variable with their own anchors, and deserves a block of their own", b.number, len(b.constraintDefs), decompositionHintConstraints))
+		if len(b.constraintDefs) >= decompositionMaxConstraintsPerBlock {
+			hints = append(hints, fmt.Sprintf("hint: block %s carries %d constraints - at %d or more, consider whether part of them settles their own variable with their own anchors, and deserves a block of their own", b.number, len(b.constraintDefs), decompositionMaxConstraintsPerBlock))
 		}
 	}
 	return hints
