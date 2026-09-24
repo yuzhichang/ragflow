@@ -82,12 +82,15 @@ type toolFactory func(tenantID string, datasetIDs []string) tool.BaseTool
 // provider (see Input.WebSearch).
 func toolRegistry() map[string]toolFactory {
 	return map[string]toolFactory{
-		"think":              func(_ string, _ []string) tool.BaseTool { return NewThinkTool() },
-		"todo_write":         func(_ string, _ []string) tool.BaseTool { return NewTodoWriteTool() },
-		"run_javascript":     func(_ string, _ []string) tool.BaseTool { return NewRunJavascriptTool() },
-		"grep_chunks":        func(t string, d []string) tool.BaseTool { return NewGrepChunksTool(t, d) },
-		"search_chunks":      func(t string, d []string) tool.BaseTool { return NewSearchChunksTool(t, d) },
-		"search_bm25_chunks": func(t string, d []string) tool.BaseTool { return NewSearchBm25ChunksTool(t, d) },
+		"think":          func(_ string, _ []string) tool.BaseTool { return NewThinkTool() },
+		"todo_write":     func(_ string, _ []string) tool.BaseTool { return NewTodoWriteTool() },
+		"run_javascript": func(_ string, _ []string) tool.BaseTool { return NewRunJavascriptTool() },
+		// The draft decomposition's structural check: header-only, deterministic
+		// and callable before any search (see tool_check_decomposition.go).
+		"check_decomposition": func(_ string, _ []string) tool.BaseTool { return NewCheckDecompositionTool() },
+		"grep_chunks":         func(t string, d []string) tool.BaseTool { return NewGrepChunksTool(t, d) },
+		"search_chunks":       func(t string, d []string) tool.BaseTool { return NewSearchChunksTool(t, d) },
+		"search_bm25_chunks":  func(t string, d []string) tool.BaseTool { return NewSearchBm25ChunksTool(t, d) },
 		// The pure-vector leg: same payload as search_chunks, no keyword leg at
 		// all (see tool_search_semantic_chunks.go).
 		"search_semantic_chunks": func(t string, d []string) tool.BaseTool { return NewSearchSemanticChunksTool(t, d) },
