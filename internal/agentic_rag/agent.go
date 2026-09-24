@@ -875,7 +875,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// guessed-answer defects reached the deliverable in #11/#12. Other shapes
 	// (caller-owned toolsets, non-decomposing templates) legitimately have no
 	// plan and skip the message formatting below.
-	if plan == "" && in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
+	if plan == "" && in.TemplateID == "smart-reasoning" {
 		return "", fmt.Errorf("agentic_rag: decomposition stage returned no plan for question %q", lastUserQuestion(in.Messages))
 	}
 	// The run's input, when the decomposition stage produced a plan, is ONE user
@@ -886,16 +886,8 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// is looking at. The last user message (the question) is replaced in place,
 	// which keeps the question verbatim under its own heading without
 	// duplicating it.
-	runMessages := in.Messages
-	if plan != "" {
-		formatted := "## The original question\n\n" + lastUserQuestion(in.Messages) +
-			"\n\n## The question decomposition\n\n" + plan
-		if n := len(in.Messages); n > 0 && in.Messages[n-1] != nil && in.Messages[n-1].Role == schema.User {
-			runMessages = append(in.Messages[:n-1], schema.UserMessage(formatted))
-		} else {
-			runMessages = append(in.Messages, schema.UserMessage(formatted))
-		}
-	}
+	formatted := "## The original question\n\n" + lastUserQuestion(in.Messages) + "\n\n## The question decomposition\n\n" + plan
+	runMessages := []adk.Message{schema.UserMessage(formatted)}
 	iter := sess.explorer.runner(ctx, explorerAgent, in.Stream).Run(ctx, runMessages)
 	final, evidence, runErr := consumeAgentEvents(ctx, iter, in.OnDelta, in.ToolCallCounts, in.ToolCallErrors, in.ToolErrorSamples)
 	if runErr != nil {
@@ -1355,7 +1347,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				zap.String("verdict", truncateForLog(auditFindings(verdict), 300)))
 
 			suspectHist = append(suspectHist, auditSuspectCount(verdict))
-			// Stall check fires BEFORE the repair turn: once three observations
+			// Stall check fires}BEFORE the repair turn: once three observations
 			// are in, stop as soon as the newest count is no better than BOTH of
 			// the two before it. Equal counts are only the special case - this
 			// also catches a count climbing back (f1 < f2 < f3), where the
