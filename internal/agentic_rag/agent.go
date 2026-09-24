@@ -707,19 +707,6 @@ func Run(ctx context.Context, in Input) (string, error) {
 		return "", errT
 	}
 
-	// Stage one: the question-decomposition agent writes the block plan and
-	// has it verified BEFORE the explorer runs, so decomposition is never left
-	// to the explorer's discipline - two measured runs (#11/#12) showed an
-	// in-prompt call contract the model never exercised (zero
-	// check_decomposition calls) and shipped a merged two-variable block (q875)
-	// and a plan of four disconnected roots (q1005). The stage is skipped for
-	// caller-owned toolsets (a different product shape, like the auditor) and
-	// for templates that do not decompose.
-	plan := ""
-	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
-		plan = runDecompositionStage(ctx, in, lastUserQuestion(in.Messages))
-	}
-
 	// Answer-audit gate state: created for templates that declare
 	// `audit_max_pass: N` (N > 0), which is both the switch and the budget —
 	// how many audit passes the gate may spend. The auditor is a STANDALONE
@@ -744,6 +731,21 @@ func Run(ctx context.Context, in Input) (string, error) {
 	}
 	if in.ChunkReads == nil {
 		in.ChunkReads = NewChunkReadLedger()
+	}
+
+	// Stage one: the question-decomposition agent writes the block plan and
+	// has it verified BEFORE the explorer runs, so decomposition is never left
+	// to the explorer's discipline - two measured runs (#11/#12) showed an
+	// in-prompt call contract the model never exercised (zero
+	// check_decomposition calls) and shipped a merged two-variable block (q875)
+	// and a plan of four disconnected roots (q1005). It runs after the shared
+	// ledgers exist so the stage's checker calls land in the same duration
+	// accounting as the explorer's. The stage is skipped for caller-owned
+	// toolsets (a different product shape, like the auditor) and for templates
+	// that do not decompose.
+	plan := ""
+	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
+		plan = runDecompositionStage(ctx, in, lastUserQuestion(in.Messages))
 	}
 
 	tools := in.Tools

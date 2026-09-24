@@ -25,6 +25,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/session"
 	einocommon "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
@@ -70,10 +71,26 @@ func NewQuestionDecompositionAgent(
 	tenantID string,
 	datasetIDs []string,
 	question string,
+	toolDurations *durationAccumulator,
 ) (*adk.ChatModelAgent, error) {
 	tmpl, err := resolveTemplateFor(questionDecompositionTemplateID)
 	if err != nil {
 		return nil, fmt.Errorf("question decomposition: %w", err)
+	}
+	// Same tool wrapping as the auditor: the checker's calls land in the run's
+	// shared duration ledger, so per-question cost accounting covers this
+	// stage too (the COUNT comes from consumeAgentEvents' tally instead).
+	tools := toolsFor(tmpl, tenantID, datasetIDs)
+	if toolDurations != nil {
+		wrapped := make([]tool.BaseTool, len(tools))
+		for i, t := range tools {
+			if it, ok := t.(tool.InvokableTool); ok {
+				wrapped[i] = &instrumentedTool{InvokableTool: it, acc: toolDurations}
+			} else {
+				wrapped[i] = t
+			}
+		}
+		tools = wrapped
 	}
 	cfg := &adk.ChatModelAgentConfig{
 		Name:        tmpl.ID,
@@ -86,7 +103,7 @@ func NewQuestionDecompositionAgent(
 		ModelRetryConfig: agentModelRetryConfig(),
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               toolsFor(tmpl, tenantID, datasetIDs),
+				Tools:               tools,
 				ExecuteSequentially: false,
 			},
 		},
@@ -114,7 +131,7 @@ func runDecompositionStage(ctx context.Context, in Input, question string) strin
 	if strings.TrimSpace(question) == "" {
 		return ""
 	}
-	agent, err := NewQuestionDecompositionAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question)
+	agent, err := NewQuestionDecompositionAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
 	if err != nil {
 		common.WarnCtx(ctx, "agentic_rag: question-decomposition agent unavailable", zap.Error(err))
 		return ""
