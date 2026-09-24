@@ -868,16 +868,26 @@ func Run(ctx context.Context, in Input) (string, error) {
 
 	// EnableStreaming lives on RunnerConfig, not ChatModelAgentConfig.
 	explorerHead := sess.explorer.head(ctx)
-	// The verified plan (when the decomposition stage produced one) is pinned
-	// as the LAST user message: the explorer's prompt tells it to treat that
-	// plan as the run's single variable state and to follow it, never to
-	// re-decompose.
+	// The run's input, when the decomposition stage produced a plan, is ONE user
+	// message in a fixed two-section format the smart-reasoning prompt declares:
+	// `## The original question` (the question verbatim) and `## The question
+	// decomposition` (the stage-one plan). Both sections are DATA - no
+	// instructions ride along - so the format itself tells the explorer what it
+	// is looking at. The last user message (the question) is replaced in place,
+	// which keeps the question verbatim under its own heading without
+	// duplicating it.
 	runMessages := in.Messages
 	if plan != "" {
-		pin := "## Your decomposition (from the question-decomposition stage, mechanically verified)\n\n" +
-			plan + "\n\nThis plan is the run's single variable state: follow it as written, read the chain " +
-			"between blocks from `From`, and fill its schema one block at a time (see the given decomposition)."
-		runMessages = append(append([]*schema.Message{}, in.Messages...), schema.UserMessage(pin))
+		formatted := "## The original question\n\n" + lastUserQuestion(in.Messages) +
+			"\n\n## The question decomposition\n\n" + plan
+		msgs := append([]*schema.Message{}, in.Messages...)
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i] != nil && msgs[i].Role == schema.User {
+				msgs[i] = schema.UserMessage(formatted)
+				break
+			}
+		}
+		runMessages = msgs
 	}
 	iter := sess.explorer.runner(ctx, explorerAgent, in.Stream).Run(ctx, runMessages)
 	final, evidence, runErr := consumeAgentEvents(ctx, iter, in.OnDelta, in.ToolCallCounts, in.ToolCallErrors, in.ToolErrorSamples)
