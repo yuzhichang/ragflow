@@ -35,10 +35,10 @@ import (
 // exists at that moment and this tool deliberately checks none of them.
 //
 // Why it is code and not one more audit opinion: across the archived runs the
-// auditor diagnosed these shape defects only partially (in one run a title that
-// inlined another block's candidate and a reserved name bound by two blocks both
-// went unreported while thirty field-integrity findings crowded the same
-// verdict), and no run ever repaired one (q875 spent six audit rounds on a shape
+// auditor diagnosed these shape defects only partially (in one run a reserved
+// name bound by two blocks went unreported while thirty field-integrity findings
+// crowded the same verdict), and no run ever repaired one (q875 spent six audit
+// rounds on a shape
 // defect and shipped anyway). Every check below is a membership test over header
 // text, so it holds whatever the wording - the property the gate's own note
 // demands of anything that carries an opinion.
@@ -48,19 +48,30 @@ import (
 // is appended in parentheses so the audited prefix is still a substring of it.
 const checkDecompositionToolName = "check_decomposition"
 
-const checkDecompositionToolDescription = `Mechanically checks a DRAFT decomposition (the block plan, written before any search) and returns the structural findings it contains.
+const checkDecompositionToolDescription = `Mechanically checks a DRAFT decomposition (the block plan, written before any search) and returns the structural findings it contains. It reads the plan's header fields only - variables, edges, constraint numbers - and every check below is a membership or counting test over them, so it holds whatever the wording.
 
-Call this IMMEDIATELY after writing the decomposition and BEFORE any retrieval: at that moment the plan is only block titles plus their Op / Binds / From / Constraints lines, and a defect in it costs a whole run - a name bound twice voids every later reference to it, and a title that inlines a candidate freezes a guess into the plan.
+The checks:
+1. Block shape: every block carries, directly under its ` + "`### Sub-question N:`" + ` heading, a ` + "`slot:`" + ` tag from the closed list (name / literal / number / quantity / date / set), a ` + "`- Op:`" + ` line, a ` + "`- Binds: ?variable`" + ` line, and a ` + "`- Constraints:`" + ` line of ` + "`c<k> = <claim>`" + ` definitions separated by ";" - a missing field, an unknown slot type, or text trailing the last definition on the Constraints line is a finding.
+2. Variables: names are unique plan-wide; ` + "`?answer`" + ` is bound by exactly ONE block, the one that fills the asked slot.
+3. Edges: every ` + "`From:`" + ` variable is bound somewhere; each entry carries its ` + "`(block N)`" + ` pointer and the pointer names the block that binds it; a "follow" block must have a bound input.
+4. Graph (a STRICT DAG): ` + "`From: none`" + ` marks a root, and a root whose variable no other block consumes is a second, disconnected question; the graph must be acyclic, and every block must reach the ` + "`?answer`" + ` block - each block's value consumed, transitively, by the block that binds ` + "`?answer`" + ` - so an orphan, a dead-end side branch, or a block consuming ` + "`?answer`" + ` itself is a finding.
+5. Boundary: only a ` + "`?variable`" + ` crosses a block boundary - a block number ("block 1") or a prose reference ("the above") inside a title or a constraint is a finding.
+6. Titles: every title names a ` + "`?variable`" + ` (its own block's, or one it consumes), and the upstream variables the title references are EXACTLY the ones its constraints reference - a variable the title carries but no constraint tests is asserted without being verified, and a variable the constraints test but the title omits is a dependency hidden from the reader; a title with no variable at all names no anchor.
+7. Constraint numbers: the ` + "`c<k>`" + ` numbers are a partition - a number defined by two blocks, or reused for a different claim, is a finding.
+8. Constraint form: every constraint uses its own block's variable plus zero or more of the variables its ` + "`From:`" + ` declares - nothing else - so the claim is a proposition one chunk can confirm or refute on its own.
+9. ` + "`From:`" + ` faithfulness: the declared set is EXACTLY the upstream variables the constraints use - an undeclared reference and an unused declaration are both findings.
+
+Two sizes are HINTS on the output, never findings - invitations to keep editing the plan rather than verdicts: a plan of five or more blocks hints that some of them could share one block (merge them), and a block of five or more constraints hints that part of them settles its own variable with its own anchors (split it off). What is deliberately NOT checked, because it is a judgment about wording rather than a mechanical fact: whether a sub-question is EQUIVALENT to its constraint set, whether a title names a real anchor of the question, whether a value inlines another block's candidate - you make those when you draft the plan, and the auditor re-checks them on the delivery.
+
+Call this IMMEDIATELY after writing the decomposition and BEFORE any retrieval: at that moment the plan is only these header lines, and a defect in it costs a whole run - a name bound twice voids every later reference to it, and a title that names no variable leaves every later reader guessing what the block holds.
 
 Input:
-- question: the user's question, verbatim (the titles' anchors are checked against it).
 - plan: the drafted decomposition exactly as it will appear in the matrix, with no evidence lines (no Searched/Tested/Eliminated/Retained/Derived/Failure).
 
-It reports the same fail strings the answer auditor uses. Fix every finding and call it again; a plan that returns OK is ready for retrieval.`
+It reports the same fail strings the answer auditor uses. Fix every finding, adjust for the hints you choose to act on, and call it again; the output NEVER comes back empty - the plan is ready for retrieval only when it starts with ` + "`OK`" + ` (an ` + "`OK`" + ` that carries planning hint(s) still passes: hints are suggestions, findings are not present).`
 
 type checkDecompositionArgs struct {
-	Question string `json:"question"`
-	Plan     string `json:"plan"`
+	Plan string `json:"plan"`
 }
 
 // CheckDecompositionTool is a stateless, deterministic parser of the block plan.
@@ -74,10 +85,6 @@ func (t *CheckDecompositionTool) Info(_ context.Context) (*schema.ToolInfo, erro
 		Name: checkDecompositionToolName,
 		Desc: checkDecompositionToolDescription,
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"question": {
-				Type: schema.String, Required: true,
-				Desc: "The user's question, verbatim.",
-			},
 			"plan": {
 				Type: schema.String, Required: true,
 				Desc: "The drafted decomposition: every `### Sub-question N:` title plus its `- Op:`, `- Binds:`, `- From:` and `- Constraints:` lines. No evidence lines.",
@@ -100,9 +107,17 @@ func (t *CheckDecompositionTool) invokableRun(_ context.Context, argumentsInJSON
 	if strings.TrimSpace(args.Plan) == "" {
 		return "", fmt.Errorf("check_decomposition: plan must be a non-empty string")
 	}
-	findings := checkDecomposition(args.Question, args.Plan)
+	findings := checkDecomposition(args.Plan)
+	hints := decompositionSizeHints(args.Plan)
 	if len(findings) == 0 {
-		return "OK - no structural finding: the plan is one DAG, every block reaches the ?answer block, every title carries an anchor of the question, and the constraint numbers are a partition. Start retrieving.", nil
+		if len(hints) == 0 {
+			return "OK - no structural finding: the plan is one DAG, every block reaches the ?answer block, every title carries the variable its block binds, and the constraint numbers are a partition. Start retrieving.", nil
+		}
+		out := "OK - no structural finding, with planning hint(s) you may act on or ignore:\n"
+		for _, n := range hints {
+			out += "- " + n + "\n"
+		}
+		return out, nil
 	}
 	if len(findings) > 24 {
 		findings = append(findings[:24], fmt.Sprintf("... and %d more finding(s)", len(findings)-24))
@@ -111,6 +126,9 @@ func (t *CheckDecompositionTool) invokableRun(_ context.Context, argumentsInJSON
 	b.WriteString("The plan is NOT ready for retrieval. Fix every finding below (they use the auditor's own fail strings) and call this tool again:\n")
 	for i, f := range findings {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, f)
+	}
+	for _, n := range hints {
+		b.WriteString("- " + n + "\n")
 	}
 	return b.String(), nil
 }
@@ -158,27 +176,20 @@ var (
 	decompositionCdefRe    = regexp.MustCompile(`\b(c\d+)\s*=\s*([^;]*)`)
 	decompositionFromEntRe = regexp.MustCompile(`(\?[A-Za-z0-9_]+)([^,;]*)`)
 	decompositionPointerRe = regexp.MustCompile(`\(\s*block[^\S\n]*(\d+)\s*\)`)
+	decompositionVarRe     = regexp.MustCompile(`\?[A-Za-z0-9_]+`)
 	// A cross-block reference written as a block number or as prose: the entry
 	// fields are exempt (`From: ?school (block 1)` legitimately carries one), so
 	// only titles and constraint text are scanned.
 	decompositionProseRefRe = regexp.MustCompile(`(?i)\bblock[^\S\n]*\d+\b|\bthe above\b|\bthe previous block\b|\bthat block\b|\bthe earlier block\b`)
 	decompositionSlotRe     = regexp.MustCompile(`(?i)slot:[^\S\n]*([A-Za-z_]+)`)
-	decompositionWordRe     = regexp.MustCompile(`[A-Za-z][A-Za-z0-9'_-]{2,}`)
-	decompositionYearRe     = regexp.MustCompile(`\b(?:1[5-9]\d\d|20\d\d)\b`)
 )
 
 // checkDecomposition returns the plan's findings, sorted for a stable report.
-func checkDecomposition(question, plan string) []string {
+func checkDecomposition(plan string) []string {
 	// Markdown bold is stripped before any prefix match: a run that wrote
 	// `- **Op:**` emptied every header-derived metric it had, so tolerating the
 	// emphasis is a precondition of reading a plan at all.
 	plain := strings.ReplaceAll(plan, "*", "")
-	questionTokens := decompositionTokens(question)
-	questionYears := map[string]bool{}
-	for _, y := range decompositionYearRe.FindAllString(question, -1) {
-		questionYears[y] = true
-	}
-
 	blocks, findings := decompositionParse(plain)
 	if len(blocks) == 0 {
 		return []string{"schema integrity: the plan declares no `### Sub-question N:` block - write the decomposition before retrieving"}
@@ -291,10 +302,50 @@ func checkDecomposition(question, plan string) []string {
 		}
 	}
 
-	// (e) a title is a STABLE plan: an anchor the question supplies, or another
-	// block's `?variable` - never a value a search returned.
+	// (e) a title is a STABLE plan: it names a `?variable` - its own block's or one
+	// it consumes - never a value a search returned. Whether it names a real anchor
+	// of the question is a judgment about wording: the writer makes it when drafting
+	// and the auditor re-checks it on the delivery.
 	for _, b := range blocks {
-		findings = append(findings, decompositionTitle(questionTokens, questionYears, b)...)
+		findings = append(findings, decompositionTitle(b)...)
+	}
+
+	// (j) the title's referenced variables are EXACTLY the ones its constraints
+	// reference (own variable exempt): the title is the plan a reader and the next
+	// block see, so a variable it carries but no constraint tests is a dependency
+	// asserted without being verified, and a variable the constraints test but the
+	// title omits hides that dependency from the reader. Together with (i) this
+	// makes the title's variable set a faithful summary of the block's real
+	// upstream set.
+	for _, b := range blocks {
+		if b.binds == "" || len(b.constraintDefs) == 0 {
+			continue
+		}
+		own := strings.ToLower(b.binds)
+		titleRefs := map[string]bool{}
+		for _, v := range decompositionVarRe.FindAllString(b.title, -1) {
+			if low := strings.ToLower(v); low != own {
+				titleRefs[low] = true
+			}
+		}
+		usedRefs := map[string]bool{}
+		for _, c := range b.constraintDefs {
+			for _, v := range decompositionVarRe.FindAllString(c.claim, -1) {
+				if low := strings.ToLower(v); low != own {
+					usedRefs[low] = true
+				}
+			}
+		}
+		for _, v := range sortedKeys(titleRefs) {
+			if !usedRefs[v] {
+				findings = append(findings, fmt.Sprintf("schema integrity: title references a variable its constraints never use (%s, block %s)", v, b.number))
+			}
+		}
+		for _, v := range sortedKeys(usedRefs) {
+			if !titleRefs[v] {
+				findings = append(findings, fmt.Sprintf("schema integrity: constraints reference a variable the title does not carry (%s, block %s)", v, b.number))
+			}
+		}
 	}
 
 	// (f) the constraint numbers are a PARTITION, and a number that carries a
@@ -329,12 +380,53 @@ func checkDecomposition(question, plan string) []string {
 		findings = append(findings, fmt.Sprintf("schema integrity: constraint is defined by two blocks (%s)", id))
 	}
 
-	// (g) a constraint is a self-contained claim about the question's own
-	// anchors: another block's filler stays the variable that produced it.
+	// (h) every constraint names the variable its own block binds: with the
+	// variable as the SUBJECT a constraint is a proposition one chunk can confirm
+	// or refute on its own, which is what the deep read and the auditor then test
+	// - the terse noun phrases this replaces ("founded in 1966", "same first and
+	// last name") leave the reader to infer what they attach to, and a snippet
+	// that "does not support the clue" is usually that inference failing.
 	for _, b := range blocks {
+		if b.binds == "" {
+			continue
+		}
 		for _, c := range b.constraintDefs {
-			for _, token := range decompositionNamedValues(questionTokens, c.claim) {
-				findings = append(findings, fmt.Sprintf("suspect: constraint inlines another block's candidate - use its variable (%s, %s, block %s)", token, c.id, b.number))
+			if !strings.Contains(strings.ToLower(c.claim), strings.ToLower(b.binds)) {
+				findings = append(findings, fmt.Sprintf("schema integrity: constraint does not name the variable this block binds (%s, block %s)", c.id, b.number))
+			}
+		}
+	}
+
+	// (i) the `From:` set IS the set of upstream variables the constraints use:
+	// a constraint may reference its own block's variable and the variables it
+	// declared - nothing else - and every declared entry must be used by some
+	// constraint. The two directions together make `From:` a faithful record of
+	// the block's upstream variable set instead of a decorative edge list.
+	for _, b := range blocks {
+		if b.binds == "" {
+			continue
+		}
+		upstream := map[string]bool{}
+		for _, e := range b.fromEntries {
+			upstream[strings.ToLower(e.varName)] = true
+		}
+		used := map[string]bool{}
+		for _, c := range b.constraintDefs {
+			for _, v := range decompositionVarRe.FindAllString(c.claim, -1) {
+				low := strings.ToLower(v)
+				if strings.EqualFold(low, b.binds) {
+					continue
+				}
+				if !upstream[low] {
+					findings = append(findings, fmt.Sprintf("schema integrity: constraint references a variable this block neither binds nor consumes (%s, %s, block %s)", low, c.id, b.number))
+					continue
+				}
+				used[low] = true
+			}
+		}
+		for _, e := range b.fromEntries {
+			if !used[strings.ToLower(e.varName)] {
+				findings = append(findings, fmt.Sprintf("schema integrity: from entry is unused by this block's constraints (%s, block %s)", e.varName, b.number))
 			}
 		}
 	}
@@ -420,26 +512,26 @@ func decompositionParse(plain string) ([]*decompositionBlock, []string) {
 	return blocks, findings
 }
 
-// decompositionReach reports the two graph defects: a cycle, and a block that
-// does not hang off the ?answer block.
+// decompositionReach reports the graph defects: a cycle, and a block that
+// cannot reach the ?answer block.
 //
 // The traversal is the plan's own `consumed by` relation - a `From:` entry points
 // FROM the consumer TO the block that binds the variable - so the edges built
-// here run producer -> consumer and the answer block is where a chain lands. The
-// connectivity test is deliberately UNDIRECTED: in a chain every block flows
-// toward the ?answer block, while a flat question's constraint blocks consume it
-// and flow away from it, and requiring either direction alone would fail the
-// other lawful shape. What both shapes share is that every block touches the
-// ?answer block's component ("consumed by" / "chain" in the plan's own table),
-// which is the property the tool reports.
+// here run producer -> consumer and the answer block is where every chain must
+// land. The plan must be a STRICT DAG: acyclic, no orphans, and every block's
+// value consumed, transitively, by the block that binds `?answer` - so the
+// reachability test walks the `From:` edges upstream from the answer block and
+// requires every block to be in that closure. A block nothing consumes, and a
+// block that consumes `?answer` itself, both fail it (an undirected test once
+// tolerated the second shape; the strict rule does not - computing the answer
+// from the answer is a cycle in intent).
 func decompositionReach(blocks []*decompositionBlock, byVar map[string][]*decompositionBlock, answer *decompositionBlock) []string {
 	findings := []string{}
-	edges := map[string][]string{}      // producer -> consumer, for the cycle walk
-	undirected := map[string][]string{} // both ways, for connectivity
+	edges := map[string][]string{}    // producer -> consumer, for the cycle walk
+	upstream := map[string][]string{} // consumer -> producer, for the reachability walk
 	link := func(producer, consumer string) {
 		edges[producer] = append(edges[producer], consumer)
-		undirected[producer] = append(undirected[producer], consumer)
-		undirected[consumer] = append(undirected[consumer], producer)
+		upstream[consumer] = append(upstream[consumer], producer)
 	}
 	for _, c := range blocks {
 		for _, e := range c.fromEntries {
@@ -476,7 +568,7 @@ func decompositionReach(blocks []*decompositionBlock, byVar map[string][]*decomp
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
-		for _, m := range undirected[n] {
+		for _, m := range upstream[n] {
 			if !seen[m] {
 				seen[m] = true
 				queue = append(queue, m)
@@ -491,154 +583,53 @@ func decompositionReach(blocks []*decompositionBlock, byVar map[string][]*decomp
 	return findings
 }
 
-// decompositionTitle reports the two title defects the auditor names: a title
-// with no anchor at all, and a title that names a value the question never
-// supplies (which, before any search, can only be an inlined candidate).
-func decompositionTitle(questionTokens, questionYears map[string]bool, b *decompositionBlock) []string {
+// decompositionTitle applies the one mechanical fact a title carries: it is a
+// STABLE plan, so it names a `?variable` - its own block's or one it consumes -
+// never a value a search returned. Whether the title names a real anchor of the
+// question, and whether it states what the constraints carry, are judgments
+// about wording: the writer makes them when drafting and the auditor re-checks
+// them on the delivery. An earlier version tried to decide them here - exact
+// token match against the question, 5-character stem sharing, generic-word and
+// calendar-gloss lists, weighted coverage scores, a CJK guard over the lot -
+// and every layer was either vacuous on common vocabulary or false-positive on
+// lawful paraphrase.
+func decompositionTitle(b *decompositionBlock) []string {
 	title := b.title
 	if i := strings.Index(title, "slot:"); i > 0 {
 		title = title[:i]
 	}
 	title = strings.TrimRight(strings.TrimSpace(title), "-— ")
-	// A title carrying another block's variable satisfies the anchor rule, but it
-	// is still scanned for an inlined value: "the hospital where ?person died in
-	// Smithtown" names a place a search returned just as plainly as a title with
-	// no variable at all.
-	hasVar := strings.Contains(title, "?")
-	tokens := decompositionWordRe.FindAllString(title, -1)
-	years := decompositionYearRe.FindAllString(title, -1)
-	if len(tokens) == 0 && len(years) == 0 {
-		return []string{fmt.Sprintf("suspect: sub-question is not self-contained - it names no anchor (block %s)", b.number)}
+	if b.binds == "" || decompositionVarRe.MatchString(title) {
+		return nil
 	}
-	anchored := false
-	outside := []string{}
-	for _, tok := range tokens {
-		lower := strings.ToLower(tok)
-		// A generic word the question happens to supply ("school", "hospital",
-		// "the person") is shape vocabulary, not an anchor: the rule wants a
-		// proper noun, a number or a distinctive term, and the auditor's own
-		// failures are titled exactly that way ("which hospital", "the person").
-		if decompositionGenericWord[lower] {
-			continue
-		}
-		if questionTokens[lower] || decompositionSharesStem(questionTokens, lower) {
-			anchored = true
-			continue
-		}
-		if decompositionGlossWord[lower] {
-			continue
-		}
-		if tok[0] >= 'A' && tok[0] <= 'Z' {
-			outside = append(outside, tok)
-		}
-	}
-	for _, y := range years {
-		if questionYears[y] {
-			anchored = true
-		}
-	}
-	findings := []string{}
-	if len(outside) > 0 {
-		sort.Strings(outside)
-		findings = append(findings, fmt.Sprintf("suspect: sub-question inlines another block's candidate - use its variable (%s, block %s)", strings.Join(outside, ", "), b.number))
-	}
-	if !anchored && !hasVar {
-		findings = append(findings, fmt.Sprintf("suspect: sub-question is not self-contained - it names no anchor (block %s)", b.number))
-	}
-	return findings
-}
-
-// decompositionNamedValues returns the capitalised, non-generic values in a
-// constraint that the question never supplies.
-func decompositionNamedValues(questionTokens map[string]bool, text string) []string {
-	out := []string{}
-	for _, tok := range decompositionWordRe.FindAllString(text, -1) {
-		lower := strings.ToLower(tok)
-		if questionTokens[lower] || decompositionSharesStem(questionTokens, lower) ||
-			decompositionGenericWord[lower] || decompositionGlossWord[lower] {
-			continue
-		}
-		if tok[0] >= 'A' && tok[0] <= 'Z' {
-			out = append(out, tok)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-func decompositionTokens(text string) map[string]bool {
-	out := map[string]bool{}
-	for _, tok := range decompositionWordRe.FindAllString(text, -1) {
-		out[strings.ToLower(tok)] = true
-	}
-	return out
-}
-
-// decompositionSharesStem keeps the anchor test lenient: an inflected form of a
-// question token still counts as the question's own anchor, because a false "no
-// anchor" on a lawful title costs the run a rewrite.
-func decompositionSharesStem(questionTokens map[string]bool, token string) bool {
-	if len(token) < 6 {
-		return false
-	}
-	for i := len(token) - 1; i >= 5; i-- {
-		if questionTokens[token[:i]] {
-			return true
-		}
-	}
-	return false
-}
-
-// decompositionGenericWord holds the words that legitimately appear in a title
-// or a constraint without being an anchor: shape vocabulary, connectives, and
-// the facet tags the title carries.
-var decompositionGenericWord = map[string]bool{
-	"sub": true, "question": true, "the": true, "a": true, "an": true, "of": true, "and": true,
-	"or": true, "who": true, "whose": true, "that": true, "this": true, "these": true, "those": true,
-	"one": true, "two": true, "three": true, "four": true, "several": true, "many": true, "most": true,
-	"both": true, "each": true, "other": true, "another": true, "same": true, "any": true, "all": true,
-	"named": true, "name": true, "names": true, "slot": true, "kind": true, "value": true,
-	"person": true, "people": true, "individual": true, "individuals": true, "figure": true, "pair": true,
-	"organization": true, "organisation": true, "institution": true, "hospital": true, "school": true,
-	"schools": true, "answer": true, "variable": true, "formula": true, "compound": true, "molecule": true,
-	"title": true, "text": true, "year": true, "years": true, "date": true, "number": true, "count": true,
-	"first": true, "last": true, "shared": true, "identity": true, "attended": true, "died": true,
-	"born": true, "raised": true, "lived": true, "worked": true, "scored": true, "played": true,
-	"across": true, "between": true, "before": true, "after": true, "during": true, "from": true,
-	"with": true, "without": true, "where": true, "which": true, "while": true, "when": true,
-	"their": true, "there": true, "then": true, "than": true, "into": true, "over": true,
-	"full": true, "part": true, "set": true, "list": true, "clue": true, "clues": true,
-	"property": true, "fact": true, "claim": true, "constraint": true, "constraints": true,
-}
-
-// decompositionGlossWord holds the words a constraint may legitimately INTRODUCE
-// while resolving the question's own wording: the calendar, the seasons, the
-// zodiac and the unit names are what "resolve a relative window against the
-// question's anchor" means in practice, and an archived run that glossed "under
-// the zodiac sign Cancer" into "(June 21 - July 22)" was reported as an inlined
-// candidate until this list existed. Everything else a constraint introduces is
-// a value the question never supplied - which, before any search, can only be a
-// guess or another block's filler.
-var decompositionGlossWord = map[string]bool{
-	"january": true, "february": true, "march": true, "april": true, "may": true, "june": true,
-	"july": true, "august": true, "september": true, "october": true, "november": true, "december": true,
-	"jan": true, "feb": true, "mar": true, "apr": true, "jun": true, "jul": true, "aug": true,
-	"sep": true, "sept": true, "oct": true, "nov": true, "dec": true,
-	"monday": true, "tuesday": true, "wednesday": true, "thursday": true, "friday": true,
-	"saturday": true, "sunday": true, "weekday": true, "weekend": true,
-	"spring": true, "summer": true, "autumn": true, "fall": true, "winter": true,
-	"zodiac": true, "aries": true, "taurus": true, "gemini": true, "cancer": true, "leo": true,
-	"virgo": true, "libra": true, "scorpio": true, "sagittarius": true, "capricorn": true,
-	"aquarius": true, "pisces": true, "horoscope": true, "sign": true,
-	"century": true, "decade": true, "day": true, "week": true, "month": true, "season": true,
-	"mile": true, "miles": true, "kilometre": true, "kilometer": true, "metre": true, "meter": true,
-	"pound": true, "pounds": true, "kilogram": true, "gram": true, "inch": true, "inches": true,
-	"foot": true, "feet": true, "degree": true, "degrees": true, "percent": true,
+	return []string{fmt.Sprintf("suspect: sub-question is not self-contained - it names no anchor (block %s)", b.number)}
 }
 
 // decompositionSlots is the closed shape list a title's `slot:` tag draws from.
 var decompositionSlots = map[string]bool{
 	"name": true, "literal": true, "number": true, "quantity": true, "date": true, "set": true,
+}
+
+// decompositionSizeHints reports the blocks whose constraint load suggests a
+// further split. Five or more constraints on one block usually mean part of them
+// settles its own variable with its own anchors, and a deeper DAG is worth
+// considering - but the call is the planner's, so this is a HINT on the tool's
+// output and never a finding: it cannot turn an OK into a rejection.
+func decompositionSizeHints(plain string) []string {
+	blocks, _ := decompositionParse(strings.ReplaceAll(plain, "*", ""))
+	hints := []string{}
+	// The plan-level warning is the mirror of the block-level one: five or more
+	// blocks usually means some of them settle variables that could share a block,
+	// and the plan has been split finer than its evidence supports.
+	if len(blocks) >= 5 {
+		hints = append(hints, fmt.Sprintf("hint: the plan carries %d blocks - at five or more, consider whether some of them settle variables that could share one block, and the plan has been split too fine", len(blocks)))
+	}
+	for _, b := range blocks {
+		if len(b.constraintDefs) >= 5 {
+			hints = append(hints, fmt.Sprintf("hint: block %s carries %d constraints - at five or more, consider whether part of them settles their own variable with their own anchors, and deserves a block of their own", b.number, len(b.constraintDefs)))
+		}
+	}
+	return hints
 }
 
 func sortedKeys[V any](m map[string]V) []string {
