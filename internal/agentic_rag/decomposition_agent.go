@@ -170,7 +170,7 @@ func runDecompositionStage(ctx context.Context, in Input, question string) (stri
 		if len(findings) == 0 {
 			common.InfoCtx(ctx, "agentic_rag: question-decomposition verified",
 				zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
-			return plan, false
+			return reviewDecompositionPlan(ctx, in, conv, agent, plan), false
 		}
 		common.WarnCtx(ctx, "agentic_rag: question-decomposition plan failed the mechanical check",
 			zap.Int("round", round+1), zap.Strings("findings", findings))
@@ -178,6 +178,50 @@ func runDecompositionStage(ctx context.Context, in Input, question string) (stri
 			"\n\nFix every finding and return ONLY the corrected plan."
 	}
 	return plan, false
+}
+
+// reviewDecompositionPlan runs ONE self-review round over a plan that already
+// passes the mechanical check, and returns the plan to pin.
+//
+// The mechanical check holds no copy of the question, so the defects it cannot
+// see are exactly the ones no later stage can see either: #27 q875 shipped a
+// plan that had dropped two of the question's discriminating clauses (one of
+// the pair born/raised in the USA, both residing there before 2024), and the
+// explorer, the auditor and the checker all worked from the plan as written.
+// The planner itself is the only component that still has the question in
+// hand, so the review is a second pass over its own plan against the
+// principles in its instructions (see "The review round" in the
+// question-decomposition template).
+//
+// The pre-review plan is the fallback on every failure path - an unreadable,
+// unparseable or mechanically worse review result never costs the run the plan
+// it already had.
+func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, agent *adk.ChatModelAgent, plan string) string {
+	directive := "## Review round\n\nRe-read the plan you just wrote against the checklist titled " +
+		"\"The review round\" in your instructions: check it item by item and name the clause or block " +
+		"you checked. Where an item fails, rewrite the plan so it holds and re-verify it with " +
+		"`check_decomposition`; where every item holds, restate the plan unchanged. Return ONLY the " +
+		"plan - rewritten or unchanged."
+	iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
+	final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
+	if err != nil {
+		conv.discardFailedTurn(ctx, conv.head(ctx))
+		common.WarnCtx(ctx, "agentic_rag: question-decomposition review round failed", zap.Error(err))
+		return plan
+	}
+	reviewed := extractPlan(final)
+	if reviewed == "" {
+		common.WarnCtx(ctx, "agentic_rag: question-decomposition review round returned no plan - keeping the reviewed-out plan")
+		return plan
+	}
+	if findings := checkDecomposition(reviewed); len(findings) > 0 {
+		common.WarnCtx(ctx, "agentic_rag: question-decomposition review round broke the mechanical check - keeping the pre-review plan",
+			zap.Strings("findings", findings))
+		return plan
+	}
+	common.InfoCtx(ctx, "agentic_rag: question-decomposition review round accepted",
+		zap.Bool("revised", reviewed != plan), zap.Int("plan_bytes", len(reviewed)))
+	return reviewed
 }
 
 // runConversationalReply answers a purely conversational message WITHOUT the
