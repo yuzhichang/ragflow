@@ -73,7 +73,8 @@ func TestQuestionDecompositionStageWiring(t *testing.T) {
 			t.Fatalf("the explorer still holds the checker - the two-stage split is not real")
 		}
 	}
-	if !strings.Contains(explorer.Content, "The decomposition is GIVEN, not made here") {
+	if !strings.Contains(explorer.Content, "## The question decomposition") ||
+		!strings.Contains(explorer.Content, "never re-decompose") {
 		t.Fatalf("the explorer prompt must consume the pinned plan, not promise to write one")
 	}
 }
