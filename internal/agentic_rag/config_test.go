@@ -318,18 +318,19 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 }
 
 // TestAuditTemperatureKnob pins the auditor's sampling policy: an undeclared
-// temperature means 0 (the auditor must not sample), a declared one wins, and a
-// config without an auditor template still yields 0 rather than making every
-// caller invent a fallback.
+// temperature means the MODEL's own default (AuditTemperature returns nil, and
+// the caller leaves the temperature field unset), a declared one wins, and a
+// config without an auditor template is also unspecified rather than making
+// every caller invent a fallback.
 func TestAuditTemperatureKnob(t *testing.T) {
 	cases := []struct {
 		name string
 		yaml string
-		want float64
+		want *float64
 	}{
-		{"undeclared pins zero", auditorTemplateYAML(""), 0},
-		{"declared wins", auditorTemplateYAML("    temperature: 0.4\n"), 0.4},
-		{"no auditor template still zero", "templates:\n  - id: smart-grep\n    name: x\n    tools:\n      - think\n    content: |\n      P\n", 0},
+		{"undeclared means the model's default", auditorTemplateYAML(""), nil},
+		{"declared wins", auditorTemplateYAML("    temperature: 0.4\n"), floatPtr(0.4)},
+		{"no auditor template still unspecified", "templates:\n  - id: smart-grep\n    name: x\n    tools:\n      - think\n    content: |\n      P\n", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -346,12 +347,16 @@ func TestAuditTemperatureKnob(t *testing.T) {
 				cachedFile = nil
 				configMu.Unlock()
 			})
-			if got := AuditTemperature(); got != tc.want {
+			got := AuditTemperature()
+			if (got == nil) != (tc.want == nil) || (got != nil && tc.want != nil && *got != *tc.want) {
 				t.Errorf("AuditTemperature() = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
+
+// floatPtr is a test helper for declared temperatures.
+func floatPtr(f float64) *float64 { return &f }
 
 // auditorTemplateYAML builds a minimal config whose only template is the
 // auditor's, with tempLine (possibly empty) spliced into its header.

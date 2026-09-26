@@ -37,19 +37,18 @@ const answerAuditorTemplateID = "answer_auditor"
 const answerAuditorMaxIterations = 10
 
 // AuditTemperature resolves the temperature the auditor must run at: the
-// auditor template's `temperature` when it declares one, else 0 - the
-// documented contract is that an undeclared auditor does not sample. The
-// caller builds the auditor's model instance with it (an operator knob,
+// auditor template's `temperature` when it declares one, else nil - the
+// auditor then runs at the MODEL's own default, because the temperature field
+// is simply never set (an undeclared auditor is not pinned to any number).
+// The caller builds the auditor's model instance with it (an operator knob,
 // reloaded from disk like audit_max_pass).
-//
-// There is deliberately no "inherit" value: unset means 0, and an operator who
-// wants the auditor to mirror the chat's sampling should say the number.
-func AuditTemperature() float64 {
+func AuditTemperature() *float64 {
 	tmpl, err := resolveTemplateFor(answerAuditorTemplateID)
 	if err != nil || tmpl.Temperature == nil {
-		return 0
+		return nil
 	}
-	return *tmpl.Temperature
+	t := *tmpl.Temperature
+	return &t
 }
 
 // NewAnswerAuditorAgent builds the answer_auditor auditor as a standalone ADK

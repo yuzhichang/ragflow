@@ -4841,17 +4841,29 @@ func kbTenantIDStrings(kbs []*entity.Knowledgebase) []string {
 // Dialog values are read first; request config values win when present.
 // auditChatConfig derives the auditor's model config from the chat's: a copy
 // that keeps every per-request parameter (max_tokens, thinking, stop, tools)
-// but replaces the temperature with the one the auditor template pins
-// (agentic_rag.AuditTemperature, 0 unless an operator says otherwise). The
-// caller's config is never mutated — the producer's sampling stays its own
-// choice, and the auditor's judgement must not ride on it.
+// and, when the auditor template DECLARES a temperature, replaces the
+// temperature with it; an undeclared auditor leaves the temperature field
+// untouched, so the auditor samples at the model's own default (there is no
+// temperature of its own to inherit — the chat's llm_setting no longer pins
+// one). The caller's config is never mutated — the producer's sampling stays
+// its own choice, and the auditor's judgement must not ride on it.
 func auditChatConfig(chatCfg *modelModule.ChatConfig) *modelModule.ChatConfig {
 	temp := agentic_rag.AuditTemperature()
+	if temp == nil {
+		// Unspecified: do not set the field at all — the model's own default
+		// applies. A nil chatCfg yields an empty config for the same reason.
+		if chatCfg == nil {
+			return &modelModule.ChatConfig{}
+		}
+		out := *chatCfg
+		out.Temperature = nil
+		return &out
+	}
 	if chatCfg == nil {
-		return &modelModule.ChatConfig{Temperature: &temp}
+		return &modelModule.ChatConfig{Temperature: temp}
 	}
 	auditCfg := *chatCfg
-	auditCfg.Temperature = &temp
+	auditCfg.Temperature = temp
 	return &auditCfg
 }
 
