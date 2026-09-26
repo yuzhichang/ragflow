@@ -123,6 +123,15 @@ type Input struct {
 	// deep, snippet window = shallow). Benchmarks report both totals per
 	// question next to ToolCallCounts.
 	ChunkReads *chunkReadLedger
+	// Searches, when non-nil, records every retrieval action the run actually
+	// executed - tool name and verbatim arguments, in execution order. It is
+	// the ground truth of WHAT WAS SEARCHED: the Candidate Matrix is the
+	// model's own end-of-run reconstruction and measurably underreports (a
+	// #30 run executed 59 distinct searches and its matrix carried 8), so
+	// coverage judgments that ask "was this anchor ever queried" must read
+	// this ledger, not the matrix. The delivery gate hands it to the auditor
+	// as the read_search_ledger tool.
+	Searches *searchLedger
 	// GateAudit, when non-nil, is filled by the delivery gate with the
 	// answer auditor's per-round suspect accounting (see GateAuditRecord).
 	// Benchmarks report it next to ToolCallCounts to show how much audit
@@ -438,6 +447,90 @@ func (l *chunkReadLedger) AddShallow(n int) {
 	l.shallow += n
 }
 
+// searchLedger records every retrieval action a run actually executed - tool
+// name and verbatim arguments, in execution order, append-only. It is the
+// ground truth of WHAT WAS SEARCHED:
+//
+// The Candidate Matrix is the model's own end-of-run reconstruction, and it
+// measurably underreports - a #30 run executed 59 distinct searches while its
+// shipped matrix carried 8 Searched lines, so an auditor judging coverage from
+// the matrix alone misread a thoroughly-searched anchor as "never queried"
+// (five stale suspects across as many passes). The ledger is recorded at tool
+// execution by the same wrapper that accounts durations, so no reconstruction
+// sits between the behavior and the record.
+//
+// Entries are append-only and keep duplicates: a repeated query is itself
+// behavioral signal (the run searched the same thing twice), and the FIRST
+// entry is the run's actual first search - the fact the candidate-free
+// opening rule is judged against. The auditor reads the ledger through the
+// read_search_ledger tool (a cursor-style after argument returns the delta),
+// which keeps the audit payload small while the ground truth stays a tool
+// call away.
+type searchLedgerEntry struct {
+	seq  int    // 1-based execution order across the whole run
+	tool string // e.g. search_bm25_chunks, grep_chunks
+	args string // verbatim tool arguments (the query or query list)
+}
+
+type searchLedger struct {
+	mu      sync.Mutex
+	seq     int
+	entries []searchLedgerEntry
+}
+
+// NewSearchLedger returns an empty search ledger for one run.
+func NewSearchLedger() *searchLedger {
+	return &searchLedger{}
+}
+
+// Add records one retrieval action. The arguments are stored verbatim
+// (single-line trimmed) - no parsing, no normalization: the raw bytes are the
+// fact, and how to read them is the auditor's judgement.
+func (l *searchLedger) Add(tool, args string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.seq++
+	l.entries = append(l.entries, searchLedgerEntry{
+		seq:  l.seq,
+		tool: tool,
+		args: strings.TrimSpace(args),
+	})
+}
+
+// Count returns the number of recorded actions.
+func (l *searchLedger) Count() int {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
+}
+
+// Snapshot returns the recorded actions with seq > after (pass after=0 for
+// the full ledger), capped at limit entries starting from the oldest match.
+func (l *searchLedger) Snapshot(after, limit int) []searchLedgerEntry {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []searchLedgerEntry
+	for _, e := range l.entries {
+		if e.seq <= after {
+			continue
+		}
+		out = append(out, e)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 // AddDeepIDs records the identifiers of deep-read chunks. Empty values are
 // dropped and repeats collapse (the same chunk read twice is one read), so
 // callers can pass raw tool-output matches as-is.
@@ -548,6 +641,16 @@ var shallowReadChunkTools = map[string]struct{}{
 	"search_bm25_chunks": {},
 }
 
+// searchActionTools are the corpus tools whose invocations are recorded in
+// the run's searchLedger: every retrieval action with query-bearing
+// arguments. list_chunks is a read of already-known identifiers (it lands in
+// chunkReads instead); web_search is not a corpus action.
+var searchActionTools = map[string]struct{}{
+	"grep_chunks":            {},
+	"search_bm25_chunks":     {},
+	"search_semantic_chunks": {},
+}
+
 // chunkElementRe counts the <chunk ...> elements a tool rendered. The
 // <chunks ...> wrapper does NOT match: after "<chunk" comes "s", not a space
 // or a tag close.
@@ -570,6 +673,10 @@ type instrumentedTool struct {
 	acc    *durationAccumulator
 	docs   *docIDLedger
 	chunks *chunkReadLedger
+	// searches records every search action into the run's append-only
+	// ledger (see searchLedger) - the ground truth the delivery gate's
+	// auditor reads through read_search_ledger.
+	searches *searchLedger
 	// watch is the run's locate watchdog (see locate_watch.go): it counts
 	// locate calls and, when the meaning-based leg is held but never called,
 	// appends one reminder to the tool result the model is about to read.
@@ -639,6 +746,14 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 	}
 	t.acc.Add(name, cost)
 	if err == nil {
+		// Search ledger: record the retrieval action verbatim BEFORE the
+		// result is read - the ledger is what WAS searched, append-only,
+		// and the auditor reads it through read_search_ledger to judge
+		// coverage against facts instead of the deliverable's own
+		// reconstruction.
+		if _, isSearch := searchActionTools[name]; isSearch && t.searches != nil {
+			t.searches.Add(name, args)
+		}
 		if _, full := fullContentDocTools[name]; full {
 			t.docs.Add(recordedDocIDs(out)...)
 		}
@@ -737,6 +852,9 @@ func Run(ctx context.Context, in Input) (string, error) {
 	if in.ChunkReads == nil {
 		in.ChunkReads = NewChunkReadLedger()
 	}
+	if in.Searches == nil {
+		in.Searches = NewSearchLedger()
+	}
 
 	// Stage one: the question-decomposition agent writes the block plan and
 	// has it verified BEFORE the explorer runs, so decomposition is never left
@@ -778,7 +896,8 @@ func Run(ctx context.Context, in Input) (string, error) {
 		if auditMaxPass > 0 {
 			inner, aerr := NewAnswerAuditorAgent(ctx, auditModelFor(in),
 				in.TenantID, in.DatasetIDs, lastUserQuestion(in.Messages),
-				in.ToolCallDurations, in.RetrievedDocIDs, in.ChunkReads)
+				in.ToolCallDurations, in.RetrievedDocIDs, in.ChunkReads,
+				in.Searches)
 			if aerr != nil {
 				// auditMaxPass drops to 0: no gate auditing.
 				common.WarnCtx(ctx, "agentic_rag: answer auditor unavailable", zap.Error(aerr))
@@ -815,6 +934,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 				acc:           in.ToolCallDurations,
 				docs:          in.RetrievedDocIDs,
 				chunks:        in.ChunkReads,
+				searches:      in.Searches,
 				watch:         watch,
 			}
 		} else {
@@ -921,6 +1041,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		auditMaxPass:   auditMaxPass,
 		toolCallCounts: in.ToolCallCounts,
 		reads:          in.ChunkReads,
+		searches:       in.Searches,
 		audit:          in.GateAudit,
 	})
 	if runErr != nil && gateFinal != preGateFinal {
@@ -1208,6 +1329,11 @@ type deliveryGateInput struct {
 	// The gate compares the deliverable's cited ids against it: the one citation
 	// question that needs no reading of content (see unreadCitations).
 	reads *chunkReadLedger
+	// searches is the run's search ledger (Input.Searches) - every retrieval
+	// action actually executed, append-only. Its size rides into the audit
+	// payload as the nudge that tells the auditor a read_search_ledger call
+	// has facts to verify coverage judgements against.
+	searches *searchLedger
 	// audit, when non-nil, receives the per-round suspect accounting of every
 	// audit this gate runs (see GateAuditRecord).
 	audit *GateAuditRecord
@@ -1329,7 +1455,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				zap.String("gate_answer_label", answerLbl),
 				zap.String("deliverable_tail", truncateForLog(lastNonBlankLine(final), 200)))
 			var err error
-			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts)
+			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts, in.searches)
 			if err != nil {
 				// The auditor itself failed (LLM timeout, tool outage).
 				// Retrying inside this request rarely helps; fall through to
@@ -1677,11 +1803,12 @@ func gateRunAudit(
 	conv *conversation,
 	final string,
 	toolCallCounts map[string]int,
+	searches *searchLedger,
 ) (string, error) {
 	if auditor == nil {
 		return "", fmt.Errorf("agentic_rag: auditor unavailable")
 	}
-	payload := buildAuditPayload(final)
+	payload := buildAuditPayload(final, searches)
 	common.WarnCtx(ctx, "agentic_rag: gate-run audit start",
 		zap.String("payload", truncateForLog(payload, 2000)))
 	// The auditor's INPUT and OUTPUT at full length, debug only: the tail of both is

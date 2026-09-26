@@ -381,6 +381,13 @@ type auditPayload struct {
 	// `Guessed Answer`, and a `Final Answer` that contradicts its own evidence is a
 	// defect. The gate does not read the value, so it states the one thing it knows.
 	GateAnswerLabel string `json:"gate_answer_label,omitempty"`
+	// SearchActions is the size of the run's search ledger (Input.Searches) at
+	// audit time - the nudge that tells the auditor a read_search_ledger call
+	// has ground truth to check coverage judgements against. The count rides
+	// the payload because the auditor cannot know from the deliverable alone
+	// that its Searched lines underreport; the full entries stay behind the
+	// tool so the payload never grows with them.
+	SearchActions int `json:"search_actions,omitempty"`
 }
 
 // unreadCitations returns the chunk ids the deliverable cites that the run never
@@ -444,8 +451,8 @@ func unreadCitationDirective(unread []string) string {
 // extraction: the auditor reads the FINAL message's own md structure (##
 // Candidate Matrix, ## Reasoning Chain, the Final/Guessed Answer line) and echoes
 // it back with audit opinions, so the gate must not reshape or truncate it.
-func buildAuditPayload(final string) string {
-	b, err := json.Marshal(auditPayload{FinalMessage: final, GateAnswerLabel: answerLabel(final)})
+func buildAuditPayload(final string, searches *searchLedger) string {
+	b, err := json.Marshal(auditPayload{FinalMessage: final, GateAnswerLabel: answerLabel(final), SearchActions: searches.Count()})
 	if err != nil {
 		// json.Marshal of plain strings cannot fail.
 		return ""

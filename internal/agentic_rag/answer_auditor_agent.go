@@ -94,6 +94,7 @@ func NewAnswerAuditorAgent(
 	toolDurations *durationAccumulator,
 	retrievedDocs *docIDLedger,
 	chunkReads *chunkReadLedger,
+	searches *searchLedger,
 ) (*adk.ChatModelAgent, error) {
 	tmpl, err := resolveTemplateFor(answerAuditorTemplateID)
 	if err != nil {
@@ -129,6 +130,16 @@ func NewAnswerAuditorAgent(
 		}
 		tools = wrapped
 	}
+	// The search ledger reader is appended AFTER the instrumentation wrap on
+	// purpose: the auditor's reads of the ledger are not retrieval actions
+	// and must not record themselves into the facts they report. The ledger
+	// is the run's ground truth of what the explorer actually searched -
+	// recorded mechanically at tool execution, while the deliverable's
+	// Searched lines are the model's end-of-run reconstruction (measurably
+	// lossy: one #30 run executed 59 distinct searches and its matrix carried
+	// 8). Coverage judgements read the ledger; the deliverable is audited for
+	// the claims it makes about its own behavior.
+	tools = append(tools, NewReadSearchLedgerTool(searches))
 
 	cfg := &adk.ChatModelAgentConfig{
 		Name:          tmpl.ID,
