@@ -29,7 +29,9 @@ import (
 
 // lawfulPlan is the shape the checks must accept: a root naming the question's
 // own anchor, a chain edge with its pointer, and a partition of numbers.
-const lawfulPlan = `### Sub-question 1: ?school is the school with 3 founders whose name is the birthplace of one of them — slot: name — kind: institution
+const lawfulPlan = `## Resolved question: A school with 3 founders was named after the birthplace of one of them, and two individuals from different industries attended it and share the same first and last name. What is the shared name?
+
+### Sub-question 1: ?school is the school with 3 founders whose name is the birthplace of one of them — slot: name — kind: institution
 - Op: lookup
 - Binds: ?school
 - From: none
@@ -180,7 +182,9 @@ const exampleQuestion = "Which player of a team in the 2004-05 season, who was b
 // The team is resolved from its own constraints first, the second block keeps
 // ?team as a variable, and ?answer is bound once, by the block that fills the
 // asked slot. This is the draft the tool must pass before a single query runs.
-const examplePlanGood = `### Sub-question 1: ?team is the East German football team founded in 1966 — slot: name — kind: organization
+const examplePlanGood = `## Resolved question: Which East German football team was founded in 1966, and where did it play its home games in its first season?
+
+### Sub-question 1: ?team is the East German football team founded in 1966 — slot: name — kind: organization
 - Op: lookup
 - Binds: ?team
 - From: none
@@ -201,7 +205,9 @@ const examplePlanGood = `### Sub-question 1: ?team is the East German football t
 const exampleQuestionDAG = "The winner and the runner-up of a European championship whose final was decided on penalties both came from the same city; which city was it? The championship was held in 1996."
 
 // ?tournament forks into the winner and the runner-up, which merge into the city.
-const examplePlanDAG = `### Sub-question 1: ?tournament is the European championship held in 1996 whose final was decided on penalties — slot: name — kind: organization
+const examplePlanDAG = `## Resolved question: Which European championship was held in 1996, decided on penalties, and who won it?
+
+### Sub-question 1: ?tournament is the European championship held in 1996 whose final was decided on penalties — slot: name — kind: organization
 - Op: lookup
 - Binds: ?tournament
 - From: none
@@ -357,7 +363,9 @@ func TestCheckDecompositionNotesHeavyBlocks(t *testing.T) {
 // rules (a constraint that never names its own variable is still a finding,
 // whatever the script).
 func TestCheckDecompositionCJKPlan(t *testing.T) {
-	plan := `### Sub-question 1: ?school 是那所由三位创始人创立并以其中一位创始人出生地命名的学校 — slot: name — kind: institution
+	plan := `## Resolved question: 那所由三位创始人创立并以其中一位创始人出生地命名的学校是什么？
+
+### Sub-question 1: ?school 是那所由三位创始人创立并以其中一位创始人出生地命名的学校 — slot: name — kind: institution
 - Op: lookup
 - Binds: ?school
 - From: none
@@ -434,6 +442,26 @@ func TestCheckDecompositionNotesFinePlans(t *testing.T) {
 	}
 	if !strings.Contains(out, fmt.Sprintf("the plan carries %d blocks", decompositionMaxBlocks)) {
 		t.Fatalf("missed the plan-size hint; got:\n%s", out)
+	}
+}
+
+// TestCheckDecompositionRequiresResolvedQuestion pins the preamble rule: the
+// plan opens with the resolved question - the clause-coverage review walks
+// THAT text, and every downstream consumer reads it as the question.
+func TestCheckDecompositionRequiresResolvedQuestion(t *testing.T) {
+	if got := checkDecomposition(lawfulPlan); len(got) != 0 {
+		t.Fatalf("a plan with the resolved-question preamble must pass, got %v", got)
+	}
+	headerless := strings.Replace(lawfulPlan, "## Resolved question: ", "", 1)
+	got := strings.Join(checkDecomposition(headerless), "\n")
+	want := "schema integrity: the plan does not open with a `## Resolved question: <the question>` line"
+	if !strings.Contains(got, want) {
+		t.Fatalf("a plan without the preamble must report %q, got:\n%s", want, got)
+	}
+	// Bold markup on the header is tolerated (the checker strips emphasis).
+	bold := strings.Replace(lawfulPlan, "## Resolved question:", "**## Resolved question:**", 1)
+	if got := checkDecomposition(bold); len(got) != 0 {
+		t.Fatalf("a bolded resolved-question header must pass, got %v", got)
 	}
 }
 
@@ -539,7 +567,11 @@ func TestBrowseCompPlusDecompositionPlans(t *testing.T) {
 		if strings.TrimSpace(q.PlanNote) == "" {
 			t.Fatalf("q%s: the normalised plan must say what it changed", q.QuestionID)
 		}
-		if got := checkDecomposition(q.Plan); len(got) != 0 {
+		// The archived plans predate the resolved-question rule; the fixture
+		// prepends the line the current doctrine requires so the schema check
+		// under test is not satisfied vacuously by an anachronism.
+		plan := "## Resolved question: " + strings.TrimSpace(q.Question) + "\n\n" + q.Plan
+		if got := checkDecomposition(plan); len(got) != 0 {
 			t.Fatalf("q%s: the normalised plan must pass, got %v", q.QuestionID, got)
 		}
 		observed := make([]string, 0, len(q.Observed.Blocks))

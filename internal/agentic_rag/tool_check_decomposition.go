@@ -216,6 +216,18 @@ func checkDecompositionBlocks(plan string) ([]*decompositionBlock, []string) {
 		findings = append(findings, fmt.Sprintf("schema integrity: the plan carries %d blocks - more than the cap of %d; merge the blocks that settle the same variable", len(blocks), decompositionMaxBlocks))
 	}
 
+	// The plan must open with the resolved question (see "The resolved
+	// question" in the question-decomposition template): that line is the
+	// question every downstream consumer reads - the explorer is seeded with
+	// it, the auditor pins it, and the review's clause-coverage mapping
+	// enumerates ITS clauses - so a plan without it is unauditable for
+	// coverage. Checked on the bold-stripped text so a **bold** header
+	// passes; position matters: the line belongs in the preamble, before the
+	// first block heading.
+	if i := strings.Index(plain, "### Sub-question"); i >= 0 && !strings.Contains(plain[:i], "## Resolved question") {
+		findings = append(findings, "schema integrity: the plan does not open with a `## Resolved question: <the question>` line - the clause-coverage review walks THAT question")
+	}
+
 	// (a) header shape, then the variable bindings: names are unique
 	// question-wide and `?answer` is bound by exactly one block.
 	byVar := map[string][]*decompositionBlock{}
