@@ -166,19 +166,6 @@ templates:
       (list_chunks) and returns the FINAL message in the producer's own md format with one audit opinion per
       item (`pass` / `suspect` / `schema integrity` / `field integrity`) and a final
       `Audit Result: PASS|FAIL` line as the machine-parseable overall verdict.
-    # The auditor's sampling temperature. 0.1 since 2026-09-22 (was 0): an
-    # operator decision to let the auditor's opinions vary slightly instead of
-    # annealing to the same reading on every pass. The trade-off that made 0 the
-    # default is unchanged and worth knowing: the verdict is machine-parsed AND
-    # decides whether the deliverable ships, so sampling is control-loop jitter
-    # rather than stylistic variation: a sampled FAIL burns a repair pass (and
-    # at the stall window can finalize a worse deliverable), a sampled PASS ships
-    # an unaudited one, and the auditor's own ReAct loop picks which cited chunks
-    # it deep-reads. The producer keeps the chat's temperature, where sampling
-    # buys exploration. This lowers variance, it does not make the verdict
-    # reproducible (MoE routing, batching and the auditor's cross-pass session
-    # memory remain).
-    temperature: 0.1
     tools:
       - think
       - todo_write
@@ -194,6 +181,7 @@ templates:
          The question under audit is pinned in your system prompt above ("The question under audit"): apply it verbatim and never re-ask.
          The gate contributes ONE reading and nothing else: `gate_answer_label`, the label the text was shipped under (`final` / `guessed`, omitted when the text carries none); it reads labels, not answers, and how that label is judged is step 4e's business. Every judgement below is YOURS, from the deliverable and from the chunks you read with `list_chunks`, and a quiet payload is never a clearance: there is no gate check behind it, by design.
          Payload completeness (mechanical, check FIRST): a missing or empty `final_message` yields the single opinion `schema integrity: final_message is missing` under the answer, and `Audit Result: FAIL (1 suspects)` with nothing else echoed. Otherwise settle the delivery's SECTIONS once, here, before anything else: `## Candidate Matrix` (`schema integrity: candidate_matrix is missing` for an entity/title answer; a pure number/year answer may ship without one), `## Reasoning Chain` (`schema integrity: reasoning_chain is missing`) and the Final/Guessed Answer line (`schema integrity: answer is missing`). Each opinion attaches to the section it names, and the steps below then audit whatever sections EXIST: a missing section is reported HERE, never re-litigated there.
+      The run also records FACTS about what the explorer actually did: every retrieval action (tool + verbatim arguments, in execution order) lands in an append-only search ledger, readable through the `read_search_ledger` tool (pass `after` = the last seq you read for the delta). The ledger is ground truth; the matrix's `Searched:` lines are the model's end-of-run reconstruction, and they measurably underreport - a run can execute dozens of searches its matrix never mentions. So the two documents answer different questions, and coverage judgements MUST be checked against the ledger before they are asserted: whether a clue anchor was ever queried, whether the run's FIRST search (ledger entry 1) named a candidate, whether a co-occurrence regex over two constraints ever ran, and whether a repair actually performed the search the directive demanded. A matrix whose `Searched:` lines omit ledger-recorded searches is itself a suspect - the omission hides behavior from every later check.
       2. Matrix audit (BEFORE chain lines). The block mechanics in (b) apply whenever a matrix is present, whatever the answer's type; the content checks in (a) and (c) are for ENTITY/TITLE answers, because a pure number/year answer may legitimately ship without a matrix. The producer renders ONE block per sub-question: `### Sub-question N: <text> — slot: <shape>` plus the header lines `- Op:` / `- Binds:` / `- From:`, a `- Constraints:` line, the per-candidate lines `- Searched:` / `- Tested:` / `- Eliminated:` / `- Retained:` / `- Derived:`, and a `- Failure:` line when a block ends without a filler.
         Judge WHOLE -> PART, and never open a level before the one above it holds: a coarser defect makes the finer checks meaningless (a matrix with no block has no line to check), and the finer checks are the ones that cost tool calls.
         a) DELIVERY level (mechanical, no tool calls; entity/title answers): the matrix whose EXISTENCE step 1 settled holds at least one block, and the block set carries `Searched` / `Tested` / `Retained` lines. A matrix empty of those lines fails as `schema integrity: candidate_matrix is missing`; a pure number/year answer that ships none is outside this item's scope rather than a defect.

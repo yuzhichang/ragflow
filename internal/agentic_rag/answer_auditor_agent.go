@@ -36,34 +36,18 @@ const answerAuditorTemplateID = "answer_auditor"
 // generous.
 const answerAuditorMaxIterations = 10
 
-// answerAuditorTemperature is the sampling temperature the auditor runs at
-// unless the template overrides it. The auditor is the one agent whose output
-// is machine-parsed (`Audit Result: FAIL (M suspects)`, `- audit: <opinion>`)
-// AND drives a control decision — PASS ships the deliverable, FAIL buys another
-// repair round — so its sampling noise is not stylistic variation but
-// control-loop jitter, costing both ways: a sampled FAIL burns a repair turn
-// (and at the stall window can finalize a worse deliverable), a sampled PASS
-// ships an unaudited one. The auditor's ReAct loop also picks WHICH cited chunks
-// to deep-read, so temperature randomizes the evidence its verdict rests on —
-// the last thing a verifier's judgement should depend on.
-//
-// The producer keeps the chat's temperature: there, sampling buys exploration.
-// Zero here would only remove the sampling; it does not make the verdict
-// reproducible (MoE routing, batching and the auditor's own cross-pass session
-// memory all remain), so this lowers variance rather than guaranteeing it.
-const answerAuditorTemperature = 0.1
-
 // AuditTemperature resolves the temperature the auditor must run at: the
-// auditor template's `temperature` when it declares one, else
-// answerAuditorTemperature. The caller builds the auditor's model instance with
-// it (an operator knob, reloaded from disk like audit_max_pass).
+// auditor template's `temperature` when it declares one, else 0 - the
+// documented contract is that an undeclared auditor does not sample. The
+// caller builds the auditor's model instance with it (an operator knob,
+// reloaded from disk like audit_max_pass).
 //
 // There is deliberately no "inherit" value: unset means 0, and an operator who
 // wants the auditor to mirror the chat's sampling should say the number.
 func AuditTemperature() float64 {
 	tmpl, err := resolveTemplateFor(answerAuditorTemplateID)
 	if err != nil || tmpl.Temperature == nil {
-		return answerAuditorTemperature
+		return 0
 	}
 	return *tmpl.Temperature
 }

@@ -186,9 +186,9 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 	if auditor.AuditMaxPass != 0 {
 		t.Errorf("%s: audit_max_pass = %d, want 0 (the auditor is not audited)", answerAuditorTemplateID, auditor.AuditMaxPass)
 	}
-	if auditor.Temperature == nil || *auditor.Temperature != answerAuditorTemperature {
-		t.Errorf("%s: temperature = %v, want the shipped %v — the auditor's verdict is machine-parsed and decides whether the deliverable ships, so it must not sample",
-			answerAuditorTemplateID, auditor.Temperature, answerAuditorTemperature)
+	if auditor.Temperature != nil {
+		t.Errorf("%s: temperature = %v, want nil — the auditor's sampling is an operator knob expressed in code (answerAuditorTemperature), not a per-file declaration; the shipped config leaves it unspecified",
+			answerAuditorTemplateID, auditor.Temperature)
 	}
 	// The snippet rule must not send the auditor after typography. It used to
 	// demand the snippet be copied CHARACTER-FOR-CHARACTER with "nothing ...
