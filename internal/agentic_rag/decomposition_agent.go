@@ -213,7 +213,7 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 	directive := "## Review round\n\nRe-read the plan you just wrote against the checklist titled " +
 		"\"The review round\" in your instructions. Output FIRST one verdict line per checklist item, " +
 		"in order - `1. PASS - <the clauses or blocks you checked>` or `1. FAIL - <what fails, and the " +
-		"exact clause of the question it concerns>` - all five; THEN the plan, rewritten where an item " +
+		"exact clause of the question it concerns>` - all six; THEN the plan, rewritten where an item " +
 		"failed and unchanged where all held."
 	for round := 1; round <= decompositionReviewRounds; round++ {
 		iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
@@ -232,7 +232,7 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 			common.WarnCtx(ctx, "agentic_rag: question-decomposition review broke the mechanical check",
 				zap.Int("round", round), zap.Strings("findings", findings))
 			directive = "check_decomposition reports:\n- " + strings.Join(findings, "\n- ") +
-				"\n\nFix every finding, then output the five verdict lines and the corrected plan."
+				"\n\nFix every finding, then output the six verdict lines and the corrected plan."
 			continue
 		}
 		missing, fails := auditReviewVerdicts(verdicts)
@@ -240,7 +240,7 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 			common.WarnCtx(ctx, "agentic_rag: question-decomposition review verdicts incomplete",
 				zap.Int("round", round), zap.Int("found", len(verdicts)), zap.Strings("missing", missing))
 			directive = "The review is not auditable without one verdict line per checklist item. Output " +
-				"all five verdict lines - `N. PASS - <what you checked>` or `N. FAIL - <what fails>` - " +
+				"all six verdict lines - `N. PASS - <what you checked>` or `N. FAIL - <what fails>` - " +
 				"then the plan."
 			current = reviewed
 			continue
@@ -250,7 +250,7 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 				zap.Int("round", round), zap.Strings("fails", fails))
 			directive = "Your review reported failures:\n- " + strings.Join(fails, "\n- ") +
 				"\n\nRewrite the plan so every item passes, re-verify it with `check_decomposition`, " +
-				"then output the five verdict lines and the corrected plan."
+				"then output the six verdict lines and the corrected plan."
 			current = reviewed
 			continue
 		}
@@ -264,8 +264,8 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 }
 
 // reviewVerdictRe matches one review verdict line: `N. PASS - ...` or
-// `N. FAIL - ...` for checklist items 1-5.
-var reviewVerdictRe = regexp.MustCompile(`(?m)^\s*([1-5])\.\s*(PASS|FAIL)\b`)
+// `N. FAIL - ...` for checklist items 1-6.
+var reviewVerdictRe = regexp.MustCompile(`(?m)^\s*([1-6])\.\s*(PASS|FAIL)\b`)
 
 // splitReviewOutput separates the review's verdict block (everything before
 // the first `### Sub-question` heading) from the plan, and returns the
@@ -282,7 +282,7 @@ func splitReviewOutput(final string) ([]string, string) {
 	return verdicts, extractPlan(final)
 }
 
-// auditReviewVerdicts checks the verdict block for completeness (all five
+// auditReviewVerdicts checks the verdict block for completeness (all six
 // checklist items decided) and for open failures. It returns the missing item
 // numbers and the failing item numbers.
 func auditReviewVerdicts(verdicts []string) (missing, fails []string) {
@@ -291,7 +291,7 @@ func auditReviewVerdicts(verdicts []string) (missing, fails []string) {
 		parts := strings.SplitN(v, " ", 2)
 		decided[parts[0]] = parts[1]
 	}
-	for n := 1; n <= 5; n++ {
+	for n := 1; n <= 6; n++ {
 		item := strconv.Itoa(n)
 		v, ok := decided[item]
 		if !ok {
