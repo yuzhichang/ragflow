@@ -23,16 +23,32 @@ package agentic_rag
 //
 // Guarded by DECOMP_PROBE=1: ordinary `go test ./...` never reaches the wire.
 //
+//	cd internal/agentic_rag && \
+//	AGENTIC_RAG_CONFIG=../../conf/agentic_rag.yaml \
 //	DECOMP_PROBE=1 \
-//	DECOMP_QUESTION="Two individuals from different industries ..." \
-//	DECOMP_API_KEY="..." \
-//	DECOMP_BASE_URL="https://api.minimax.chat" \
+//	DECOMP_API_KEY="<provider key>" \
 //	DECOMP_TEMPERATURE=0.5 \
-//	go test ./internal/agentic_rag/ -run TestDecompositionProbe -v -timeout 10m
+//	DECOMP_QUESTION="Two individuals from different industries ..." \
+//	go test -run TestDecompositionProbe -v -timeout 12m
 //
-// DECOMP_QUESTIONS_FILE (one question per line) sweeps several questions in
-// one go. The MiniMax driver is hardcoded because that is the benchmark
-// provider; other providers only need the driver swapped here.
+// Environment:
+//
+//	AGENTIC_RAG_CONFIG   required in practice: `go test` runs in the package
+//	                     directory, where the default relative config path
+//	                     (conf/agentic_rag.yaml) does not resolve - point it
+//	                     at ../../conf/agentic_rag.yaml.
+//	DECOMP_QUESTION      one question, or:
+//	DECOMP_QUESTIONS_FILE a file with one question per line.
+//	DECOMP_PROVIDER      provider name as spelled in conf/models/*.json
+//	                     (default "MiniMax"). The driver, base URL and URL
+//	                     suffix come from that provider's own file via
+//	                     InitProviderManager - nothing is hardcoded here.
+//	DECOMP_API_KEY       the provider key (for MiniMax: the tenant_model_instance
+//	                     row's api_key in MySQL - the API never returns keys).
+//	DECOMP_BASE_URL      optional override of the provider file's default URL
+//	                     (e.g. the global-region key needs the .io endpoint).
+//	DECOMP_MODEL         model name (default "MiniMax-M3").
+//	DECOMP_TEMPERATURE   sampling temperature (default 0.5, the benchmark's).
 
 import (
 	"bufio"
@@ -56,24 +72,21 @@ func TestDecompositionProbe(t *testing.T) {
 	}
 	questions := probeQuestions(t)
 
-	baseURL := envOr("DECOMP_BASE_URL", "https://api.minimax.chat")
+	providerName := envOr("DECOMP_PROVIDER", "MiniMax")
+	driver := probeDriver(t, providerName)
 	modelName := envOr("DECOMP_MODEL", "MiniMax-M3")
 	temp := 0.5
 	if s := os.Getenv("DECOMP_TEMPERATURE"); s != "" {
 		temp = parseProbeFloat(t, s)
 	}
 
-	driver := models.NewMinimaxModel(
-		map[string]string{"default": baseURL},
-		models.URLSuffix{
-			Chat:   "v1/text/chatcompletion_v2",
-			Models: "v1/models",
-			Files:  "v1/files/list",
-		},
-	)
 	name := modelName
-	cm := models.NewChatModel(driver, &name, &models.APIConfig{ApiKey: &apiKey})
-	eino := models.NewEinoChatModel(cm, &models.ChatConfig{Temperature: &temp})
+	apiCfg := &models.APIConfig{ApiKey: &apiKey}
+	if override := os.Getenv("DECOMP_BASE_URL"); override != "" {
+		apiCfg.BaseURL = &override
+	}
+	eino := models.NewEinoChatModel(models.NewChatModel(driver, &name, apiCfg),
+		&models.ChatConfig{Temperature: &temp})
 
 	for i, question := range questions {
 		question = strings.TrimSpace(question)
@@ -108,6 +121,30 @@ func TestDecompositionProbe(t *testing.T) {
 			}
 		})
 	}
+}
+
+// probeDriver resolves the provider by name through the provider manager -
+// the same conf/models/*.json files the server loads - so the driver, its
+// base URLs and the URL suffixes are the provider file's own bytes, never
+// duplicated here.
+func probeDriver(t *testing.T, providerName string) models.ModelDriver {
+	t.Helper()
+	dir := envOr("DECOMP_MODELS_DIR", "../../conf/models")
+	if err := models.InitProviderManager(dir); err != nil {
+		t.Fatalf("InitProviderManager(%s): %v", dir, err)
+	}
+	pm := models.GetProviderManager()
+	for i := range pm.Providers {
+		p := &pm.Providers[i]
+		if strings.EqualFold(p.Name, providerName) {
+			if p.ModelDriver == nil {
+				t.Fatalf("provider %s has no driver", providerName)
+			}
+			return p.ModelDriver
+		}
+	}
+	t.Fatalf("provider %q not found in %s", providerName, dir)
+	return nil
 }
 
 // probeQuestions assembles the probe's questions: DECOMP_QUESTION first, then
