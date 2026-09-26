@@ -192,8 +192,8 @@ func runDecompositionStage(ctx context.Context, in Input, question string) (stri
 // passes the mechanical check, and returns the plan to pin.
 //
 // The mechanical check holds no copy of the question, so the defects it cannot
-// see are exactly the ones no later stage can see either: #28 q875 shipped a
-// plan that had dropped the question's "different industries" clause (#27 had
+// see are exactly the ones no later stage can see either: #28 shipped a plan
+// that had dropped one of the question's discriminating clauses (#27's plan
 // carried it), and the explorer, the auditor and the checker all worked from
 // the plan as written. The planner itself is the only component that still has
 // the question in hand, so the review is a pass over its own plan against the
