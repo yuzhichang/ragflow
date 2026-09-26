@@ -79,9 +79,11 @@ func TestQuestionDecompositionStageWiring(t *testing.T) {
 	}
 }
 
-// extractPlan takes everything from the first block heading down: prose or a
-// code fence before the plan is the agent's business, the plan itself must be
-// clean for checkDecomposition, and a message with no heading yields nothing.
+// extractPlan takes everything from the first block heading down — plus a
+// leading `## Resolved question` line, which is part of the plan because every
+// downstream consumer reads it as the question. Prose or a code fence before
+// the plan is the agent's business, the plan itself must be clean for
+// checkDecomposition, and a message with no heading yields nothing.
 func TestExtractPlan(t *testing.T) {
 	plan := "### Sub-question 1: ?x is the one — slot: name\n- Binds: ?x\n"
 	for name, in := range map[string]string{
@@ -95,5 +97,16 @@ func TestExtractPlan(t *testing.T) {
 	}
 	if got := extractPlan("no plan here, just prose"); got != "" {
 		t.Fatalf("a plan-less message must extract to nothing, got %q", got)
+	}
+	resolved := "## Resolved question: the spouse of the painter from turn one\n\n" + plan
+	got := extractPlan(resolved)
+	if !strings.HasPrefix(got, "## Resolved question") || !strings.Contains(got, "- Binds: ?x") {
+		t.Fatalf("extractPlan must keep the resolved-question header: %q", got)
+	}
+	if q := extractResolvedQuestion(got); q != "the spouse of the painter from turn one" {
+		t.Fatalf("extractResolvedQuestion = %q", q)
+	}
+	if q := extractResolvedQuestion(plan); q != "" {
+		t.Fatalf("a plan without the header must resolve to nothing, got %q", q)
 	}
 }

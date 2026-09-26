@@ -141,7 +141,36 @@ func NewQuestionDecompositionAgent(
 // an in-prompt call contract the model simply never exercised. A plan that
 // still carries findings after the repair budget is pinned anyway, with a
 // warning in the log - the explorer is told the plan may be imperfect.
-func runDecompositionStage(ctx context.Context, in Input, question string) (string, bool) {
+// resolvedQuestionHeader is the line a plan opens with when the pinned
+// question needed resolving against the conversation's earlier turns (see the
+// "The resolved question" section of the question-decomposition template).
+// Everything downstream — the explorer's input, the auditor's pinned
+// question — reads THIS line as the question, never the raw fragment.
+const resolvedQuestionHeader = "## Resolved question"
+
+// extractResolvedQuestion returns the self-contained question the plan opens
+// with, or "" when the plan carries no such line (single-turn runs restate
+// the pinned question verbatim, and a planner that skipped the line leaves
+// the caller falling back to the raw last user message).
+func extractResolvedQuestion(plan string) string {
+	i := strings.Index(plan, resolvedQuestionHeader)
+	if i < 0 {
+		return ""
+	}
+	rest := strings.TrimPrefix(plan[i+len(resolvedQuestionHeader):], ":")
+	if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
+		rest = rest[:nl]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// runDecompositionStage derives its inputs from the conversation itself: the
+// question is the last user message, and the turns before it are the context
+// a follow-up's references resolve against (priorTurns). No caller-side
+// splitting of in.Messages — the stage owns the reading of its input.
+func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
+	question := lastUserQuestion(in.Messages)
+	prior := priorTurns(in.Messages)
 	if strings.TrimSpace(question) == "" {
 		return "", false
 	}
@@ -158,7 +187,19 @@ func runDecompositionStage(ctx context.Context, in Input, question string) (stri
 	directive := "Decompose the question pinned in your instructions."
 	plan := ""
 	for round := 0; round <= decompositionMaxRepairRounds; round++ {
-		iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
+		input := []adk.Message{schema.UserMessage(directive)}
+		if round == 0 && len(prior) > 0 {
+			// A multi-turn conversation: the turns before the current question
+			// ride along with the first directive, so the planner can resolve
+			// the references the pinned fragment makes (it sees no other
+			// copy of the history — its session starts empty). Repair and
+			// review rounds run on the directive alone: the context is
+			// already in the session.
+			input = make([]adk.Message, 0, len(prior)+1)
+			input = append(input, prior...)
+			input = append(input, schema.UserMessage(directive))
+		}
+		iter := conv.runner(ctx, agent, false).Run(ctx, input)
 		final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
 		if err != nil {
 			conv.discardFailedTurn(ctx, conv.head(ctx))
@@ -340,6 +381,12 @@ func extractPlan(final string) string {
 	i := strings.Index(final, "### Sub-question")
 	if i < 0 {
 		return ""
+	}
+	// A `## Resolved question` line written before the first block is part of
+	// the plan: it is what every downstream consumer reads as the question
+	// (see extractResolvedQuestion). Prose without the header stays excluded.
+	if j := strings.LastIndex(final[:i], resolvedQuestionHeader); j >= 0 {
+		i = j
 	}
 	plan := strings.TrimSpace(final[i:])
 	plan = strings.TrimSuffix(plan, "```")

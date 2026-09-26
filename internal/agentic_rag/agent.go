@@ -868,7 +868,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// that do not decompose.
 	plan, conversational := "", false
 	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
-		plan, conversational = runDecompositionStage(ctx, in, lastUserQuestion(in.Messages))
+		plan, conversational = runDecompositionStage(ctx, in)
 	}
 	if conversational {
 		// The stage classified the message as purely conversational: the
@@ -876,6 +876,12 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// loop, no retrieval tools, no delivery gate. One direct generation
 		// over the caller's history answers it in plain prose.
 		return runConversationalReply(ctx, in)
+	}
+	resolvedQuestion := extractResolvedQuestion(plan)
+	if resolvedQuestion == "" {
+		// Single-turn run, or a planner that skipped the line: the raw last
+		// user message is the best question on file.
+		resolvedQuestion = lastUserQuestion(in.Messages)
 	}
 
 	tools := in.Tools
@@ -895,7 +901,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// it is built for THIS run's question.
 		if auditMaxPass > 0 {
 			inner, aerr := NewAnswerAuditorAgent(ctx, auditModelFor(in),
-				in.TenantID, in.DatasetIDs, lastUserQuestion(in.Messages),
+				in.TenantID, in.DatasetIDs, resolvedQuestion,
 				in.ToolCallDurations, in.RetrievedDocIDs, in.ChunkReads,
 				in.Searches)
 			if aerr != nil {
@@ -1000,13 +1006,23 @@ func Run(ctx context.Context, in Input) (string, error) {
 	}
 	// The run's input, when the decomposition stage produced a plan, is ONE user
 	// message in a fixed two-section format the smart-reasoning prompt declares:
-	// `## The original question` (the question verbatim) and `## The question
-	// decomposition` (the stage-one plan). Both sections are DATA - no
-	// instructions ride along - so the format itself tells the explorer what it
-	// is looking at. The last user message (the question) is replaced in place,
-	// which keeps the question verbatim under its own heading without
-	// duplicating it.
-	formatted := "## The original question\n\n" + lastUserQuestion(in.Messages) + "\n\n## The question decomposition\n\n" + plan
+	// `## Resolved question` (the stage-one resolved question — the caller's
+	// question with every conversational reference resolved — falling back to
+	// the raw last user message when the plan carries no resolved line) and
+	// `## The question decomposition` (the stage-one plan). Both sections are
+	// DATA - no instructions ride along - so the format itself tells the
+	// explorer what it is looking at. The caller's last user message is
+	// replaced in place, which keeps the question under its own heading
+	// without duplicating it.
+	planBody := plan
+	if q := extractResolvedQuestion(plan); q != "" && strings.HasPrefix(plan, resolvedQuestionHeader) {
+		// The resolved question moves to the input's own heading; the plan
+		// section starts at its first block.
+		if nl := strings.Index(planBody, "\n"); nl >= 0 {
+			planBody = strings.TrimSpace(planBody[nl+1:])
+		}
+	}
+	formatted := "## Resolved question\n\n" + resolvedQuestion + "\n\n## The question decomposition\n\n" + planBody
 	runMessages := []adk.Message{schema.UserMessage(formatted)}
 	iter := sess.explorer.runner(ctx, explorerAgent, in.Stream).Run(ctx, runMessages)
 	final, evidence, runErr := consumeAgentEvents(ctx, iter, in.OnDelta, in.ToolCallCounts, in.ToolCallErrors, in.ToolErrorSamples)
@@ -2114,6 +2130,22 @@ func lastUserQuestion(messages []*schema.Message) string {
 		}
 	}
 	return ""
+}
+
+// priorTurns returns the messages BEFORE the last user message — the earlier
+// turns of a multi-turn conversation, which the decomposition stage resolves
+// the pinned question's references against (a follow-up like "and his
+// spouse?" names no entity of its own). Everything from the last user message
+// on is excluded: the message itself is pinned in the planner's instructions,
+// and a later assistant draft must not masquerade as settled context. Empty
+// for a single-turn conversation.
+func priorTurns(messages []*schema.Message) []*schema.Message {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i] != nil && messages[i].Role == schema.User {
+			return messages[:i]
+		}
+	}
+	return nil
 }
 
 // logFullToolResults keeps the WHOLE tool output and tool arguments in the log

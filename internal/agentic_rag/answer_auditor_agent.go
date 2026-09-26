@@ -84,7 +84,11 @@ func NewAnswerAuditorAgent(
 		return nil, fmt.Errorf("answer auditor: %w", err)
 	}
 
-	instruction := tmpl.Content + "\n\n## The question under audit\n\n" + question
+	// The question handed in is the stage-one RESOLVED question (see
+	// extractResolvedQuestion): the caller's question with conversational
+	// references resolved, so the clause-coverage checks operate on what the
+	// conversation is actually asking, not on a follow-up fragment.
+	instruction := tmpl.Content + "\n\n## Resolved question under audit\n\n" + question
 
 	// Wrap the auditor's tools with the SAME timing accumulator the explorer
 	// uses, so per-question usage accounting sees auditor deep-reads too

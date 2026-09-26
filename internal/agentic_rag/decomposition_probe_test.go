@@ -14,6 +14,8 @@
 
 package agentic_rag
 
+import "github.com/cloudwego/eino/schema"
+
 // Independent stage-one probe: run ONLY the question-decomposition stage -
 // planner, check_decomposition, and the review round - against a live model.
 // No explorer, no auditor, no corpus, no retrieval: the plan and the review's
@@ -99,10 +101,11 @@ func TestDecompositionProbe(t *testing.T) {
 			in := Input{
 				Model:             eino,
 				TenantID:          "probe",
+				Messages:          []*schema.Message{schema.UserMessage(question)},
 				ToolCallCounts:    map[string]int{},
 				ToolCallDurations: NewDurationAccumulator(),
 			}
-			plan, conversational := runDecompositionStage(ctx, in, question)
+			plan, conversational := runDecompositionStage(ctx, in)
 			if conversational {
 				t.Logf("stage one ruled the message conversational; no plan")
 				return
