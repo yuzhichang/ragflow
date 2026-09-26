@@ -289,7 +289,7 @@ func TestPromptShipsExamplesThatPass(t *testing.T) {
 		var parts []string
 		for _, m := range planPartRe.FindAllStringSubmatch(line, -1) {
 			p := strings.TrimSpace(m[1])
-			if strings.HasPrefix(p, "### Sub-question") || strings.HasPrefix(p, "- ") {
+			if strings.HasPrefix(p, "## Resolved question") || strings.HasPrefix(p, "### Sub-question") || strings.HasPrefix(p, "- ") {
 				parts = append(parts, p)
 			}
 		}

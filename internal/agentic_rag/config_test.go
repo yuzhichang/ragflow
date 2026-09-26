@@ -292,13 +292,20 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 			t.Errorf("the auditor prompt must not describe the retired precheck machinery (%q)", gone)
 		}
 	}
-	for _, id := range []string{"smart-reasoning", "smart-grep", "smart-grep-bm25"} {
+	for _, id := range []string{"smart-grep", "smart-grep-bm25"} {
 		tmpl, err := resolveTemplateFor(id)
 		if err != nil {
 			t.Fatalf("resolve %s: %v", id, err)
 		}
 		if tmpl.Temperature != nil {
-			t.Errorf("%s: temperature = %v, want nil — this knob is the auditor's, and pinning a producer's sampling from this file would silently take away the exploration its temperature buys", id, *tmpl.Temperature)
+			t.Errorf("%s: temperature = %v, want nil — only the operator's smart-reasoning strategy choice is pinned; the auxiliary grep templates stay at the model's own default", id, *tmpl.Temperature)
+		}
+	}
+	if tmpl, err := resolveTemplateFor("smart-reasoning"); err != nil {
+		t.Fatalf("resolve smart-reasoning: %v", err)
+	} else {
+		if tmpl.Temperature == nil || *tmpl.Temperature != 0.5 {
+			t.Errorf("smart-reasoning: temperature = %v, want 0.5 — the operator pinned the producer's reasoning-strategy sampling in the template after the model-default runs proved noisier (2026-09-26)", tmpl.Temperature)
 		}
 		for _, want := range []string{
 			"no corpus content describes it",
@@ -311,7 +318,7 @@ func TestShippedConfigAuditsResearchTemplates(t *testing.T) {
 			"those siblings are CANDIDATES",
 		} {
 			if !strings.Contains(tmpl.Content, want) {
-				t.Errorf("%s: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", id, want)
+				t.Errorf("smart-reasoning: the Eliminated spec must offer the absence ground (%q) and forbid dropping a candidate for weakness", want)
 			}
 		}
 	}

@@ -43,12 +43,7 @@ const answerAuditorMaxIterations = 10
 // The caller builds the auditor's model instance with it (an operator knob,
 // reloaded from disk like audit_max_pass).
 func AuditTemperature() *float64 {
-	tmpl, err := resolveTemplateFor(answerAuditorTemplateID)
-	if err != nil || tmpl.Temperature == nil {
-		return nil
-	}
-	t := *tmpl.Temperature
-	return &t
+	return TemplateTemperature(answerAuditorTemplateID)
 }
 
 // NewAnswerAuditorAgent builds the answer_auditor auditor as a standalone ADK

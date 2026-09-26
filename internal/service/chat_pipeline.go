@@ -2274,6 +2274,18 @@ func (s *ChatPipelineService) agenticRag(
 		// AsyncChat path does — otherwise those parameters silently no-op when
 		// agent_mode=smart-reasoning.
 		chatCfg := BuildChatConfig(chat, kwargs)
+		// The producer template may pin its sampling (smart-reasoning declares
+		// 0.5 - the operator's reasoning-strategy choice for that template, not
+		// a hardcoded number); undeclared, the temperature field stays unset
+		// and the model's own default applies. The qd stage, the explorer and
+		// the synthesis all run on the producer's instances, so one override
+		// here covers the whole producer side; the auditor is separate
+		// (auditChatConfig strips whatever the producer carried).
+		if temp := agentic_rag.TemplateTemperature(mode); temp != nil {
+			producerCfg := *chatCfg
+			producerCfg.Temperature = temp
+			chatCfg = &producerCfg
+		}
 		einoModel, eErr := modelModule.NewFailoverEinoChatModelWithLabels(modelChain, chainLabels, chatCfg)
 		if eErr != nil {
 			common.ErrorCtx(ctx, "smart_reasoning: build failover model", eErr)

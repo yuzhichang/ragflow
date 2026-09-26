@@ -50,9 +50,12 @@ type Template struct {
 	Description  string `json:"description" yaml:"description"`
 	AuditMaxPass int    `json:"audit_max_pass" yaml:"audit_max_pass"`
 	// Temperature pins the sampling temperature of the model this agent runs
-	// on. Only the auditor reads it (see AuditTemperature): a producer's
-	// temperature is a reasoning-strategy choice, an auditor's is noise in a
-	// control signal.
+	// on. The auditor's declaration is noise control in a machine-parsed
+	// verdict (see AuditTemperature); a producer's declaration is the
+	// operator's reasoning-strategy choice for that template - smart-reasoning
+	// pins 0.5 after the un-pinned model-default runs proved noisier than the
+	// exploration its sampling buys. An undeclared template leaves the field
+	// unset: the model's own default applies.
 	Temperature *float64 `json:"temperature" yaml:"temperature"`
 	Tools       []string `json:"tools" yaml:"tools"`
 	Content     string   `json:"content" yaml:"content"`
@@ -192,6 +195,20 @@ func resolveTemplateFor(id string) (Template, error) {
 		}
 	}
 	return Template{}, fmt.Errorf("agentic_rag: template %q not found in %s", id, defaultConfigPath())
+}
+
+// TemplateTemperature resolves a template's declared sampling temperature:
+// nil when the template does not declare one - the caller then leaves the
+// temperature field unset and the model's own default applies. The value is
+// the template's own (an operator knob in agentic_rag.yaml, reloaded from
+// disk like every other template field), never a number hardcoded here.
+func TemplateTemperature(templateID string) *float64 {
+	tmpl, err := resolveTemplateFor(templateID)
+	if err != nil || tmpl.Temperature == nil {
+		return nil
+	}
+	t := *tmpl.Temperature
+	return &t
 }
 
 // instructionFor resolves the system instruction: prefer the JSON-configured
