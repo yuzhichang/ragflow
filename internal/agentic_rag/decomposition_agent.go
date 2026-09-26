@@ -268,10 +268,12 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, agent *adk.ChatModelAgent, plan string) string {
 	current := plan
 	directive := "## Review round\n\nRe-read the plan you just wrote against the checklist titled " +
-		"\"The review round\" in your instructions. Output FIRST one verdict line per checklist item, " +
-		"in order - `1. PASS - <the clauses or blocks you checked>` or `1. FAIL - <what fails, and the " +
-		"exact clause of the question it concerns>` - all six; THEN the plan, rewritten where an item " +
-		"failed and unchanged where all held."
+		"\"The review round\" in your instructions. Item 1 is answered with the full clause mapping - " +
+		"one line per clause of the resolved question, `clause <n>: <clause> -> c<k> (block <m>)` or " +
+		"`-> UNMAPPED` - placed BEFORE the verdict lines. Output the mapping, then one verdict line " +
+		"per checklist item in order - `1. PASS - <the clauses or blocks you checked>` or `1. FAIL - " +
+		"<what fails, and the exact clause of the question it concerns>` - all six; THEN the plan, " +
+		"rewritten where an item failed and unchanged where all held."
 	for round := 1; round <= decompositionReviewRounds; round++ {
 		iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
 		final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
@@ -284,6 +286,41 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 		if reviewed == "" {
 			common.WarnCtx(ctx, "agentic_rag: question-decomposition review returned no plan - keeping the current plan")
 			return current
+		}
+		// Item 1's mapping is the clause-coverage audit trail: one line per
+		// clause of the resolved question, `-> c<k>` when a block carries it,
+		// `-> UNMAPPED` when none does. #32 q875 shipped a plan that dropped
+		// three of the question's discriminating clauses (the 1990s setback,
+		// the USA-born-or-not pair, the USA residence) while the review's
+		// verdict lines all said PASS - a walk-through verdict cannot catch
+		// what it never enumerates. So the mapping is enforced on both ends:
+		// missing entirely, the review is not auditable; UNMAPPED lines are
+		// dropped clauses confessed, and a verdict claiming PASS over them is
+		// a self-contradiction. Either way the round is sent back to fix the
+		// plan, until the budget runs out (then the last valid plan stays).
+		verdictBlock := final[:strings.Index(final, "### Sub-question")]
+		unmapped := strings.Count(verdictBlock, "-> UNMAPPED")
+		mapped := len(clauseMapRe.FindAllString(verdictBlock, -1))
+		if unmapped > 0 {
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review mapping names UNMAPPED clauses",
+				zap.Int("round", round), zap.Int("unmapped_clauses", unmapped))
+			directive = "Your clause mapping carries " + strconv.Itoa(unmapped) +
+				" `-> UNMAPPED` line(s) - clauses of the resolved question that no block carries. " +
+				"Put each one into the block whose variable it discriminates, or into a " +
+				"`filter`/`verify` block of its own, re-verify with `check_decomposition`, then " +
+				"output the updated mapping, the six verdict lines and the corrected plan."
+			current = reviewed
+			continue
+		}
+		if mapped == 0 {
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review carried no clause mapping",
+				zap.Int("round", round))
+			directive = "The review is not auditable without the item-1 clause mapping: one line per " +
+				"clause of the resolved question, `clause <n>: <clause> -> c<k> (block <m>)` or " +
+				"`-> UNMAPPED`, placed before the verdict lines. Output the mapping, the six " +
+				"verdict lines, then the plan."
+			current = reviewed
+			continue
 		}
 		if findings := checkDecomposition(reviewed); len(findings) > 0 {
 			common.WarnCtx(ctx, "agentic_rag: question-decomposition review broke the mechanical check",
@@ -323,6 +360,11 @@ func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, 
 // reviewVerdictRe matches one review verdict line: `N. PASS - ...` or
 // `N. FAIL - ...` for checklist items 1-6.
 var reviewVerdictRe = regexp.MustCompile(`(?m)^\s*([1-6])\.\s*(PASS|FAIL)\b`)
+
+// clauseMapRe matches one item-1 clause-mapping line: `clause <n>: <the
+// clause verbatim> -> c<k> (block <m>)` (or `-> UNMAPPED`). The mapping is
+// the clause-coverage audit trail the review round must open with.
+var clauseMapRe = regexp.MustCompile(`(?im)^\s*\**clause\s*\d+\**\s*:`)
 
 // splitReviewOutput separates the review's verdict block (everything before
 // the first `### Sub-question` heading) from the plan, and returns the
