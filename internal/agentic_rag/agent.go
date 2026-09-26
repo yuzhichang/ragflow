@@ -957,6 +957,24 @@ func Run(ctx context.Context, in Input) (string, error) {
 				zap.Int("recovered_bytes", len(final)))
 		}
 	}
+	// Delivery hard block: a gate that ends in FAIL has refused to certify the
+	// deliverable, so its answer line must not ship. #15, #24, #25 and #28 all
+	// ended with the gate holding (passed=false) while a guess shipped anyway -
+	// on #28 q25 the run had served BOTH gold documents and still shipped an
+	// ungrounded guess. The matrix above the answer line stays (it is the
+	// evidence record the auditor worked from); only the answer line and
+	// whatever reasoning rode on it are replaced by the declaration the gate's
+	// refusal implies. The gate must have actually audited (verdicts on
+	// record): an audit outage is a provider failure, not a reasoning one, and
+	// does not block.
+	if in.GateAudit != nil && !in.GateAudit.Passed && len(in.GateAudit.AuditVerdicts) > 0 {
+		if blocked := negativeDeclaration(final); blocked != final {
+			common.WarnCtx(ctx, "agentic_rag: delivery gate FAIL - answer replaced by the negative declaration",
+				zap.Int("audit_rounds", len(in.GateAudit.AuditVerdicts)),
+				zap.Int("last_suspects", len(in.GateAudit.Suspects)))
+			final = blocked
+		}
+	}
 	if runErr != nil && final != preGateFinal {
 		// The gate adopted a fresh substantive continuation, so the main
 		// loop's error no longer describes the answer being returned.

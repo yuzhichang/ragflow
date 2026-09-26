@@ -61,6 +61,26 @@ func answerLabel(final string) string {
 // hasAnswerLine reports whether the deliverable carries an answer label at all.
 func hasAnswerLine(final string) bool { return answerLabel(final) != "" }
 
+// negativeDeclaration replaces the deliverable's answer line - and everything
+// after it, which is where the guess and its justification ride - with the
+// declaration the gate's refusal implies. The Candidate Matrix above the
+// answer line stays: it is the evidence record the auditor worked from, and
+// the declaration refers to it instead of restating a value. The replacement
+// line keeps the `Final Answer:` label so the shipping path still parses one
+// answer line; its content is a refusal, not a candidate.
+func negativeDeclaration(final string) string {
+	loc := answerLineLabelRe.FindStringIndex(final)
+	if loc == nil {
+		return final
+	}
+	lineStart := strings.LastIndex(final[:loc[0]], "\n") + 1
+	decl := "Final Answer: not derivable from the corpus - the delivery gate refused certification " +
+		"(audit suspects remained after its budget), so no candidate ships as established. The " +
+		"Candidate Matrix above records the searches, the tested and eliminated candidates, and the " +
+		"constraints the corpus could not establish."
+	return strings.TrimRight(final[:lineStart], "\n") + "\n\n" + decl + "\n"
+}
+
 // answerLineCount counts lines carrying an answer label. The finalize synthesis must
 // produce exactly ONE: zero means the label was lost, two-plus means the model
 // re-rendered the whole deliverable inside an answer line.
