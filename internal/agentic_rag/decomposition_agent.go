@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
@@ -59,6 +60,13 @@ const decompositionMaxIterations = 20
 // perfection - the explorer works the plan as written and the delivery gate
 // sees the outcome.
 const decompositionMaxRepairRounds = 2
+
+// decompositionReviewRounds caps the self-review loop that follows a
+// mechanically clean plan: each round must output one verdict line per
+// checklist item (parsed here - a review without them is sent back), a FAIL
+// buys a rewrite re-checked by checkDecomposition, and the last mechanically
+// valid plan is the fallback when the budget is spent.
+const decompositionReviewRounds = 3
 
 // decompositionPlanHeadRe finds the first block heading in the agent's final
 // message: the plan is everything from there down (the agent may fence the
@@ -180,48 +188,119 @@ func runDecompositionStage(ctx context.Context, in Input, question string) (stri
 	return plan, false
 }
 
-// reviewDecompositionPlan runs ONE self-review round over a plan that already
+// reviewDecompositionPlan runs the self-review loop over a plan that already
 // passes the mechanical check, and returns the plan to pin.
 //
 // The mechanical check holds no copy of the question, so the defects it cannot
-// see are exactly the ones no later stage can see either: #27 q875 shipped a
-// plan that had dropped two of the question's discriminating clauses (one of
-// the pair born/raised in the USA, both residing there before 2024), and the
-// explorer, the auditor and the checker all worked from the plan as written.
-// The planner itself is the only component that still has the question in
-// hand, so the review is a second pass over its own plan against the
+// see are exactly the ones no later stage can see either: #28 q875 shipped a
+// plan that had dropped the question's "different industries" clause (#27 had
+// carried it), and the explorer, the auditor and the checker all worked from
+// the plan as written. The planner itself is the only component that still has
+// the question in hand, so the review is a pass over its own plan against the
 // principles in its instructions (see "The review round" in the
 // question-decomposition template).
 //
-// The pre-review plan is the fallback on every failure path - an unreadable,
-// unparseable or mechanically worse review result never costs the run the plan
-// it already had.
+// A review is only as good as it is auditable: each round must output ONE
+// verdict line per checklist item (`1. PASS - ...` / `1. FAIL - ...`), and the
+// verdict block is parsed HERE - a round with missing verdicts is sent back
+// (a rubber-stamp review is indistinguishable from no review), a round with
+// FAILs buys a rewrite, and every rewritten plan is re-run through the
+// mechanical check before it can replace the current one. The loop runs until
+// every item passes or the budget is spent; the last mechanically valid plan
+// is the fallback on every failure path.
 func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, agent *adk.ChatModelAgent, plan string) string {
+	current := plan
 	directive := "## Review round\n\nRe-read the plan you just wrote against the checklist titled " +
-		"\"The review round\" in your instructions: check it item by item and name the clause or block " +
-		"you checked. Where an item fails, rewrite the plan so it holds and re-verify it with " +
-		"`check_decomposition`; where every item holds, restate the plan unchanged. Return ONLY the " +
-		"plan - rewritten or unchanged."
-	iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
-	final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
-	if err != nil {
-		conv.discardFailedTurn(ctx, conv.head(ctx))
-		common.WarnCtx(ctx, "agentic_rag: question-decomposition review round failed", zap.Error(err))
-		return plan
+		"\"The review round\" in your instructions. Output FIRST one verdict line per checklist item, " +
+		"in order - `1. PASS - <the clauses or blocks you checked>` or `1. FAIL - <what fails, and the " +
+		"exact clause of the question it concerns>` - all five; THEN the plan, rewritten where an item " +
+		"failed and unchanged where all held."
+	for round := 1; round <= decompositionReviewRounds; round++ {
+		iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
+		final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
+		if err != nil {
+			conv.discardFailedTurn(ctx, conv.head(ctx))
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review round failed", zap.Error(err))
+			return current
+		}
+		verdicts, reviewed := splitReviewOutput(final)
+		if reviewed == "" {
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review returned no plan - keeping the current plan")
+			return current
+		}
+		if findings := checkDecomposition(reviewed); len(findings) > 0 {
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review broke the mechanical check",
+				zap.Int("round", round), zap.Strings("findings", findings))
+			directive = "check_decomposition reports:\n- " + strings.Join(findings, "\n- ") +
+				"\n\nFix every finding, then output the five verdict lines and the corrected plan."
+			continue
+		}
+		missing, fails := auditReviewVerdicts(verdicts)
+		if len(missing) > 0 {
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review verdicts incomplete",
+				zap.Int("round", round), zap.Int("found", len(verdicts)), zap.Strings("missing", missing))
+			directive = "The review is not auditable without one verdict line per checklist item. Output " +
+				"all five verdict lines - `N. PASS - <what you checked>` or `N. FAIL - <what fails>` - " +
+				"then the plan."
+			current = reviewed
+			continue
+		}
+		if len(fails) > 0 {
+			common.WarnCtx(ctx, "agentic_rag: question-decomposition review reported failures",
+				zap.Int("round", round), zap.Strings("fails", fails))
+			directive = "Your review reported failures:\n- " + strings.Join(fails, "\n- ") +
+				"\n\nRewrite the plan so every item passes, re-verify it with `check_decomposition`, " +
+				"then output the five verdict lines and the corrected plan."
+			current = reviewed
+			continue
+		}
+		common.InfoCtx(ctx, "agentic_rag: question-decomposition review accepted",
+			zap.Int("round", round), zap.Int("verdicts", len(verdicts)),
+			zap.Bool("revised", reviewed != current), zap.Int("plan_bytes", len(reviewed)))
+		return reviewed
 	}
-	reviewed := extractPlan(final)
-	if reviewed == "" {
-		common.WarnCtx(ctx, "agentic_rag: question-decomposition review round returned no plan - keeping the reviewed-out plan")
-		return plan
+	common.WarnCtx(ctx, "agentic_rag: question-decomposition review budget exhausted - keeping the last mechanically valid plan")
+	return current
+}
+
+// reviewVerdictRe matches one review verdict line: `N. PASS - ...` or
+// `N. FAIL - ...` for checklist items 1-5.
+var reviewVerdictRe = regexp.MustCompile(`(?m)^\s*([1-5])\.\s*(PASS|FAIL)\b`)
+
+// splitReviewOutput separates the review's verdict block (everything before
+// the first `### Sub-question` heading) from the plan, and returns the
+// verdict lines that name a checklist item.
+func splitReviewOutput(final string) ([]string, string) {
+	i := strings.Index(final, "### Sub-question")
+	if i < 0 {
+		return nil, ""
 	}
-	if findings := checkDecomposition(reviewed); len(findings) > 0 {
-		common.WarnCtx(ctx, "agentic_rag: question-decomposition review round broke the mechanical check - keeping the pre-review plan",
-			zap.Strings("findings", findings))
-		return plan
+	var verdicts []string
+	for _, m := range reviewVerdictRe.FindAllStringSubmatch(final[:i], -1) {
+		verdicts = append(verdicts, m[1]+" "+m[2])
 	}
-	common.InfoCtx(ctx, "agentic_rag: question-decomposition review round accepted",
-		zap.Bool("revised", reviewed != plan), zap.Int("plan_bytes", len(reviewed)))
-	return reviewed
+	return verdicts, extractPlan(final)
+}
+
+// auditReviewVerdicts checks the verdict block for completeness (all five
+// checklist items decided) and for open failures. It returns the missing item
+// numbers and the failing item numbers.
+func auditReviewVerdicts(verdicts []string) (missing, fails []string) {
+	decided := map[string]string{}
+	for _, v := range verdicts {
+		parts := strings.SplitN(v, " ", 2)
+		decided[parts[0]] = parts[1]
+	}
+	for n := 1; n <= 5; n++ {
+		item := strconv.Itoa(n)
+		v, ok := decided[item]
+		if !ok {
+			missing = append(missing, "item "+item)
+		} else if v == "FAIL" {
+			fails = append(fails, "item "+item)
+		}
+	}
+	return missing, fails
 }
 
 // runConversationalReply answers a purely conversational message WITHOUT the
