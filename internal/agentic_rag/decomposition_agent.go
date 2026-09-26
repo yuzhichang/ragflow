@@ -195,8 +195,16 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 			// copy of the history — its session starts empty). Repair and
 			// review rounds run on the directive alone: the context is
 			// already in the session.
+			//
+			// An empty message trips some provider APIs (the same reason
+			// turnMessages guards its synthetic assistant line), so blank
+			// history entries are dropped rather than replayed.
 			input = make([]adk.Message, 0, len(prior)+1)
-			input = append(input, prior...)
+			for _, m := range prior {
+				if m != nil && strings.TrimSpace(m.Content) != "" {
+					input = append(input, m)
+				}
+			}
 			input = append(input, schema.UserMessage(directive))
 		}
 		iter := conv.runner(ctx, agent, false).Run(ctx, input)
