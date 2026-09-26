@@ -191,6 +191,14 @@ func runDecompositionStage(ctx context.Context, in Input, question string) (stri
 // reviewDecompositionPlan runs the self-review loop over a plan that already
 // passes the mechanical check, and returns the plan to pin.
 //
+// conv and agent MUST be the same conversation and agent the writing and
+// repair rounds ran: the session history lives in (store, id), not in the
+// Runner, and threading both through here is what lets the review re-read the
+// plan it just wrote, the checker findings it already saw, and the turns that
+// produced them - the same continuity the explorer's repair turns and the
+// auditor's cross-pass session rely on. A fresh agent or store would blind
+// the review to its own history.
+//
 // The mechanical check holds no copy of the question, so the defects it cannot
 // see are exactly the ones no later stage can see either: #28 shipped a plan
 // that had dropped one of the question's discriminating clauses (#27's plan
