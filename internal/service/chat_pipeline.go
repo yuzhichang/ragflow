@@ -2325,6 +2325,18 @@ func (s *ChatPipelineService) agenticRag(
 			auditModel = einoModel // degrade to the shared instance rather than fail
 		}
 
+		// The independent plan auditor gets a FOURTH instance over the same
+		// chain, differing only in sampling: the plan_auditor template pins
+		// 0.1, because its findings are machine-parsed and each sampled FAIL
+		// burns a repair turn. Separate for cm's reason too: a failover
+		// instance caches its last chain failure for 30s.
+		planAuditModel, paErr := modelModule.NewFailoverEinoChatModelWithLabels(
+			modelChain, chainLabels, planAuditChatConfig(chatCfg))
+		if paErr != nil {
+			common.WarnCtx(ctx, "smart_reasoning: build plan audit model", zap.Error(paErr))
+			planAuditModel = einoModel // degrade to the shared instance rather than fail
+		}
+
 		// Convert messages to eino schema messages (system is already stripped
 		// by the caller; the agent injects its own instruction).
 		msgs := convertMessagesToEino(messages)
@@ -2426,6 +2438,7 @@ func (s *ChatPipelineService) agenticRag(
 			Model:             einoModel,
 			SynthModel:        cm,
 			AuditModel:        auditModel,
+			PlanAuditModel:    planAuditModel,
 			Messages:          msgs,
 			TemplateID:        mode,
 			TenantID:          chat.TenantID,
@@ -4859,6 +4872,31 @@ func kbTenantIDStrings(kbs []*entity.Knowledgebase) []string {
 // temperature of its own to inherit — the chat's llm_setting no longer pins
 // one). The caller's config is never mutated — the producer's sampling stays
 // its own choice, and the auditor's judgement must not ride on it.
+func planAuditChatConfig(chatCfg *modelModule.ChatConfig) *modelModule.ChatConfig {
+	temp := agentic_rag.TemplateTemperature(agentic_rag.PlanAuditorTemplateID)
+	return chatConfigWithTemperature(chatCfg, temp)
+}
+
+// chatConfigWithTemperature copies chatCfg and pins the given temperature;
+// a nil temp leaves the temperature field unset (the model's own default
+// applies) and strips whatever the producer carried.
+func chatConfigWithTemperature(chatCfg *modelModule.ChatConfig, temp *float64) *modelModule.ChatConfig {
+	if temp == nil {
+		if chatCfg == nil {
+			return &modelModule.ChatConfig{}
+		}
+		out := *chatCfg
+		out.Temperature = nil
+		return &out
+	}
+	if chatCfg == nil {
+		return &modelModule.ChatConfig{Temperature: temp}
+	}
+	out := *chatCfg
+	out.Temperature = temp
+	return &out
+}
+
 func auditChatConfig(chatCfg *modelModule.ChatConfig) *modelModule.ChatConfig {
 	temp := agentic_rag.AuditTemperature()
 	if temp == nil {
