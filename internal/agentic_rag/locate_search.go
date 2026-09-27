@@ -177,9 +177,6 @@ func runLocateSearch(ctx context.Context, spec locateSearchSpec) (string, error)
 	// across two days before anyone noticed.
 	if len(merged) == 0 && len(failed) == len(queries) {
 		rootCause := failed[0].Error()
-		if r := []rune(rootCause); len(r) > 300 {
-			rootCause = string(r[:300]) + "…"
-		}
 		// ERROR level: an outage must be visible in the operator's log — a
 		// warn would hide it among per-question noise.
 		// The message keeps the tool name inline (not only as a field) so an

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -1482,7 +1481,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			common.InfoCtx(ctx, "agentic_rag: delivery gate hold",
 				zap.Int("pass", pass+1),
 				zap.String("gate_answer_label", answerLbl),
-				zap.String("deliverable_tail", truncateForLog(lastNonBlankLine(final), 200)))
+				zap.String("deliverable_tail", lastNonBlankLine(final)))
 			var err error
 			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts, in.searches)
 			if err != nil {
@@ -1533,7 +1532,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			common.InfoCtx(ctx, "agentic_rag: delivery gate audit failed the deliverable",
 				zap.Int("pass", pass+1),
 				zap.Int("suspects", auditSuspectCount(verdict)),
-				zap.String("verdict", truncateForLog(auditFindings(verdict), 300)))
+				zap.String("verdict", auditFindings(verdict)))
 
 			suspectHist = append(suspectHist, auditSuspectCount(verdict))
 			// Stall check fires}BEFORE the repair turn: once three observations
@@ -1629,7 +1628,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 					// Preview of what was discarded: without it there is no way
 					// to tell a quota-truncated repair from one that simply never
 					// rendered the FOS deliverable (q798-class diagnosis).
-					zap.String("preview", truncateForLog(trimmed, 200)))
+					zap.String("preview", trimmed))
 			} else {
 				repairFeedback = fmt.Sprintf(("TOOL FAILURE NOTICE: your previous repair turn aborted with " +
 					"a tool error (%v) and produced nothing usable. The audit findings above still stand - " +
@@ -1855,7 +1854,7 @@ func gateRunAudit(
 	}
 	payload := buildAuditPayload(final, searches)
 	common.WarnCtx(ctx, "agentic_rag: gate-run audit start",
-		zap.String("payload", truncateForLog(payload, 2000)))
+		zap.String("payload", payload))
 	// The auditor's INPUT and OUTPUT at full length, debug only: the tail of both is
 	// the answer-line region (the deliverable it echoed back plus its opinions), and
 	// the capped lines above can never reach it. Log volume is the cost and it is
@@ -1869,7 +1868,7 @@ func gateRunAudit(
 		return "", err
 	}
 	common.InfoCtx(ctx, "agentic_rag: gate-run audit verdict",
-		zap.String("verdict", truncateForLog(verdict, 2000)))
+		zap.String("verdict", verdict))
 	common.DebugCtx(ctx, "agentic_rag: gate-run audit verdict (full)", zap.String("verdict", verdict))
 	return verdict, nil
 }
@@ -1937,7 +1936,7 @@ func consumeAgentEvents(
 					zap.String("tool", toolNames[mo.Message.ToolCallID]),
 					zap.String("tool_call_id", mo.Message.ToolCallID),
 					zap.Int("content_bytes", len(content)),
-					zap.String("content_head", loggable(content, 2000)),
+					zap.String("content", content),
 				)
 				// Failure accounting: tools report failures as canonical
 				// <tool_error> results so the loop keeps running; the
@@ -1950,7 +1949,7 @@ func consumeAgentEvents(
 						toolCallErrors[name]++
 						if toolErrorSamples != nil {
 							if _, ok := toolErrorSamples[name]; !ok {
-								toolErrorSamples[name] = truncateForLog(content, 300)
+								toolErrorSamples[name] = content
 							}
 						}
 					}
@@ -1977,7 +1976,7 @@ func consumeAgentEvents(
 				common.DebugCtx(ctx, "agentic_rag: tool call",
 					zap.String("tool", name),
 					zap.String("tool_call_id", tc.ID),
-					zap.String("args", loggable(tc.Function.Arguments, 2000)),
+					zap.String("args", tc.Function.Arguments),
 				)
 				if toolCallCounts != nil && name != "" {
 					toolCallCounts[name]++
@@ -2177,36 +2176,12 @@ func priorTurns(messages []*schema.Message) []*schema.Message {
 	return nil
 }
 
-// logFullToolResults keeps the WHOLE tool output and tool arguments in the log
-// instead of their 2000-char heads. Read once from the environment
-// (RAGFLOW_LOG_FULL_TOOL_RESULTS=1) because the volume is real: one question can
-// read ~1700 chunks and a single semantic fan-out returns ~60KB, which is ~100MB of
-// log for ONE question. The head plus `content_bytes` shows the shape, and the
-// content is re-fetchable; a run that is being diagnosed is where the whole text
-// earns its keep.
-//
-// The gate's own full-text lines (deliverable, audit payload, verdict, repair
-// directive) are deliberately NOT gated by this switch: they are small, they are few
-// per run, and they are exactly what a "did the gate hold the archived text?"
-// question needs.
-var logFullToolResults = os.Getenv("RAGFLOW_LOG_FULL_TOOL_RESULTS") != ""
-
-// loggable returns s whole when the full-tool-result switch is on, and capped to max
-// otherwise.
-func loggable(s string, max int) string {
-	if logFullToolResults {
-		return s
-	}
-	return truncateForLog(s, max)
-}
-
-// truncateForLog caps a string for log lines so a huge tool output or argument
-// payload cannot blow up the log volume.
-// lastNonBlankLine returns the deliverable's last non-empty line - the answer
-// line, when the deliverable is well formed. It exists to make the gate's own
-// reading auditable: the audit payload is logged truncated FROM THE START, so the
-// answer line never reaches the log, and a round whose report says a value is
-// missing cannot be checked against the text the run shipped.
+// Every debug log carries its fields WHOLE - a truncated field is an unreadable
+// field, and a cut tool result once hid the exact evidence a forensic needed
+// (the difference between a one-look diagnosis and a wrong attribution). The
+// log volume at debug level is the accepted cost; the model-facing evidence
+// assembly is the only place a cap survives, and there it is context hygiene,
+// not concealment.
 func lastNonBlankLine(s string) string {
 	lines := strings.Split(s, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

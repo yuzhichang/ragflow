@@ -67,6 +67,7 @@ func servedChunkFields(ctx context.Context, tool, query string, hit snippetHit) 
 		zap.Int("snippet_runes", utf8.RuneCountInString(hit.snippet)),
 		zap.Int("query_terms", matched),
 		zap.String("snippet", snippet),
+		zap.String("content", hit.chunk.Content),
 	}
 	if hit.truncated {
 		fields = append(fields, zap.Bool("truncated", true))

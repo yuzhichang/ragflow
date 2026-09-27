@@ -398,7 +398,7 @@ func (m *EinoChatModel) generateOnce(ctx context.Context, cm *ChatModel, msgs []
 	}
 	common.Debug("models: eino generate response",
 		zap.String("model", *cm.ModelName),
-		zap.String("answer_head", truncateForLog(answerHead(resp), 500)),
+		zap.String("answer", answerHead(resp)),
 		zap.Int("tool_calls", toolCalls),
 		zap.Int("completion_tokens", usageCompletion(resp)),
 	)

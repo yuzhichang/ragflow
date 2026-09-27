@@ -452,6 +452,8 @@ func grepBySplitAlternation(
 			zap.String("pattern", req.Pattern), zap.Int("branches", len(branches)), zap.Int("chunks", len(merged)))
 		return merged, "", true
 	}
+	// `shown` previews the failed branches for the MODEL-facing notice; the
+	// debug log above already carries the full list.
 	shown := failed
 	if len(shown) > 3 {
 		shown = shown[:3]

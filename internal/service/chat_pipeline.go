@@ -607,7 +607,7 @@ func (s *ChatPipelineService) AsyncChat(
 			if refined, err := FullQuestion(ctx, chatModel, messages, ""); err == nil && refined != "" {
 				questions = []string{refined} // replace with refined question
 				common.Debug("refine_multiturn applied",
-					zap.String("refined", truncateForLog(refined, 60)))
+					zap.String("refined", refined))
 			} else if err != nil {
 				common.Warn("refine_multiturn failed; using original question", zap.Error(err))
 			}
@@ -2531,7 +2531,7 @@ func (s *ChatPipelineService) agenticRag(
 			fields := []zap.Field{
 				zap.String("chat_id", chat.ID),
 				zap.String("template_id", mode),
-				zap.String("question", truncateForLog(lastUserQuestion(messages), 200)),
+				zap.String("question", lastUserQuestion(messages)),
 				zap.Int("calls", calls),
 				zap.Int("prompt_tokens", pt),
 				zap.Int("completion_tokens", ct),
@@ -2914,9 +2914,6 @@ func cleanTTSText(text string) string {
 	wsRe := regexp.MustCompile(`\s+`)
 	text = wsRe.ReplaceAllString(text, " ")
 	text = strings.TrimSpace(text)
-	if len(text) > 500 {
-		text = text[:500]
-	}
 	return text
 }
 

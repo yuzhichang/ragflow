@@ -707,29 +707,10 @@ func TestAdoptableContinuation(t *testing.T) {
 	}
 }
 
-// TestLoggableSwitch pins the one truncation that is a SWITCH rather than a
-// decision: tool results are capped at 2000 chars by default because one question
-// can read ~1700 chunks (~100MB of log), and uncapped for a diagnosis run. The
-// gate's own full-text lines are NOT behind this switch - they are small and they
-// are what a "did the gate hold the archived text?" question needs.
-func TestLoggableSwitch(t *testing.T) {
-	long := strings.Repeat("x", 5000)
-	defer func() { logFullToolResults = false }()
-
-	logFullToolResults = false
-	// truncateForLog appends its own ellipsis marker past the cap, so the assertion
-	// is "capped, and visibly so" rather than an exact length.
-	if got := loggable(long, 2000); len(got) >= len(long) || !strings.HasSuffix(got, "...") {
-		t.Errorf("switch off: len = %d (input %d), want a capped value with a marker", len(got), len(long))
-	}
-	logFullToolResults = true
-	if got := loggable(long, 2000); len(got) != 5000 {
-		t.Errorf("switch on: len = %d, want the whole 5000", len(got))
-	}
-	if got := loggable("short", 2000); got != "short" {
-		t.Errorf("short input must pass through unchanged: %q", got)
-	}
-}
+// TestLoggableSwitch is retired: every debug log now carries its fields WHOLE
+// (no switch, no cap) - a truncated field once hid the exact evidence a
+// forensic needed. truncateForLog survives only for model-facing text, where
+// the cap is context hygiene.
 
 // TestAnswerLabelShapeZoo pins the whole family of answer-LINE shapes against the one
 // thing the gate reads: the label. The old reader was a ladder of per-shape patterns
