@@ -61,12 +61,21 @@ import (
 	"testing"
 	"time"
 
+	"ragflow/internal/common"
 	"ragflow/internal/entity/models"
 )
 
 func TestDecompositionProbe(t *testing.T) {
 	if os.Getenv("DECOMP_PROBE") != "1" {
 		t.Skip("stage-one live probe: set DECOMP_PROBE=1 to run")
+	}
+	// The probe is where decomposition is debugged: the pipeline's logger is
+	// nil in a test binary until initialized, and WITHOUT it every
+	// common.InfoCtx/DebugCtx - the plan auditor's output, its findings, the
+	// verification lines - is a silent no-op. Debug level, straight to the
+	// test log.
+	if err := common.InitLogger("debug", common.FileOutput{}, "decomp-probe"); err != nil {
+		t.Fatalf("init logger: %v", err)
 	}
 	apiKey := os.Getenv("DECOMP_API_KEY")
 	if apiKey == "" {
@@ -96,7 +105,20 @@ func TestDecompositionProbe(t *testing.T) {
 			continue
 		}
 		t.Run(qLabel(i, question), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+			// The audit loop is deliberately generous - up to eight
+			// audit-driven repair rounds, each two cheap turns - so the
+			// per-question budget is sized for the loop, not for a single
+			// write. 20m covers the full budget with headroom; a provider
+			// outage still fails fast (failover cooldown).
+			perQuestion := 20 * time.Minute
+			if s := os.Getenv("DECOMP_TIMEOUT"); s != "" {
+				d, err := time.ParseDuration(s)
+				if err != nil {
+					t.Fatalf("DECOMP_TIMEOUT: %v", err)
+				}
+				perQuestion = d
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), perQuestion)
 			defer cancel()
 			in := Input{
 				Model:             eino,
