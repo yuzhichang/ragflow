@@ -70,6 +70,13 @@ type Input struct {
 	// repair turn), separate failover state for the same reason. Nil falls
 	// back to Model.
 	PlanAuditModel *models.EinoChatModel
+	// PlanStageModel, when non-nil, is the model the plan stage's planner
+	// runs on. The planner template declares its own temperature (0.5): the
+	// stage's product is machine-verified by the plan auditor and the
+	// mechanical check, so sampled dropout burns repair turns and the shape
+	// variance of a hot sample shows up as run-to-run plan churn. Nil falls
+	// back to Model.
+	PlanStageModel *models.EinoChatModel
 	// Messages are the conversation history plus the current user message —
 	// one turn per Run. The next user input is the NEXT Run (AsyncChat is
 	// re-entered per request), so the history the caller passes in must

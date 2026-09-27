@@ -5,6 +5,7 @@ templates:
       Stage one of the reasoning pipeline: it turns the question into the block plan the
       explorer executes, has that plan verified by check_decomposition, and returns the plan
       alone. It never retrieves: the corpus tools are not its toolset.
+    temperature: 0.5
     tools:
       - check_decomposition
     content: |

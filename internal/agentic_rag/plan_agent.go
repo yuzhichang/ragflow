@@ -40,6 +40,15 @@ import (
 // worked examples).
 const plannerTemplateID = "planner"
 
+// PlannerTemperature resolves the temperature the plan stage's planner runs
+// at: the planner template's declared value, else nil - the planner then
+// samples at the MODEL's own default (the same contract as the auditors:
+// an undeclared temperature means the field is never set, never a number of
+// ours). Exported: the chat pipeline builds the planner's model instance.
+func PlannerTemperature() *float64 {
+	return TemplateTemperature(plannerTemplateID)
+}
+
 // PlanAuditorTemplateID selects the independent plan auditor: a separate
 // agent that holds the question and the plan and audits the plan against the
 // question clause by clause. The planner auditing its own plan is structurally
@@ -187,7 +196,7 @@ func runPlanStage(ctx context.Context, in Input) (string, bool) {
 	if strings.TrimSpace(question) == "" {
 		return "", false
 	}
-	agent, err := NewPlannerAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
+	agent, err := NewPlannerAgent(ctx, planStageModelFor(in), in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
 	if err != nil {
 		common.WarnCtx(ctx, "agentic_rag: plan stage planner unavailable", zap.Error(err))
 		return "", false
@@ -412,6 +421,16 @@ func extractPlanAuditFindings(final string) ([]string, bool) {
 func planAuditModelFor(in Input) *models.EinoChatModel {
 	if in.PlanAuditModel != nil {
 		return in.PlanAuditModel
+	}
+	return in.Model
+}
+
+// planStageModelFor is the model the plan stage's planner runs on: a
+// dedicated instance when the caller built one (the planner template's
+// declared temperature is pinned there), else the producer's.
+func planStageModelFor(in Input) *models.EinoChatModel {
+	if in.PlanStageModel != nil {
+		return in.PlanStageModel
 	}
 	return in.Model
 }

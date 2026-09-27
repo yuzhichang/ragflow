@@ -2325,6 +2325,23 @@ func (s *ChatPipelineService) agenticRag(
 			auditModel = einoModel // degrade to the shared instance rather than fail
 		}
 
+		// The plan stage's planner gets its own instance when the planner
+		// template declares a temperature (0.5): the stage's product is
+		// machine-verified by the plan auditor and the mechanical check, so
+		// sampled dropout burns repair turns and a hot sample's shape
+		// variance shows up as run-to-run plan churn. Undeclared, the planner
+		// rides the producer's instance (the model's own default applies).
+		planStageModel := einoModel
+		if agentic_rag.PlannerTemperature() != nil {
+			psModel, psErr := modelModule.NewFailoverEinoChatModelWithLabels(
+				modelChain, chainLabels, chatConfigWithTemperature(chatCfg, agentic_rag.PlannerTemperature()))
+			if psErr != nil {
+				common.WarnCtx(ctx, "smart_reasoning: build plan stage model", zap.Error(psErr))
+			} else {
+				planStageModel = psModel
+			}
+		}
+
 		// The independent plan auditor gets a FOURTH instance over the same
 		// chain, differing only in sampling: the plan_auditor template pins
 		// 0.1, because its findings are machine-parsed and each sampled FAIL
@@ -2438,6 +2455,7 @@ func (s *ChatPipelineService) agenticRag(
 			Model:             einoModel,
 			SynthModel:        cm,
 			AuditModel:        auditModel,
+			PlanStageModel:    planStageModel,
 			PlanAuditModel:    planAuditModel,
 			Messages:          msgs,
 			TemplateID:        mode,

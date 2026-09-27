@@ -371,3 +371,47 @@ func auditorTemplateYAML(tempLine string) string {
 	return "templates:\n  - id: " + answerAuditorTemplateID + "\n    name: Answer Auditor Agent\n" +
 		tempLine + "    tools:\n      - list_chunks\n    content: |\n      AUDIT\n"
 }
+
+// plannerTemplateYAML builds a minimal config whose only template is the
+// planner's, with tempLine (possibly empty) spliced into its header.
+func plannerTemplateYAML(tempLine string) string {
+	return "templates:\n  - id: " + plannerTemplateID + "\n    name: Planner\n" +
+		tempLine + "    tools:\n      - check_decomposition\n    content: |\n      PLAN\n"
+}
+
+// TestPlannerTemperatureKnob pins the plan stage's sampling policy: the
+// planner template's declared temperature wins, an undeclared one means the
+// model's own default (nil - the field is never set), and a config without a
+// planner template is also unspecified.
+func TestPlannerTemperatureKnob(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want *float64
+	}{
+		{"declared wins", plannerTemplateYAML("    temperature: 0.5\n"), floatPtr(0.5)},
+		{"undeclared means the model's default", plannerTemplateYAML(""), nil},
+		{"no planner template still unspecified", "templates:\n  - id: other\n    name: x\n    tools:\n      - think\n    content: |\n      P\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agentic_rag.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatalf("write temp config: %v", err)
+			}
+			t.Setenv("AGENTIC_RAG_CONFIG", path)
+			configMu.Lock()
+			cachedFile = nil
+			configMu.Unlock()
+			t.Cleanup(func() {
+				configMu.Lock()
+				cachedFile = nil
+				configMu.Unlock()
+			})
+			got := PlannerTemperature()
+			if (got == nil) != (tc.want == nil) || (got != nil && tc.want != nil && *got != *tc.want) {
+				t.Errorf("PlannerTemperature() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
