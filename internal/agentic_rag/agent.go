@@ -784,7 +784,7 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 	fields := []zap.Field{
 		zap.String("tool", name),
 		zap.Float64("cost_ms", float64(cost.Milliseconds())),
-		// Args are logged IN FULL: the decomposition plan rides check_decomposition's
+		// Args are logged IN FULL: the stage-one plan rides check_decomposition's
 		// args, and it is the run's single variable state - a truncated copy makes
 		// stage-one-vs-delivered comparisons impossible after the fact. Tool args
 		// are bounded by construction (queries, ids, the plan), so the volume cost
@@ -862,8 +862,8 @@ func Run(ctx context.Context, in Input) (string, error) {
 		in.Searches = NewSearchLedger()
 	}
 
-	// Stage one: the question-decomposition agent writes the block plan and
-	// has it verified BEFORE the explorer runs, so decomposition is never left
+	// Stage one: the planner writes the block plan and
+	// has it verified BEFORE the explorer runs, so planning is never left
 	// to the explorer's discipline - two measured runs (#11/#12) showed an
 	// in-prompt call contract the model never exercised (zero
 	// check_decomposition calls) and shipped a merged two-variable block (q875)
@@ -874,7 +874,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// that do not decompose.
 	plan, conversational := "", false
 	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
-		plan, conversational = runDecompositionStage(ctx, in)
+		plan, conversational = runPlanStage(ctx, in)
 	}
 	if conversational {
 		// The stage classified the message as purely conversational: the
@@ -1000,7 +1000,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 
 	// EnableStreaming lives on RunnerConfig, not ChatModelAgentConfig.
 	explorerHead := sess.explorer.head(ctx)
-	// For the smart-reasoning pipeline the decomposition stage has ALREADY
+	// For the smart-reasoning pipeline the plan stage has ALREADY
 	// produced the plan: reaching this point without one means the stage failed
 	// after its retries. Assert the plan instead of degrading to an unpinned
 	// explorer - the unpinned run is exactly how the merged-block and
@@ -1008,9 +1008,9 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// (caller-owned toolsets, non-decomposing templates) legitimately have no
 	// plan and skip the message formatting below.
 	if plan == "" && in.TemplateID == "smart-reasoning" {
-		return "", fmt.Errorf("agentic_rag: decomposition stage returned no plan for question %q", lastUserQuestion(in.Messages))
+		return "", fmt.Errorf("agentic_rag: plan stage returned no plan for question %q", lastUserQuestion(in.Messages))
 	}
-	// The run's input, when the decomposition stage produced a plan, is ONE user
+	// The run's input, when the plan stage produced a plan, is ONE user
 	// message in a fixed two-section format the smart-reasoning prompt declares:
 	// `## Resolved question` (the stage-one resolved question — the caller's
 	// question with every conversational reference resolved — falling back to
@@ -2155,7 +2155,7 @@ func lastUserQuestion(messages []*schema.Message) string {
 }
 
 // priorTurns returns the messages BEFORE the last user message — the earlier
-// turns of a multi-turn conversation, which the decomposition stage resolves
+// turns of a multi-turn conversation, which the plan stage resolves
 // the pinned question's references against (a follow-up like "and his
 // spouse?" names no entity of its own). Everything from the last user message
 // on is excluded: the message itself is pinned in the planner's instructions,

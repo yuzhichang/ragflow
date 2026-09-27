@@ -16,7 +16,7 @@ package agentic_rag
 
 import "github.com/cloudwego/eino/schema"
 
-// Independent stage-one probe: run ONLY the question-decomposition stage -
+// Independent stage-one probe: run ONLY the plan stage -
 // planner, check_decomposition, and the review round - against a live model.
 // No explorer, no auditor, no corpus, no retrieval: the plan and the review's
 // verdict lines are the entire output, so decomposition quality (clause
@@ -31,7 +31,7 @@ import "github.com/cloudwego/eino/schema"
 //	DECOMP_API_KEY="<provider key>" \
 //	DECOMP_TEMPERATURE=0.5 \
 //	DECOMP_QUESTION="Two individuals from different industries ..." \
-//	go test -run TestDecompositionProbe -v -timeout 12m
+//	go test -run TestPlanStageProbe -v -timeout 12m
 //
 // Environment:
 //
@@ -65,7 +65,7 @@ import (
 	"ragflow/internal/entity/models"
 )
 
-func TestDecompositionProbe(t *testing.T) {
+func TestPlanStageProbe(t *testing.T) {
 	if os.Getenv("DECOMP_PROBE") != "1" {
 		t.Skip("stage-one live probe: set DECOMP_PROBE=1 to run")
 	}
@@ -127,7 +127,7 @@ func TestDecompositionProbe(t *testing.T) {
 				ToolCallCounts:    map[string]int{},
 				ToolCallDurations: NewDurationAccumulator(),
 			}
-			plan, conversational := runDecompositionStage(ctx, in)
+			plan, conversational := runPlanStage(ctx, in)
 			if conversational {
 				t.Logf("stage one ruled the message conversational; no plan")
 				return

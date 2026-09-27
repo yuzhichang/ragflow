@@ -217,7 +217,7 @@ func checkDecompositionBlocks(plan string) ([]*decompositionBlock, []string) {
 	}
 
 	// The plan must open with the resolved question (see "The resolved
-	// question" in the question-decomposition template): that line is the
+	// question" in the planner template): that line is the
 	// question every downstream consumer reads - the explorer is seeded with
 	// it, the auditor pins it, and the review's clause-coverage mapping
 	// enumerates ITS clauses - so a plan without it is unauditable for

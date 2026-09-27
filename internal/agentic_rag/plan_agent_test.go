@@ -23,7 +23,7 @@ import (
 	"testing"
 )
 
-// The two-stage Run lives or dies with the wiring: the decomposition stage's
+// The two-stage Run lives or dies with the wiring: the plan stage's
 // template must exist, own ONLY the checker (the one thing the stage must
 // never do is retrieve), carry the conversational escape marker, and the
 // explorer must have lost the checker from ITS toolset - a prompt that says
@@ -55,10 +55,10 @@ func TestQuestionDecompositionStageWiring(t *testing.T) {
 		t.Fatalf("the planner template is missing: %v", err)
 	}
 	if len(tmpl.Tools) != 1 || tmpl.Tools[0] != "check_decomposition" {
-		t.Fatalf("the decomposition stage must own exactly the checker, got %v", tmpl.Tools)
+		t.Fatalf("the plan stage must own exactly the checker, got %v", tmpl.Tools)
 	}
-	if !strings.Contains(tmpl.Content, decompositionNoPlanMarker) {
-		t.Fatalf("the planner prompt must carry the conversational escape marker %q", decompositionNoPlanMarker)
+	if !strings.Contains(tmpl.Content, noPlanMarker) {
+		t.Fatalf("the planner prompt must carry the conversational escape marker %q", noPlanMarker)
 	}
 	if !strings.Contains(tmpl.Content, "Example (two blocks") ||
 		!strings.Contains(tmpl.Content, "Example (four blocks") {

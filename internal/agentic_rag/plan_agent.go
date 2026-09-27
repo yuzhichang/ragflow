@@ -49,29 +49,29 @@ const plannerTemplateID = "planner"
 // first win. Exported: the chat pipeline builds the auditor's model instance.
 const PlanAuditorTemplateID = "plan_auditor"
 
-// decompositionNoPlanMarker is what the decomposition agent returns for a
+// noPlanMarker is what the planner agent returns for a
 // purely conversational message - nothing that needs facts, so there is no
 // plan to pin and the explorer answers it per its own Intent rule.
-const decompositionNoPlanMarker = "NO-DECOMPOSITION"
+const noPlanMarker = "NO-DECOMPOSITION"
 
-// decompositionMaxIterations bounds the planner's own ReAct loop: it writes
+// planStageMaxIterations bounds the planner's own ReAct loop: it writes
 // one plan, calls the checker once per revision and emits the plan once the
 // checker is clean. Twenty leaves room for a duplicate call and two repair
 // rounds - twelve was measured to be too tight (q1005, smoke #16: the planner
 // called the checker twice per iteration and ran out of iterations with a
 // clean plan in hand, so the stage returned nothing).
-const decompositionMaxIterations = 20
+const planStageMaxIterations = 20
 
-// decompositionMaxRepairRounds caps the Go-side repair loop: after the agent
+// planStageMaxRepairRounds caps the Go-side repair loop: after the agent
 // returns a plan, checkDecomposition is run HERE (deterministic, free - the
 // adoption of the in-agent checker cannot be taken on trust), and a plan that
 // still carries findings is sent back for repair at most this many times.
 // An exhausted budget pins the last plan unverified: availability over
 // perfection - the explorer works the plan as written and the delivery gate
 // sees the outcome.
-const decompositionMaxRepairRounds = 2
+const planStageMaxRepairRounds = 2
 
-// decompositionAuditRounds caps the audit-driven repair loop that follows a
+// planStageAuditRounds caps the audit-driven repair loop that follows a
 // mechanically clean plan: each round is one plan-auditor turn plus one
 // planner repair turn, and both are the cheapest turns in the pipeline - no
 // retrieval, no chunk reads, a few KB of prompt - while the plan is the
@@ -79,12 +79,12 @@ const decompositionMaxRepairRounds = 2
 // from. Eight audits beat one shipped plan that drops clauses: the budget is
 // deliberately generous because the stage's tokens cost a fraction of the
 // explorer's.
-const decompositionAuditRounds = 8
+const planStageAuditRounds = 8
 
-// decompositionPlanHeadRe finds the first block heading in the agent's final
+// planHeadRe finds the first block heading in the agent's final
 // message: the plan is everything from there down (the agent may fence the
 // plan or prefix one short line; the trailing fence is trimmed).
-var decompositionPlanHeadRe = regexp.MustCompile(`(?m)^### Sub-question`)
+var planHeadRe = regexp.MustCompile(`(?m)^### Sub-question`)
 
 // NewPlannerAgent builds the stage-one agent: same construction
 // as the answer auditor (a standalone ChatModelAgent over its own template),
@@ -100,7 +100,7 @@ func NewPlannerAgent(
 ) (*adk.ChatModelAgent, error) {
 	tmpl, err := resolveTemplateFor(plannerTemplateID)
 	if err != nil {
-		return nil, fmt.Errorf("question decomposition: %w", err)
+		return nil, fmt.Errorf("plan stage: %w", err)
 	}
 	// Same tool wrapping as the auditor: the checker's calls land in the run's
 	// shared duration ledger, so per-question cost accounting covers this
@@ -124,7 +124,7 @@ func NewPlannerAgent(
 		// so every turn's input is just the directive.
 		Instruction:      tmpl.Content + "\n\n## The question to decompose\n\n" + question,
 		Model:            model,
-		MaxIterations:    decompositionMaxIterations,
+		MaxIterations:    planStageMaxIterations,
 		ModelRetryConfig: agentModelRetryConfig(),
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -135,12 +135,12 @@ func NewPlannerAgent(
 	}
 	agent, err := adk.NewChatModelAgent(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("question decomposition: build agent: %w", err)
+		return nil, fmt.Errorf("plan stage: build agent: %w", err)
 	}
 	return agent, nil
 }
 
-// runDecompositionStage runs stage one end to end. It returns the plan text to
+// runPlanStage runs stage one end to end. It returns the plan text to
 // pin into the explorer's context, or "" with conversational=true when the
 // stage ruled the message purely conversational - the caller then skips the
 // explorer-auditor pipeline entirely and answers directly. It also returns ""
@@ -156,7 +156,7 @@ func NewPlannerAgent(
 // warning in the log - the explorer is told the plan may be imperfect.
 // resolvedQuestionHeader is the line a plan opens with when the pinned
 // question needed resolving against the conversation's earlier turns (see the
-// "The resolved question" section of the question-decomposition template).
+// "The resolved question" section of the planner template).
 // Everything downstream — the explorer's input, the auditor's pinned
 // question — reads THIS line as the question, never the raw fragment.
 const resolvedQuestionHeader = "## Resolved question"
@@ -177,11 +177,11 @@ func extractResolvedQuestion(plan string) string {
 	return strings.TrimSpace(rest)
 }
 
-// runDecompositionStage derives its inputs from the conversation itself: the
+// runPlanStage derives its inputs from the conversation itself: the
 // question is the last user message, and the turns before it are the context
 // a follow-up's references resolve against (priorTurns). No caller-side
 // splitting of in.Messages — the stage owns the reading of its input.
-func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
+func runPlanStage(ctx context.Context, in Input) (string, bool) {
 	question := lastUserQuestion(in.Messages)
 	prior := priorTurns(in.Messages)
 	if strings.TrimSpace(question) == "" {
@@ -189,17 +189,17 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 	}
 	agent, err := NewPlannerAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
 	if err != nil {
-		common.WarnCtx(ctx, "agentic_rag: question-decomposition agent unavailable", zap.Error(err))
+		common.WarnCtx(ctx, "agentic_rag: plan stage planner unavailable", zap.Error(err))
 		return "", false
 	}
 	// The stage owns a private conversation: one planner session per Run, no
 	// history reuse (the explorer's session semantics do not apply here).
 	store := session.NewInMemoryStore[adk.Message](nil)
-	conv := newConversation("decomposition", store)
+	conv := newConversation("plan-stage", store)
 
 	directive := "Decompose the question pinned in your instructions."
 	plan := ""
-	for round := 0; round <= decompositionMaxRepairRounds+decompositionAuditRounds; round++ {
+	for round := 0; round <= planStageMaxRepairRounds+planStageAuditRounds; round++ {
 		input := []adk.Message{schema.UserMessage(directive)}
 		if round == 0 && len(prior) > 0 {
 			// A multi-turn conversation: the turns before the current question
@@ -224,16 +224,16 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 		final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
 		if err != nil {
 			conv.discardFailedTurn(ctx, conv.head(ctx))
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition run failed", zap.Error(err))
+			common.WarnCtx(ctx, "agentic_rag: plan stage run failed", zap.Error(err))
 			return "", false
 		}
 		plan = extractPlan(final)
 		if plan == "" {
-			if strings.Contains(final, decompositionNoPlanMarker) {
-				common.InfoCtx(ctx, "agentic_rag: question-decomposition skipped (conversational message)")
+			if strings.Contains(final, noPlanMarker) {
+				common.InfoCtx(ctx, "agentic_rag: plan stage skipped (conversational message)")
 				return "", true
 			}
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition returned no readable plan")
+			common.WarnCtx(ctx, "agentic_rag: plan stage returned no readable plan")
 			return "", false
 		}
 		findings := checkDecomposition(plan)
@@ -252,7 +252,7 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 			}
 			audited := runPlanAuditor(ctx, in, plan, auditedQuestion, question)
 			if len(audited) == 0 {
-				common.InfoCtx(ctx, "agentic_rag: question-decomposition verified",
+				common.InfoCtx(ctx, "agentic_rag: plan stage verified",
 					zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
 				return plan, false
 			}
@@ -262,12 +262,12 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 				"\n\nFix every finding and return ONLY the corrected plan."
 			continue
 		}
-		common.WarnCtx(ctx, "agentic_rag: question-decomposition plan failed the mechanical check",
+		common.WarnCtx(ctx, "agentic_rag: plan stage failed the mechanical check",
 			zap.Int("round", round+1), zap.Strings("findings", findings))
 		directive = "check_decomposition reports:\n- " + strings.Join(findings, "\n- ") +
 			"\n\nFix every finding and return ONLY the corrected plan."
 	}
-	common.WarnCtx(ctx, "agentic_rag: question-decomposition audit budget exhausted - keeping the last mechanically valid plan")
+	common.WarnCtx(ctx, "agentic_rag: plan stage audit budget exhausted - keeping the last mechanically valid plan")
 	return plan, false
 }
 
@@ -316,7 +316,7 @@ func NewPlanAuditorAgent(
 		// mapping walks it against.
 		Instruction:      tmpl.Content + "\n\n## The caller's original question\n\n" + original + "\n\n## Resolved question under audit\n\n" + resolved + "\n\n## The plan under audit\n\n" + plan,
 		Model:            model,
-		MaxIterations:    decompositionAuditMaxIterations,
+		MaxIterations:    planAuditMaxIterations,
 		ModelRetryConfig: agentModelRetryConfig(),
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -332,11 +332,11 @@ func NewPlanAuditorAgent(
 	return agent, nil
 }
 
-// decompositionAuditMaxIterations bounds the plan auditor's own ReAct loop:
+// planAuditMaxIterations bounds the plan auditor's own ReAct loop:
 // it reads the two pinned artifacts, optionally re-runs the checker to ground
 // a mechanical claim, and emits the mapping and findings. Four leaves room
 // for a duplicate call and a re-check.
-const decompositionAuditMaxIterations = 4
+const planAuditMaxIterations = 4
 
 // planAuditFindingsRe extracts one finding line from the plan auditor's
 // output: `- UNMAPPED clause: ...` / `- suspect: ...`. `pass` items and the
@@ -499,7 +499,7 @@ func runPlanAuditor(ctx context.Context, in Input, plan, resolved, original stri
 
 // runConversationalReply answers a purely conversational message WITHOUT the
 // explorer-auditor pipeline: no ReAct loop, no retrieval tools, no delivery
-// gate - the decomposition stage has already ruled that nothing here needs
+// gate - the plan stage has already ruled that nothing here needs
 // facts. One direct generation over the caller's own history produces the
 // plain-prose reply; the same emit convention as Run ships it.
 func runConversationalReply(ctx context.Context, in Input) (string, error) {
