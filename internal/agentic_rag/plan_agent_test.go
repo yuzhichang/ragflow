@@ -163,4 +163,16 @@ func TestPlanAuditFindingsParsing(t *testing.T) {
 	if planAuditSelfRefutingRe.MatchString("- UNMAPPED clause: \"born in the first decade\" - no block carries it") {
 		t.Fatal("a genuine UNMAPPED line must not match the retraction pattern")
 	}
+	// The entity census lines parse: entity -> variable, and entity -> UNBOUND
+	// (the over-merge confession).
+	census := "**Entity census**\n" +
+		"- `entity: the two individuals -> ?person1, ?person2`\n" +
+		"- `entity: the school -> UNBOUND`\n"
+	found := planAuditCensusRe.FindAllStringSubmatch(census, -1)
+	if len(found) != 2 {
+		t.Fatalf("want 2 census lines, got %d: %q", len(found), found)
+	}
+	if !strings.EqualFold(found[0][2], "?person1") || !strings.EqualFold(found[1][2], "UNBOUND") {
+		t.Fatalf("census parse wrong: %q", found)
+	}
 }

@@ -357,6 +357,13 @@ var planAuditFindingsRe = regexp.MustCompile(`(?m)^\s*-\s+(UNMAPPED clause:.*|IN
 // The findings bullets are the detail; the verdict is the contract.
 var planAuditVerdictRe = regexp.MustCompile(`(?mi)^\s*\**\s*Audit Result:\s*\**\s*(PASS|FAIL)\b`)
 
+// planAuditCensusRe matches one entity-census line from the plan auditor's
+// fixed output: `entity: <what the question calls it> -> ?variable` (the
+// variable that carries it) or `-> UNBOUND` (no variable carries it). The
+// census is the over-merge audit trail: a prose judgment the pipeline can
+// parse, so an unbound entity cannot hide inside a PASS verdict.
+var planAuditCensusRe = regexp.MustCompile(`(?im)^\s*[-*]?\s*` + "`" + `?\**entity:` + "`" + `?\s*(.+?)\s*->\s*(\?[A-Za-z0-9_]+|UNBOUND)\b`)
+
 // planAuditSelfRefutingRe matches an UNMAPPED finding line that retracts
 // itself: the auditor's own annotation says a constraint covers the clause
 // (`- UNMAPPED clause: "X" - no block carries it — not present, c2 covers it`).
@@ -489,6 +496,18 @@ func runPlanAuditor(ctx context.Context, in Input, plan, resolved, original stri
 			common.WarnCtx(ctx, "agentic_rag: plan audit verdict PASS over self-refuting UNMAPPED lines - dropping the retracted findings",
 				zap.Int("dropped", len(findings)-len(kept)), zap.Int("kept", len(kept)))
 			findings = kept
+		}
+	}
+	// The entity census is the over-merge audit trail: every UNBOUND line is a
+	// confession that no variable carries an entity the question distinguishes,
+	// and it is a finding regardless of the verdict - #35 r3 shipped a plan
+	// whose school entity had no variable because the PASS verdict outranked
+	// the census.
+	for _, m := range planAuditCensusRe.FindAllStringSubmatch(final, -1) {
+		if strings.EqualFold(m[2], "UNBOUND") {
+			findings = append(findings, fmt.Sprintf("entity census: %s is UNBOUND - no variable carries it; give it its own block and variable, or split the plan", m[1]))
+			common.WarnCtx(ctx, "agentic_rag: plan audit census names an unbound entity",
+				zap.String("entity", m[1]))
 		}
 	}
 	switch {
