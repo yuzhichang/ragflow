@@ -1497,6 +1497,22 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 			if auditPassed(verdict) {
 				break // audited and passed as a whole — ship
 			}
+			// Advisory-only verdict: every finding the auditor raised is one
+			// the pipeline grades as completeness or form, so it is reported
+			// and never billed as a blocking defect. #36: the one round the
+			// auditor graded advisory handed q875 its first win, while the
+			// same class left untagged refused q1005 on M=14 across six
+			// rounds. The grading is the pipeline's from here on.
+			if auditShipsOnAdvisory(verdict) {
+				common.WarnCtx(ctx, "agentic_rag: delivery gate shipped on advisory-only findings",
+					zap.Int("pass", pass+1),
+					zap.Int("reported_suspects", auditSuspectCount(verdict)),
+					zap.Int("advisory_findings", len(auditOpinions(verdict))))
+				if in.audit != nil {
+					in.audit.Passed = true
+				}
+				break
+			}
 
 			// The finding, not the verdict string: the auditor echoes the whole
 			// deliverable back, so the raw verdict spends its first 300 chars on

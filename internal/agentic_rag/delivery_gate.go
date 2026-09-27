@@ -309,6 +309,22 @@ var (
 	auditOpinionRe = regexp.MustCompile(`(?m)^\s*-\s*audit:\s*(.+?)\s*$`)
 	// auditResultLineRe matches the overall verdict line that closes the audit.
 	auditResultLineRe = regexp.MustCompile(`(?m)^\s*Audit Result:.*$`)
+
+	// advisoryOpinionRe is the pipeline's OWN grading of an audit opinion,
+	// not the auditor's: these opinions are completeness or form - they never
+	// make a shipped line false - so they are reported but never block the
+	// delivery. #36 proved the auditor cannot be trusted with the grading: it
+	// tagged one advisory finding across thirteen audit rounds and left
+	// `constraint hits not consumed` - the very class the rule names -
+	// untagged, which the untagged-means-BLOCKING default then turned into a
+	// refusal (q1005 ended on M=14 across six rounds), while the one round it
+	// did grade advisory handed q875 its first win. The pipeline decides.
+	advisoryOpinionRe = regexp.MustCompile(`(?i)` +
+		`constraint hits not consumed` +
+		`|derived line is missing` +
+		`|survivors` +
+		`|plan[- ]mirroring` +
+		`|clue anchor never queried`)
 )
 
 // auditFindings distils one audit verdict into its findings: the non-pass
@@ -321,6 +337,47 @@ var (
 // the verdict records the DELIVERABLE again, with the finding past the cut. A
 // passing item is skipped too: it says nothing a reader would not assume from the
 // round's suspect count.
+// auditOpinions returns the auditor's non-pass opinions - the findings - as a
+// list. Empty opinions and `pass` are skipped, so the list is exactly what the
+// auditor objected to.
+func auditOpinions(verdict string) []string {
+	out := make([]string, 0, 4)
+	for _, m := range auditOpinionRe.FindAllStringSubmatch(verdict, -1) {
+		opinion := strings.TrimSpace(m[1])
+		if opinion == "" || strings.EqualFold(opinion, "pass") {
+			continue
+		}
+		out = append(out, opinion)
+	}
+	return out
+}
+
+// auditBlockingOpinions returns the opinions the PIPELINE grades BLOCKING:
+// every finding the advisory pattern does not match. Advisory findings stay
+// reported - they are never discarded, they simply do not block.
+func auditBlockingOpinions(verdict string) []string {
+	out := make([]string, 0, 4)
+	for _, opinion := range auditOpinions(verdict) {
+		if advisoryOpinionRe.MatchString(opinion) {
+			continue
+		}
+		out = append(out, opinion)
+	}
+	return out
+}
+
+// auditShipsOnAdvisory reports whether a FAIL verdict becomes a shipment
+// because every finding the auditor raised is advisory by rule. The auditor
+// keeps the last word on BLOCKING defects; the pipeline only refuses to let a
+// completeness or form finding cost the run the answer it earned.
+func auditShipsOnAdvisory(verdict string) bool {
+	if auditPassed(verdict) {
+		return false
+	}
+	opinions := auditOpinions(verdict)
+	return len(opinions) > 0 && len(auditBlockingOpinions(verdict)) == 0
+}
+
 func auditFindings(verdict string) string {
 	findings := make([]string, 0, 4)
 	for _, m := range auditOpinionRe.FindAllStringSubmatch(verdict, -1) {
