@@ -339,6 +339,62 @@ const decompositionAuditMaxIterations = 4
 // Audit Result line are shaped out of the pattern.
 var planAuditFindingsRe = regexp.MustCompile(`(?m)^\s*-\s+(UNMAPPED clause:.*|INVENTED constraint:.*|suspect: .*)$`)
 
+// planAuditVerdictRe reads the auditor's own verdict line - the authoritative
+// signal the template requires it to end with (`Audit Result: PASS|FAIL`).
+// The findings bullets are the detail; the verdict is the contract.
+var planAuditVerdictRe = regexp.MustCompile(`(?mi)^\s*\**\s*Audit Result:\s*\**\s*(PASS|FAIL)\b`)
+
+// planAuditPassPrefixes are the openings a Findings bullet may use to record
+// a check that held rather than a defect.
+var planAuditPassPrefixes = []string{"pass", "`pass`", "no ", "none "}
+
+// extractPlanAuditFindings returns the auditor's finding lines: the old
+// fixed-prefix sweep plus every non-pass bullet of its Findings section. The
+// section's wording is the auditor's own (it has flagged drift as
+// `c4 paraphrase drift: ...` and structural defects as `Block 7 ...violates
+// ...`), so the parse is structural - bullets of the Findings section that do
+// not open with a pass marker - rather than prefix-coupled. The second return
+// reports whether a Findings section was found at all.
+func extractPlanAuditFindings(final string) ([]string, bool) {
+	var findings []string
+	for _, m := range planAuditFindingsRe.FindAllStringSubmatch(final, -1) {
+		findings = append(findings, m[1])
+	}
+	head := strings.LastIndex(strings.ToLower(final), "findings")
+	tail := strings.Index(final, "Audit Result")
+	if head < 0 || tail < 0 || tail < head {
+		return findings, false
+	}
+	for _, line := range strings.Split(final[head:tail], "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "* ") {
+			continue
+		}
+		t := strings.TrimSpace(strings.TrimLeft(trimmed, "-* "))
+		lower := strings.ToLower(t)
+		isPass := false
+		for _, p := range planAuditPassPrefixes {
+			if strings.HasPrefix(lower, p) {
+				isPass = true
+				break
+			}
+		}
+		if !isPass {
+			dup := false
+			for _, f := range findings {
+				if f == t {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				findings = append(findings, t)
+			}
+		}
+	}
+	return findings, true
+}
+
 // planAuditModelFor is the model the independent plan auditor runs on: its
 // own instance when the caller built one (pinned sampling, separate failover
 // state), else the producer's. Named rule, same shape as auditModelFor.
@@ -379,11 +435,34 @@ func runPlanAuditor(ctx context.Context, in Input, plan, question string) []stri
 		zap.Int("output_bytes", len(final)),
 		zap.String("output", final))
 	var findings []string
-	for _, m := range planAuditFindingsRe.FindAllStringSubmatch(final, -1) {
-		findings = append(findings, m[1])
+	verdict := ""
+	if m := planAuditVerdictRe.FindStringSubmatch(final); m != nil {
+		verdict = m[1]
 	}
-	if len(findings) == 0 {
-		common.InfoCtx(ctx, "agentic_rag: plan audit passed - no findings")
+	if section, _ := extractPlanAuditFindings(final); len(section) > 0 {
+		findings = section
+	}
+	switch {
+	case len(findings) > 0 && verdict == "PASS":
+		// The verdict line says PASS while the findings list names defects:
+		// a self-contradicting audit. The findings are the concrete claims -
+		// honor them, loudly, so the wording drift of the verdict line does
+		// not silently downgrade a reported defect.
+		common.WarnCtx(ctx, "agentic_rag: plan audit verdict says PASS but findings are listed - honoring the findings",
+			zap.Int("findings", len(findings)))
+	case len(findings) == 0 && verdict == "FAIL":
+		// The audit failed the plan but wrote its findings in a shape the
+		// parser cannot read. Swallowing the verdict would ship a plan the
+		// auditor itself rejected - send the repair path a synthetic finding
+		// instead (the planner re-examines; the auditor re-runs on the
+		// revised plan).
+		common.WarnCtx(ctx, "agentic_rag: plan audit verdict FAIL without machine-readable findings - sending the plan back")
+		findings = []string{"the audit returned FAIL without finding lines in a machine-readable shape - " +
+			"re-examine the plan against the question clause by clause and fix every wording that adds, " +
+			"weakens or drops a restriction, then restate the plan"}
+	case len(findings) == 0:
+		common.InfoCtx(ctx, "agentic_rag: plan audit passed - no findings",
+			zap.String("verdict", verdict))
 	}
 	return findings
 }

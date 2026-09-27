@@ -110,3 +110,47 @@ func TestExtractPlan(t *testing.T) {
 		t.Fatalf("a plan without the header must resolve to nothing, got %q", q)
 	}
 }
+
+// The plan auditor's verdict line is the authoritative signal, and its
+// findings may be worded outside the fixed `suspect:` prefix (the auditor has
+// flagged drift as `c4 paraphrase drift: ...` and structure as `Block 7
+// ...violates ...`). The parse must catch those, keep `pass` bullets out, and
+// read the verdict - a FAIL swallowed as "no findings" ships a plan the
+// auditor itself rejected.
+func TestPlanAuditFindingsParsing(t *testing.T) {
+	verdictShaped := "## Findings\n\n" +
+		"- INVENTED: c22 concatenates every attribute into one conjunctive constraint\n" +
+		"- Block 7 violates the fewer-blocks rule: it adds no new attribute\n" +
+		"- c4 paraphrase drift: \"a lot of\" for \"many\"\n" +
+		"- pass (all clauses mapped)\n" +
+		"- pass (no INVENTED constraints)\n\n" +
+		"Audit Result: FAIL (6 suspects)"
+	findings, ok := extractPlanAuditFindings(verdictShaped)
+	if !ok {
+		t.Fatal("a Findings section must be detected")
+	}
+	if len(findings) != 3 {
+		t.Fatalf("want the 3 defect bullets, got %d: %q", len(findings), findings)
+	}
+	if m := planAuditVerdictRe.FindStringSubmatch(verdictShaped); m == nil || m[1] != "FAIL" {
+		t.Fatalf("verdict not read as FAIL: %q", m)
+	}
+	passShaped := "## Findings\n\n" +
+		"- pass (every question clause carried)\n" +
+		"- No UNMAPPED clause.\n" +
+		"- No INVENTED constraint.\n\n" +
+		"Audit Result: PASS"
+	findings, _ = extractPlanAuditFindings(passShaped)
+	if len(findings) != 0 {
+		t.Fatalf("a passing audit must yield no findings, got %q", findings)
+	}
+	if m := planAuditVerdictRe.FindStringSubmatch(passShaped); m == nil || m[1] != "PASS" {
+		t.Fatalf("verdict not read as PASS: %q", m)
+	}
+	// The old fixed-prefix sweep still lands through the section parse.
+	fixed := "Findings\n- suspect: title mirror defect in block 3\n\nAudit Result: FAIL"
+	findings, _ = extractPlanAuditFindings(fixed)
+	if len(findings) != 1 || !strings.Contains(findings[0], "title mirror") {
+		t.Fatalf("fixed-prefix finding lost: %q", findings)
+	}
+}
