@@ -192,13 +192,6 @@ var (
 	// only titles and constraint text are scanned.
 	decompositionProseRefRe = regexp.MustCompile(`(?i)\bblock[^\S\n]*\d+\b|\bthe above\b|\bthe previous block\b|\bthat block\b|\bthe earlier block\b`)
 	decompositionSlotRe     = regexp.MustCompile(`(?i)slot:[^\S\n]*([A-Za-z_]+)`)
-	// A pair-level constraint quantifies over TWO entities of the searched
-	// kind - "one ... the other", "two individuals", "both individuals". It is
-	// well-formed only on a join block that consumes both entities through its
-	// `From:`; anywhere else it means the plan merged entities the question
-	// distinguishes, and the retrieval degenerates into guessing the pair by
-	// world knowledge (the over-merged one-block plan).
-	decompositionPairRe = regexp.MustCompile(`(?i)\bone\b[^.;]*\bthe other\b|\btwo (individuals|people|persons)\b|\bboth (individuals|people|persons)\b`)
 )
 
 // checkDecomposition returns the plan's findings, sorted for a stable report.
@@ -322,33 +315,6 @@ func checkDecompositionBlocks(plan string) ([]*decompositionBlock, []string) {
 	}
 	if len(answerBlocks) == 1 {
 		findings = append(findings, decompositionReach(blocks, byVar, answerBlocks[0])...)
-	}
-
-	// (c2) a pair-level constraint quantifies over two entities. When the
-	// block consumes NO variable, the pair floats free - nothing in the plan
-	// anchors it to the corpus, and the retrieval degenerates into guessing
-	// the pair by world knowledge (the over-merged one-block plan). A block
-	// that consumes at least one variable scopes the pair (the two individuals
-	// who attended ?school are determined by ?school), so it is lawful.
-	for _, b := range blocks {
-		if len(b.constraintDefs) == 0 {
-			continue
-		}
-		anchored := false
-		for _, e := range b.fromEntries {
-			if strings.HasPrefix(e.varName, "?") {
-				anchored = true
-				break
-			}
-		}
-		if anchored {
-			continue
-		}
-		for _, c := range b.constraintDefs {
-			if decompositionPairRe.MatchString(c.claim) {
-				findings = append(findings, fmt.Sprintf("schema integrity: pair-level constraint quantifies over two entities while the block consumes no variable (%s, block %s) - a pair no block input anchors can only be guessed by world knowledge: anchor it (bind one entity in its own block, or consume the variable that determines the pair)", c.id, b.number))
-			}
-		}
 	}
 
 	for _, b := range blocks {

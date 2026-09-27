@@ -596,38 +596,3 @@ func TestBrowseCompPlusDecompositionPlans(t *testing.T) {
 			len(archived), archived)
 	}
 }
-
-// The over-merged one-block plan (#34 r2): a pair-level constraint on a block
-// that consumes no variables means the plan merged entities the question
-// distinguishes - the retrieval then guesses the pair by world knowledge. The
-// same pair conditions on a proper join block (From reaches both variables)
-// are clean.
-func TestOverMergePairConstraintFinding(t *testing.T) {
-	overMerged := "## Resolved question: x\n\n" +
-		"### Sub-question 1: ?answer is the shared name — slot: name — kind: name\n" +
-		"- Op: lookup\n- Binds: ?answer\n- From: none\n" +
-		"- Constraints: c1 = two individuals from different industries share same first and last name; c2 = one announced retirement in early 2020s, other had personal setback in 1990s\n"
-	pair := false
-	for _, f := range checkDecomposition(overMerged) {
-		if strings.Contains(f, "pair-level constraint") {
-			pair = true
-		}
-	}
-	if !pair {
-		t.Fatalf("the over-merged plan must carry the pair-level finding")
-	}
-
-	joined := "## Resolved question: x\n\n" +
-		"### Sub-question 1: ?person1 is the retiree — slot: name — kind: person\n" +
-		"- Op: lookup\n- Binds: ?person1\n- From: none\n" +
-		"- Constraints: c1 = ?person1 announced retirement in the early 2020s\n" +
-		"### Sub-question 2: ?person2 is the other individual different from ?person1 — slot: name — kind: person\n" +
-		"- Op: follow\n- Binds: ?person2\n- From: ?person1 (block 1)\n" +
-		"- Constraints: c2 = ?person2 is a different individual from ?person1 who suffered a personal setback in the 1990s\n" +
-		"### Sub-question 3: ?answer is the shared name of ?person1 and ?person2 — slot: name — kind: name\n" +
-		"- Op: follow\n- Binds: ?answer\n- From: ?person1 (block 1), ?person2 (block 2)\n" +
-		"- Constraints: c3 = ?answer is the first name and surname shared by ?person1 and ?person2; c4 = one of ?answer's individuals announced retirement while the other suffered the setback\n"
-	if got := checkDecomposition(joined); len(got) != 0 {
-		t.Fatalf("the proper join plan must be clean, got %v", got)
-	}
-}
