@@ -17,10 +17,11 @@
 package agentic_rag
 
 import (
+	"ragflow/internal/entity/models"
+
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
@@ -34,10 +35,19 @@ import (
 	"ragflow/internal/common"
 )
 
-// questionDecompositionTemplateID selects the decomposition agent from
-// conf/agentic_rag.yaml (tools: [check_decomposition]; content holds the
-// planner prompt with the worked examples).
-const questionDecompositionTemplateID = "question-decomposition"
+// plannerTemplateID selects the planner agent from conf/agentic_rag.yaml
+// (tools: [check_decomposition]; content holds the planner prompt with the
+// worked examples).
+const plannerTemplateID = "planner"
+
+// PlanAuditorTemplateID selects the independent plan auditor: a separate
+// agent that holds the question and the plan and audits the plan against the
+// question clause by clause. The planner auditing its own plan is structurally
+// blind to the defects it introduces - #36's self-review pruned four
+// discriminating clauses and its own clause mapping went blind with them -
+// while the one round the delivery-style grading was applied handed q875 its
+// first win. Exported: the chat pipeline builds the auditor's model instance.
+const PlanAuditorTemplateID = "plan_auditor"
 
 // decompositionNoPlanMarker is what the decomposition agent returns for a
 // purely conversational message - nothing that needs facts, so there is no
@@ -61,23 +71,26 @@ const decompositionMaxIterations = 20
 // sees the outcome.
 const decompositionMaxRepairRounds = 2
 
-// decompositionReviewRounds caps the self-review loop that follows a
-// mechanically clean plan: each round must output one verdict line per
-// checklist item (parsed here - a review without them is sent back), a FAIL
-// buys a rewrite re-checked by checkDecomposition, and the last mechanically
-// valid plan is the fallback when the budget is spent.
-const decompositionReviewRounds = 3
+// decompositionAuditRounds caps the audit-driven repair loop that follows a
+// mechanically clean plan: each round is one plan-auditor turn plus one
+// planner repair turn, and both are the cheapest turns in the pipeline - no
+// retrieval, no chunk reads, a few KB of prompt - while the plan is the
+// single input the explorer, the auditor and the delivery gate all work
+// from. Eight audits beat one shipped plan that drops clauses: the budget is
+// deliberately generous because the stage's tokens cost a fraction of the
+// explorer's.
+const decompositionAuditRounds = 8
 
 // decompositionPlanHeadRe finds the first block heading in the agent's final
 // message: the plan is everything from there down (the agent may fence the
 // plan or prefix one short line; the trailing fence is trimmed).
 var decompositionPlanHeadRe = regexp.MustCompile(`(?m)^### Sub-question`)
 
-// NewQuestionDecompositionAgent builds the stage-one agent: same construction
+// NewPlannerAgent builds the stage-one agent: same construction
 // as the answer auditor (a standalone ChatModelAgent over its own template),
 // with one difference - its toolset holds ONLY the checker, because the one
 // thing this stage must never do is retrieve.
-func NewQuestionDecompositionAgent(
+func NewPlannerAgent(
 	ctx context.Context,
 	model einocommon.BaseChatModel,
 	tenantID string,
@@ -85,7 +98,7 @@ func NewQuestionDecompositionAgent(
 	question string,
 	toolDurations *durationAccumulator,
 ) (*adk.ChatModelAgent, error) {
-	tmpl, err := resolveTemplateFor(questionDecompositionTemplateID)
+	tmpl, err := resolveTemplateFor(plannerTemplateID)
 	if err != nil {
 		return nil, fmt.Errorf("question decomposition: %w", err)
 	}
@@ -174,7 +187,7 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 	if strings.TrimSpace(question) == "" {
 		return "", false
 	}
-	agent, err := NewQuestionDecompositionAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
+	agent, err := NewPlannerAgent(ctx, in.Model, in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
 	if err != nil {
 		common.WarnCtx(ctx, "agentic_rag: question-decomposition agent unavailable", zap.Error(err))
 		return "", false
@@ -186,7 +199,7 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 
 	directive := "Decompose the question pinned in your instructions."
 	plan := ""
-	for round := 0; round <= decompositionMaxRepairRounds; round++ {
+	for round := 0; round <= decompositionMaxRepairRounds+decompositionAuditRounds; round++ {
 		input := []adk.Message{schema.UserMessage(directive)}
 		if round == 0 && len(prior) > 0 {
 			// A multi-turn conversation: the turns before the current question
@@ -225,181 +238,144 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 		}
 		findings := checkDecomposition(plan)
 		if len(findings) == 0 {
-			common.InfoCtx(ctx, "agentic_rag: question-decomposition verified",
-				zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
-			return reviewDecompositionPlan(ctx, in, conv, agent, plan), false
+			// Mechanically clean is not yet audited: the independent plan
+			// auditor holds the resolved question and walks it clause by
+			// clause, so a clause the planner dropped or pruned surfaces as
+			// UNMAPPED - the defect class the self-review was structurally
+			// blind to (#36: the self-review itself pruned c7-c10 and its own
+			// mapping went blind with them). Findings ride back to the
+			// planner as the next directive; the loop budget is generous
+			// because plan-stage turns are the cheapest in the pipeline.
+			auditedQuestion := extractResolvedQuestion(plan)
+			if auditedQuestion == "" {
+				auditedQuestion = question
+			}
+			audited := runPlanAuditor(ctx, in, plan, auditedQuestion)
+			if len(audited) == 0 {
+				common.InfoCtx(ctx, "agentic_rag: question-decomposition verified",
+					zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
+				return plan, false
+			}
+			common.WarnCtx(ctx, "agentic_rag: plan audit reported findings",
+				zap.Int("round", round+1), zap.Strings("findings", audited))
+			directive = "The independent plan auditor reports:\n- " + strings.Join(audited, "\n- ") +
+				"\n\nFix every finding and return ONLY the corrected plan."
+			continue
 		}
 		common.WarnCtx(ctx, "agentic_rag: question-decomposition plan failed the mechanical check",
 			zap.Int("round", round+1), zap.Strings("findings", findings))
 		directive = "check_decomposition reports:\n- " + strings.Join(findings, "\n- ") +
 			"\n\nFix every finding and return ONLY the corrected plan."
 	}
+	common.WarnCtx(ctx, "agentic_rag: question-decomposition audit budget exhausted - keeping the last mechanically valid plan")
 	return plan, false
 }
 
-// reviewDecompositionPlan runs the self-review loop over a plan that already
-// passes the mechanical check, and returns the plan to pin.
-//
-// conv and agent MUST be the same conversation and agent the writing and
-// repair rounds ran: the session history lives in (store, id), not in the
-// Runner, and threading both through here is what lets the review re-read the
-// plan it just wrote, the checker findings it already saw, and the turns that
-// produced them - the same continuity the explorer's repair turns and the
-// auditor's cross-pass session rely on. A fresh agent or store would blind
-// the review to its own history.
-//
-// The mechanical check holds no copy of the question, so the defects it cannot
-// see are exactly the ones no later stage can see either: #28 shipped a plan
-// that had dropped one of the question's discriminating clauses (#27's plan
-// carried it), and the explorer, the auditor and the checker all worked from
-// the plan as written. The planner itself is the only component that still has
-// the question in hand, so the review is a pass over its own plan against the
-// principles in its instructions (see "The review round" in the
-// question-decomposition template).
-//
-// A review is only as good as it is auditable: each round must output ONE
-// verdict line per checklist item (`1. PASS - ...` / `1. FAIL - ...`), and the
-// verdict block is parsed HERE - a round with missing verdicts is sent back
-// (a rubber-stamp review is indistinguishable from no review), a round with
-// FAILs buys a rewrite, and every rewritten plan is re-run through the
-// mechanical check before it can replace the current one. The loop runs until
-// every item passes or the budget is spent; the last mechanically valid plan
-// is the fallback on every failure path.
-func reviewDecompositionPlan(ctx context.Context, in Input, conv *conversation, agent *adk.ChatModelAgent, plan string) string {
-	current := plan
-	directive := "## Review round\n\nRe-read the plan you just wrote against the checklist titled " +
-		"\"The review round\" in your instructions. Item 1 is answered with the full clause mapping - " +
-		"one line per clause of the resolved question, `clause <n>: <clause> -> c<k> (block <m>)` or " +
-		"`-> UNMAPPED` - placed BEFORE the verdict lines. Output the mapping, then one verdict line " +
-		"per checklist item in order - `1. PASS - <the clauses or blocks you checked>` or `1. FAIL - " +
-		"<what fails, and the exact clause of the question it concerns>` - all six; THEN the plan, " +
-		"rewritten where an item failed and unchanged where all held."
-	for round := 1; round <= decompositionReviewRounds; round++ {
-		iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage(directive)})
-		final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
-		if err != nil {
-			conv.discardFailedTurn(ctx, conv.head(ctx))
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review round failed", zap.Error(err))
-			return current
-		}
-		verdicts, reviewed := splitReviewOutput(final)
-		if reviewed == "" {
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review returned no plan - keeping the current plan")
-			return current
-		}
-		// Item 1's mapping is the clause-coverage audit trail: one line per
-		// clause of the resolved question, `-> c<k>` when a block carries it,
-		// `-> UNMAPPED` when none does. #32 q875 shipped a plan that dropped
-		// three of the question's discriminating clauses (the 1990s setback,
-		// the USA-born-or-not pair, the USA residence) while the review's
-		// verdict lines all said PASS - a walk-through verdict cannot catch
-		// what it never enumerates. So the mapping is enforced on both ends:
-		// missing entirely, the review is not auditable; UNMAPPED lines are
-		// dropped clauses confessed, and a verdict claiming PASS over them is
-		// a self-contradiction. Either way the round is sent back to fix the
-		// plan, until the budget runs out (then the last valid plan stays).
-		verdictBlock := final[:strings.Index(final, "### Sub-question")]
-		unmapped := strings.Count(verdictBlock, "-> UNMAPPED")
-		mapped := len(clauseMapRe.FindAllString(verdictBlock, -1))
-		if unmapped > 0 {
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review mapping names UNMAPPED clauses",
-				zap.Int("round", round), zap.Int("unmapped_clauses", unmapped))
-			directive = "Your clause mapping carries " + strconv.Itoa(unmapped) +
-				" `-> UNMAPPED` line(s) - clauses of the resolved question that no block carries. " +
-				"Put each one into the block whose variable it discriminates, or into a " +
-				"`filter`/`verify` block of its own, re-verify with `check_decomposition`, then " +
-				"output the updated mapping, the six verdict lines and the corrected plan."
-			current = reviewed
-			continue
-		}
-		if mapped == 0 {
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review carried no clause mapping",
-				zap.Int("round", round))
-			directive = "The review is not auditable without the item-1 clause mapping: one line per " +
-				"clause of the resolved question, `clause <n>: <clause> -> c<k> (block <m>)` or " +
-				"`-> UNMAPPED`, placed before the verdict lines. Output the mapping, the six " +
-				"verdict lines, then the plan."
-			current = reviewed
-			continue
-		}
-		if findings := checkDecomposition(reviewed); len(findings) > 0 {
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review broke the mechanical check",
-				zap.Int("round", round), zap.Strings("findings", findings))
-			directive = "check_decomposition reports:\n- " + strings.Join(findings, "\n- ") +
-				"\n\nFix every finding, then output the six verdict lines and the corrected plan."
-			continue
-		}
-		missing, fails := auditReviewVerdicts(verdicts)
-		if len(missing) > 0 {
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review verdicts incomplete",
-				zap.Int("round", round), zap.Int("found", len(verdicts)), zap.Strings("missing", missing))
-			directive = "The review is not auditable without one verdict line per checklist item. Output " +
-				"all six verdict lines - `N. PASS - <what you checked>` or `N. FAIL - <what fails>` - " +
-				"then the plan."
-			current = reviewed
-			continue
-		}
-		if len(fails) > 0 {
-			common.WarnCtx(ctx, "agentic_rag: question-decomposition review reported failures",
-				zap.Int("round", round), zap.Strings("fails", fails))
-			directive = "Your review reported failures:\n- " + strings.Join(fails, "\n- ") +
-				"\n\nRewrite the plan so every item passes, re-verify it with `check_decomposition`, " +
-				"then output the six verdict lines and the corrected plan."
-			current = reviewed
-			continue
-		}
-		common.InfoCtx(ctx, "agentic_rag: question-decomposition review accepted",
-			zap.Int("round", round), zap.Int("verdicts", len(verdicts)),
-			zap.Bool("revised", reviewed != current), zap.Int("plan_bytes", len(reviewed)))
-		return reviewed
+// NewPlanAuditorAgent builds the independent plan auditor: a separate agent
+// that holds the resolved question and the plan and audits the plan against
+// the question clause by clause (see the plan_auditor template). It is a
+// different agent from the planner on purpose - the planner auditing its own
+// plan is structurally blind to the defects it introduces: #36's self-review
+// pruned four discriminating clauses (c7-c10) and its own clause mapping went
+// blind with them, so the plan shipped without the question's second half.
+// It owns the checker so its mechanical claims are grounded in the same tool
+// the planner used, and it never rewrites - findings only.
+func NewPlanAuditorAgent(
+	ctx context.Context,
+	model einocommon.BaseChatModel,
+	tenantID string,
+	datasetIDs []string,
+	question string,
+	plan string,
+	toolDurations *durationAccumulator,
+) (*adk.ChatModelAgent, error) {
+	tmpl, err := resolveTemplateFor(PlanAuditorTemplateID)
+	if err != nil {
+		return nil, fmt.Errorf("plan auditor: %w", err)
 	}
-	common.WarnCtx(ctx, "agentic_rag: question-decomposition review budget exhausted - keeping the last mechanically valid plan")
-	return current
+	tools := toolsFor(tmpl, tenantID, datasetIDs)
+	if toolDurations != nil {
+		wrapped := make([]tool.BaseTool, len(tools))
+		for i, t := range tools {
+			if it, ok := t.(tool.InvokableTool); ok {
+				wrapped[i] = &instrumentedTool{InvokableTool: it, acc: toolDurations}
+			} else {
+				wrapped[i] = t
+			}
+		}
+		tools = wrapped
+	}
+	cfg := &adk.ChatModelAgentConfig{
+		Name:        tmpl.ID,
+		Description: tmpl.Description,
+		// Both artifacts pinned: the resolved question the mapping walks and
+		// the plan the mapping walks it against.
+		Instruction:      tmpl.Content + "\n\n## Resolved question under audit\n\n" + question + "\n\n## The plan under audit\n\n" + plan,
+		Model:            model,
+		MaxIterations:    decompositionAuditMaxIterations,
+		ModelRetryConfig: agentModelRetryConfig(),
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools:               tools,
+				ExecuteSequentially: false,
+			},
+		},
+	}
+	agent, err := adk.NewChatModelAgent(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("plan auditor: build agent: %w", err)
+	}
+	return agent, nil
 }
 
-// reviewVerdictRe matches one review verdict line: `N. PASS - ...` or
-// `N. FAIL - ...` for checklist items 1-6.
-var reviewVerdictRe = regexp.MustCompile(`(?m)^\s*([1-6])\.\s*(PASS|FAIL)\b`)
+// decompositionAuditMaxIterations bounds the plan auditor's own ReAct loop:
+// it reads the two pinned artifacts, optionally re-runs the checker to ground
+// a mechanical claim, and emits the mapping and findings. Four leaves room
+// for a duplicate call and a re-check.
+const decompositionAuditMaxIterations = 4
 
-// clauseMapRe matches one item-1 clause-mapping line: `clause <n>: <the
-// clause verbatim> -> c<k> (block <m>)` (or `-> UNMAPPED`). The mapping is
-// the clause-coverage audit trail the review round must open with.
-var clauseMapRe = regexp.MustCompile(`(?im)^\s*\**clause\s*\d+\**\s*:`)
+// planAuditFindingsRe extracts one finding line from the plan auditor's
+// output: `- UNMAPPED clause: ...` / `- suspect: ...`. `pass` items and the
+// Audit Result line are shaped out of the pattern.
+var planAuditFindingsRe = regexp.MustCompile(`(?m)^\s*-\s+(UNMAPPED clause:.*|INVENTED constraint:.*|suspect: .*)$`)
 
-// splitReviewOutput separates the review's verdict block (everything before
-// the first `### Sub-question` heading) from the plan, and returns the
-// verdict lines that name a checklist item.
-func splitReviewOutput(final string) ([]string, string) {
-	i := strings.Index(final, "### Sub-question")
-	if i < 0 {
-		return nil, ""
+// planAuditModelFor is the model the independent plan auditor runs on: its
+// own instance when the caller built one (pinned sampling, separate failover
+// state), else the producer's. Named rule, same shape as auditModelFor.
+func planAuditModelFor(in Input) *models.EinoChatModel {
+	if in.PlanAuditModel != nil {
+		return in.PlanAuditModel
 	}
-	var verdicts []string
-	for _, m := range reviewVerdictRe.FindAllStringSubmatch(final[:i], -1) {
-		verdicts = append(verdicts, m[1]+" "+m[2])
-	}
-	return verdicts, extractPlan(final)
+	return in.Model
 }
 
-// auditReviewVerdicts checks the verdict block for completeness (all six
-// checklist items decided) and for open failures. It returns the missing item
-// numbers and the failing item numbers.
-func auditReviewVerdicts(verdicts []string) (missing, fails []string) {
-	decided := map[string]string{}
-	for _, v := range verdicts {
-		parts := strings.SplitN(v, " ", 2)
-		decided[parts[0]] = parts[1]
+// runPlanAuditor audits the plan with the independent plan auditor and
+// returns its findings - empty when the audit passes. An audit outage must
+// not cost the run its plan: on error or unreadable output the fallback is
+// the plan as written (nil findings), the same contract as every other
+// audit-failure path in the pipeline.
+func runPlanAuditor(ctx context.Context, in Input, plan, question string) []string {
+	agent, err := NewPlanAuditorAgent(ctx, planAuditModelFor(in), in.TenantID, in.DatasetIDs, question, plan, in.ToolCallDurations)
+	if err != nil {
+		common.WarnCtx(ctx, "agentic_rag: plan auditor unavailable", zap.Error(err))
+		return nil
 	}
-	for n := 1; n <= 6; n++ {
-		item := strconv.Itoa(n)
-		v, ok := decided[item]
-		if !ok {
-			missing = append(missing, "item "+item)
-		} else if v == "FAIL" {
-			fails = append(fails, "item "+item)
-		}
+	// A private conversation per audit: the auditor sees the two pinned
+	// artifacts and nothing of the planner's session.
+	store := session.NewInMemoryStore[adk.Message](nil)
+	conv := newConversation("plan-audit", store)
+	iter := conv.runner(ctx, agent, false).Run(ctx, []adk.Message{schema.UserMessage("Audit the plan pinned in your instructions.")})
+	final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
+	if err != nil {
+		conv.discardFailedTurn(ctx, conv.head(ctx))
+		common.WarnCtx(ctx, "agentic_rag: plan auditor run failed", zap.Error(err))
+		return nil
 	}
-	return missing, fails
+	var findings []string
+	for _, m := range planAuditFindingsRe.FindAllStringSubmatch(final, -1) {
+		findings = append(findings, m[1])
+	}
+	return findings
 }
 
 // runConversationalReply answers a purely conversational message WITHOUT the

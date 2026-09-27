@@ -64,6 +64,12 @@ type Input struct {
 	// instance's cached last error must not flow between the two. Nil falls
 	// back to Model.
 	AuditModel *models.EinoChatModel
+	// PlanAuditModel, when non-nil, is the model the independent plan auditor
+	// runs on: same reasoning as AuditModel (the plan_auditor template pins
+	// 0.1 — its findings are machine-parsed and each sampled FAIL burns a
+	// repair turn), separate failover state for the same reason. Nil falls
+	// back to Model.
+	PlanAuditModel *models.EinoChatModel
 	// Messages are the conversation history plus the current user message —
 	// one turn per Run. The next user input is the NEXT Run (AsyncChat is
 	// re-entered per request), so the history the caller passes in must

@@ -50,9 +50,9 @@ func TestQuestionDecompositionStageWiring(t *testing.T) {
 		cachedFile = nil
 		configMu.Unlock()
 	})
-	tmpl, err := resolveTemplateFor(questionDecompositionTemplateID)
+	tmpl, err := resolveTemplateFor(plannerTemplateID)
 	if err != nil {
-		t.Fatalf("the question-decomposition template is missing: %v", err)
+		t.Fatalf("the planner template is missing: %v", err)
 	}
 	if len(tmpl.Tools) != 1 || tmpl.Tools[0] != "check_decomposition" {
 		t.Fatalf("the decomposition stage must own exactly the checker, got %v", tmpl.Tools)
