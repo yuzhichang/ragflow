@@ -250,7 +250,7 @@ func runDecompositionStage(ctx context.Context, in Input) (string, bool) {
 			if auditedQuestion == "" {
 				auditedQuestion = question
 			}
-			audited := runPlanAuditor(ctx, in, plan, auditedQuestion)
+			audited := runPlanAuditor(ctx, in, plan, auditedQuestion, question)
 			if len(audited) == 0 {
 				common.InfoCtx(ctx, "agentic_rag: question-decomposition verified",
 					zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
@@ -285,7 +285,8 @@ func NewPlanAuditorAgent(
 	model einocommon.BaseChatModel,
 	tenantID string,
 	datasetIDs []string,
-	question string,
+	resolved string,
+	original string,
 	plan string,
 	toolDurations *durationAccumulator,
 ) (*adk.ChatModelAgent, error) {
@@ -308,9 +309,12 @@ func NewPlanAuditorAgent(
 	cfg := &adk.ChatModelAgentConfig{
 		Name:        tmpl.ID,
 		Description: tmpl.Description,
-		// Both artifacts pinned: the resolved question the mapping walks and
-		// the plan the mapping walks it against.
-		Instruction:      tmpl.Content + "\n\n## Resolved question under audit\n\n" + question + "\n\n## The plan under audit\n\n" + plan,
+		// All three artifacts pinned: the caller's ORIGINAL question (the
+		// completeness witness - a constraint tracing to it while the
+		// resolved line carries nothing means the RESOLUTION dropped a
+		// clause), the resolved question the mapping walks, and the plan the
+		// mapping walks it against.
+		Instruction:      tmpl.Content + "\n\n## The caller's original question\n\n" + original + "\n\n## Resolved question under audit\n\n" + resolved + "\n\n## The plan under audit\n\n" + plan,
 		Model:            model,
 		MaxIterations:    decompositionAuditMaxIterations,
 		ModelRetryConfig: agentModelRetryConfig(),
@@ -343,6 +347,13 @@ var planAuditFindingsRe = regexp.MustCompile(`(?m)^\s*-\s+(UNMAPPED clause:.*|IN
 // signal the template requires it to end with (`Audit Result: PASS|FAIL`).
 // The findings bullets are the detail; the verdict is the contract.
 var planAuditVerdictRe = regexp.MustCompile(`(?mi)^\s*\**\s*Audit Result:\s*\**\s*(PASS|FAIL)\b`)
+
+// planAuditSelfRefutingRe matches an UNMAPPED finding line that retracts
+// itself: the auditor's own annotation says a constraint covers the clause
+// (`- UNMAPPED clause: "X" - no block carries it — not present, c2 covers it`).
+// The line asserts opposite things in its two halves; a PASS verdict over
+// such lines is the auditor walking its mapping aloud.
+var planAuditSelfRefutingRe = regexp.MustCompile(`(?i)unmapped clause.*not present.*covers`)
 
 // planAuditPassPrefixes are the openings a Findings bullet may use to record
 // a check that held rather than a defect.
@@ -410,8 +421,8 @@ func planAuditModelFor(in Input) *models.EinoChatModel {
 // not cost the run its plan: on error or unreadable output the fallback is
 // the plan as written (nil findings), the same contract as every other
 // audit-failure path in the pipeline.
-func runPlanAuditor(ctx context.Context, in Input, plan, question string) []string {
-	agent, err := NewPlanAuditorAgent(ctx, planAuditModelFor(in), in.TenantID, in.DatasetIDs, question, plan, in.ToolCallDurations)
+func runPlanAuditor(ctx context.Context, in Input, plan, resolved, original string) []string {
+	agent, err := NewPlanAuditorAgent(ctx, planAuditModelFor(in), in.TenantID, in.DatasetIDs, resolved, original, plan, in.ToolCallDurations)
 	if err != nil {
 		common.WarnCtx(ctx, "agentic_rag: plan auditor unavailable", zap.Error(err))
 		return nil
@@ -441,6 +452,25 @@ func runPlanAuditor(ctx context.Context, in Input, plan, question string) []stri
 	}
 	if section, _ := extractPlanAuditFindings(final); len(section) > 0 {
 		findings = section
+	}
+	if verdict == "PASS" && len(findings) > 0 {
+		// A PASS verdict over self-refuting UNMAPPED lines (each line's own
+		// annotation says a constraint covers the clause) is the auditor
+		// walking its mapping aloud, not reporting defects: the retracted
+		// lines are dropped, and only findings that survive the retraction
+		// keep the round alive.
+		kept := make([]string, 0, len(findings))
+		for _, f := range findings {
+			if planAuditSelfRefutingRe.MatchString(f) {
+				continue
+			}
+			kept = append(kept, f)
+		}
+		if len(kept) < len(findings) {
+			common.WarnCtx(ctx, "agentic_rag: plan audit verdict PASS over self-refuting UNMAPPED lines - dropping the retracted findings",
+				zap.Int("dropped", len(findings)-len(kept)), zap.Int("kept", len(kept)))
+			findings = kept
+		}
 	}
 	switch {
 	case len(findings) > 0 && verdict == "PASS":

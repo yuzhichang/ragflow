@@ -153,4 +153,14 @@ func TestPlanAuditFindingsParsing(t *testing.T) {
 	if len(findings) != 1 || !strings.Contains(findings[0], "title mirror") {
 		t.Fatalf("fixed-prefix finding lost: %q", findings)
 	}
+	// A self-refuting UNMAPPED line (the annotation says a constraint covers
+	// the clause) is recognized, so a PASS verdict over such lines is not
+	// read as defects.
+	retracted := "- UNMAPPED clause: \"born in the first decade\" - no block carries it — not present, c1 covers it"
+	if !planAuditSelfRefutingRe.MatchString(retracted) {
+		t.Fatalf("self-refuting UNMAPPED line not recognized: %q", retracted)
+	}
+	if planAuditSelfRefutingRe.MatchString("- UNMAPPED clause: \"born in the first decade\" - no block carries it") {
+		t.Fatal("a genuine UNMAPPED line must not match the retraction pattern")
+	}
 }
