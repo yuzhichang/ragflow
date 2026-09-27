@@ -237,7 +237,13 @@ func checkDecompositionBlocks(plan string) ([]*decompositionBlock, []string) {
 			findings = append(findings, fmt.Sprintf("schema integrity: block header is missing (Binds, block %s)", b.number))
 			continue
 		}
-		byVar[b.binds] = append(byVar[b.binds], b)
+		// The registry is keyed CASE-INSENSITIVELY: variable names are unique
+		// plan-wide regardless of case (?PersonA and ?personA are the same
+		// variable), and every consumer looks the name up lower-cased - a
+		// mixed-case bind (?personA) registered raw was invisible to every
+		// consumer, which read as "consumed variable is never bound" and made
+		// every block unreachable.
+		byVar[strings.ToLower(b.binds)] = append(byVar[strings.ToLower(b.binds)], b)
 		if strings.EqualFold(b.binds, "?answer") {
 			answerBlocks = append(answerBlocks, b)
 		}

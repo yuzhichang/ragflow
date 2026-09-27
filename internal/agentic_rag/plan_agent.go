@@ -233,6 +233,15 @@ func runPlanStage(ctx context.Context, in Input) (string, bool) {
 		final, _, err := consumeAgentEvents(ctx, iter, func(string, string) {}, in.ToolCallCounts, nil, nil)
 		if err != nil {
 			conv.discardFailedTurn(ctx, conv.head(ctx))
+			if plan != "" {
+				// A mid-stage failure (e.g. the model exhausting its
+				// iteration cap while polishing the draft against the
+				// checker) must not erase the stage's work: the last
+				// readable draft still goes through the audit loop, where
+				// the plan auditor and the repair path do the converging.
+				common.WarnCtx(ctx, "agentic_rag: plan stage run failed - falling back to the last readable draft", zap.Error(err))
+				break
+			}
 			common.WarnCtx(ctx, "agentic_rag: plan stage run failed", zap.Error(err))
 			return "", false
 		}
