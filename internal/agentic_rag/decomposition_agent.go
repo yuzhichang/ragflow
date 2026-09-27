@@ -372,12 +372,12 @@ func runPlanAuditor(ctx context.Context, in Input, plan, question string) []stri
 		return nil
 	}
 	// The auditor's full output - mapping, grounding, findings - is the only
-	// record of WHY a plan was sent back, so it lands in the debug log whole
-	// (truncated for the common case; RAGFLOW_LOG_FULL_TOOL_RESULTS keeps it
-	// whole for a diagnosis).
+	// record of WHY a plan was sent back, and it is a few KB at most: it
+	// lands in the debug log WHOLE, never truncated - a cut mapping is an
+	// unreadable mapping.
 	common.DebugCtx(ctx, "agentic_rag: plan auditor output",
 		zap.Int("output_bytes", len(final)),
-		zap.String("output", loggable(final, 900)))
+		zap.String("output", final))
 	var findings []string
 	for _, m := range planAuditFindingsRe.FindAllStringSubmatch(final, -1) {
 		findings = append(findings, m[1])
