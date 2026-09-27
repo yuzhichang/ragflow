@@ -144,6 +144,12 @@ type Input struct {
 	// this ledger, not the matrix. The delivery gate hands it to the auditor
 	// as the read_search_ledger tool.
 	Searches *searchLedger
+	// Serves, when non-nil, records every chunk the retrieval tools put in
+	// front of the model, keyed by chunk id with the document it belongs to.
+	// The delivery gate diffs it against the deep-read set: documents that
+	// were served but never deep-read are exactly the candidates a failed
+	// chain never looked at.
+	Serves *servedLedger
 	// GateAudit, when non-nil, is filled by the delivery gate with the
 	// answer auditor's per-round suspect accounting (see GateAuditRecord).
 	// Benchmarks report it next to ToolCallCounts to show how much audit
@@ -512,6 +518,83 @@ func (l *searchLedger) Add(tool, args string) {
 	})
 }
 
+// servedLedger records the documents the retrieval tools served to the model
+// at locate time (one Add per served chunk, deduplicated by document). The
+// delivery gate diffs it against the deep-read document set (RetrievedDocIDs,
+// filled only by full-content tools): a served document that never reached a
+// deep read is a candidate the chain never actually looked at - the evidence a
+// failing chain must re-open before its failure is honest.
+type servedLedger struct {
+	mu   sync.Mutex
+	docs map[string]struct{}
+}
+
+// NewServedLedger returns an empty served ledger for one run.
+func NewServedLedger() *servedLedger {
+	return &servedLedger{docs: map[string]struct{}{}}
+}
+
+// Add records one served document (the benchmark's file stem).
+func (l *servedLedger) Add(docID string) {
+	if l == nil || docID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.docs[docID] = struct{}{}
+}
+
+// Docs returns the sorted ids of every served document.
+func (l *servedLedger) Docs() []string {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, 0, len(l.docs))
+	for d := range l.docs {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// servedUnreadDocs returns the served documents that were never deep-read:
+// the served set minus the deep-read set. These are the candidates a failing
+// chain never actually looked at - the evidence its failure must re-open.
+func servedUnreadDocs(served *servedLedger, deepDocs *docIDLedger) []string {
+	if served == nil {
+		return nil
+	}
+	deep := map[string]struct{}{}
+	for _, d := range deepDocs.Snapshot() {
+		deep[d] = struct{}{}
+	}
+	var out []string
+	for _, d := range served.Docs() {
+		if _, read := deep[d]; !read {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// servedLedgerContextKey carries one run's served ledger through the
+// context the tools execute under.
+type servedLedgerContextKey struct{}
+
+// withServedLedger returns ctx carrying the run's served ledger.
+func withServedLedger(ctx context.Context, l *servedLedger) context.Context {
+	return context.WithValue(ctx, servedLedgerContextKey{}, l)
+}
+
+// servedLedgerFrom returns the run's served ledger, or nil when the context
+// carries none (a caller that built its own context for a probe).
+func servedLedgerFrom(ctx context.Context) *servedLedger {
+	l, _ := ctx.Value(servedLedgerContextKey{}).(*servedLedger)
+	return l
+}
+
 // Count returns the number of recorded actions.
 func (l *searchLedger) Count() int {
 	if l == nil {
@@ -867,6 +950,14 @@ func Run(ctx context.Context, in Input) (string, error) {
 	if in.Searches == nil {
 		in.Searches = NewSearchLedger()
 	}
+	if in.Serves == nil {
+		in.Serves = NewServedLedger()
+	}
+
+	// The serve ledger rides the context: every retrieval tool's serve point
+	// records what it put in front of the model, so the delivery gate can
+	// diff served documents against the deep-read set.
+	ctx = withServedLedger(ctx, in.Serves)
 
 	// Stage one: the planner writes the block plan and
 	// has it verified BEFORE the explorer runs, so planning is never left
@@ -1070,6 +1161,8 @@ func Run(ctx context.Context, in Input) (string, error) {
 		toolCallCounts: in.ToolCallCounts,
 		reads:          in.ChunkReads,
 		searches:       in.Searches,
+		serves:         in.Serves,
+		deepDocs:       in.RetrievedDocIDs,
 		audit:          in.GateAudit,
 	})
 	if runErr != nil && gateFinal != preGateFinal {
@@ -1362,6 +1455,14 @@ type deliveryGateInput struct {
 	// payload as the nudge that tells the auditor a read_search_ledger call
 	// has facts to verify coverage judgements against.
 	searches *searchLedger
+	// serves is the run's served ledger (Input.Serves) - every chunk the
+	// retrieval tools put in front of the model, with its document. Diffed
+	// against deepDocs at audit time: documents served but never deep-read.
+	serves *servedLedger
+	// deepDocs is the run's deep-read document set (Input.RetrievedDocIDs,
+	// filled only by full-content tools) - the read half the served ledger is
+	// diffed against.
+	deepDocs *docIDLedger
 	// audit, when non-nil, receives the per-round suspect accounting of every
 	// audit this gate runs (see GateAuditRecord).
 	audit *GateAuditRecord
@@ -1483,7 +1584,8 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				zap.String("gate_answer_label", answerLbl),
 				zap.String("deliverable_tail", lastNonBlankLine(final)))
 			var err error
-			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts, in.searches)
+			unread := servedUnreadDocs(in.serves, in.deepDocs)
+			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts, in.searches, unread)
 			if err != nil {
 				// The auditor itself failed (LLM timeout, tool outage).
 				// Retrying inside this request rarely helps; fall through to
@@ -1848,11 +1950,12 @@ func gateRunAudit(
 	final string,
 	toolCallCounts map[string]int,
 	searches *searchLedger,
+	unreadDocs []string,
 ) (string, error) {
 	if auditor == nil {
 		return "", fmt.Errorf("agentic_rag: auditor unavailable")
 	}
-	payload := buildAuditPayload(final, searches)
+	payload := buildAuditPayload(final, searches, unreadDocs)
 	common.WarnCtx(ctx, "agentic_rag: gate-run audit start",
 		zap.String("payload", payload))
 	// The auditor's INPUT and OUTPUT at full length, debug only: the tail of both is

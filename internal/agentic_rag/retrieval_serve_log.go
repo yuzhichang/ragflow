@@ -81,6 +81,14 @@ func servedChunkFields(ctx context.Context, tool, query string, hit snippetHit) 
 // logServedChunks writes one debug line per served chunk (a no-op unless the
 // logger runs at debug level).
 func logServedChunks(ctx context.Context, tool, query string, hits []snippetHit) {
+	// The served ledger rides the context: record every served chunk with its
+	// document so the delivery gate can name the documents a failing chain
+	// never deep-read.
+	if l := servedLedgerFrom(ctx); l != nil {
+		for _, hit := range hits {
+			l.Add(docNameStem(hit.chunk.DocumentName))
+		}
+	}
 	if len(hits) == 0 {
 		return
 	}

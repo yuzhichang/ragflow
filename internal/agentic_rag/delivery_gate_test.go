@@ -70,7 +70,7 @@ func TestBuildAuditPayload(t *testing.T) {
 		"- Clue: Bob signed in 1897 (doc: a.md, doc_id: d1, chunk_id: c1, snippet: \"...\")\n" +
 		"Final Answer: **1897**\n"
 
-	p := buildAuditPayload(final, nil)
+	p := buildAuditPayload(final, nil, nil)
 	var decoded auditPayload
 	if err := json.Unmarshal([]byte(p), &decoded); err != nil {
 		t.Fatalf("buildAuditPayload produced invalid JSON: %v\n%s", err, p)
@@ -96,7 +96,7 @@ func TestBuildAuditPayload(t *testing.T) {
 	// A deliverable with no label states that by OMITTING the label, not by
 	// carrying a separate "there is no answer line" field: the auditor reads
 	// the answer's absence off final_message itself.
-	bare := buildAuditPayload("just prose, with no answer line at all", nil)
+	bare := buildAuditPayload("just prose, with no answer line at all", nil, nil)
 	if keys := payloadKeys(t, bare); len(keys) != 1 || !keys["final_message"] {
 		t.Errorf("an unlabelled deliverable must carry final_message alone, got %v", keys)
 	}
@@ -117,7 +117,7 @@ func payloadKeys(t *testing.T, payload string) map[string]bool {
 }
 
 func TestBuildAuditPayloadEmptyFinal(t *testing.T) {
-	p := buildAuditPayload("", nil)
+	p := buildAuditPayload("", nil, nil)
 	var decoded auditPayload
 	if err := json.Unmarshal([]byte(p), &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
@@ -205,7 +205,7 @@ func TestGateRunAuditReturnsVerdict(t *testing.T) {
 	fake := &fakeAuditorAgent{verdict: "## Reasoning Chain\n- Clue: x\n  - audit: pass\nFinal Answer: **1**\n  - audit: pass\nAudit Result: PASS"}
 
 	verdict, err := gateRunAudit(context.Background(), fake, newTestConversation(),
-		"Final Answer: **1897**", nil, NewSearchLedger())
+		"Final Answer: **1897**", nil, NewSearchLedger(), nil)
 	if err != nil {
 		t.Fatalf("gateRunAudit error: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestRunDeliveryGateRejectsBareAnswerLine(t *testing.T) {
 func TestGateRunAuditNilAuditorErrors(t *testing.T) {
 	// Must return an error (not panic) when the auditor is unavailable.
 	if _, err := gateRunAudit(context.Background(), nil, newTestConversation(),
-		"Final Answer: **1897**", nil, NewSearchLedger()); err == nil {
+		"Final Answer: **1897**", nil, NewSearchLedger(), nil); err == nil {
 		t.Fatal("gateRunAudit with a nil auditor should error")
 	}
 }
