@@ -518,20 +518,21 @@ func (l *searchLedger) Add(tool, args string) {
 	})
 }
 
-// servedLedger records the documents the retrieval tools served to the model
-// at locate time (one Add per served chunk, deduplicated by document). The
-// delivery gate diffs it against the deep-read document set (RetrievedDocIDs,
-// filled only by full-content tools): a served document that never reached a
-// deep read is a candidate the chain never actually looked at - the evidence a
-// failing chain must re-open before its failure is honest.
+// servedLedger records the documents the retrieval tools served to the model,
+// counting how many serve events each document appeared in. The delivery gate
+// diffs it against the deep-read document set (RetrievedDocIDs, filled only by
+// full-content tools) and reports the documents that kept surfacing - served
+// repeatedly - and were never opened: those are the candidates a failing chain
+// never looked at. A document served once in a passing sweep is noise; one the
+// retrieval kept returning is a candidate.
 type servedLedger struct {
 	mu   sync.Mutex
-	docs map[string]struct{}
+	docs map[string]int // document stem -> serve events
 }
 
 // NewServedLedger returns an empty served ledger for one run.
 func NewServedLedger() *servedLedger {
-	return &servedLedger{docs: map[string]struct{}{}}
+	return &servedLedger{docs: map[string]int{}}
 }
 
 // Add records one served document (the benchmark's file stem).
@@ -541,27 +542,40 @@ func (l *servedLedger) Add(docID string) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.docs[docID] = struct{}{}
+	l.docs[docID]++
 }
 
-// Docs returns the sorted ids of every served document.
+// Docs returns the served documents, most-served first (ties broken by id).
 func (l *servedLedger) Docs() []string {
 	if l == nil {
 		return nil
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := make([]string, 0, len(l.docs))
-	for d := range l.docs {
-		out = append(out, d)
+	type pair struct {
+		id string
+		n  int
 	}
-	sort.Strings(out)
+	var ps []pair
+	l.mu.Lock()
+	for d, n := range l.docs {
+		ps = append(ps, pair{d, n})
+	}
+	l.mu.Unlock()
+	sort.Slice(ps, func(i, j int) bool {
+		if ps[i].n != ps[j].n {
+			return ps[i].n > ps[j].n
+		}
+		return ps[i].id < ps[j].id
+	})
+	out := make([]string, 0, len(ps))
+	for _, x := range ps {
+		out = append(out, x.id)
+	}
 	return out
 }
 
-// servedUnreadDocs returns the served documents that were never deep-read:
-// the served set minus the deep-read set. These are the candidates a failing
-// chain never actually looked at - the evidence its failure must re-open.
+// servedUnreadDocs returns the served documents that were never deep-read and
+// that the retrieval kept surfacing (at least servedUnreadMinServes serve
+// events), capped: these are the candidates a failing chain never opened.
 func servedUnreadDocs(served *servedLedger, deepDocs *docIDLedger) []string {
 	if served == nil {
 		return nil
@@ -570,13 +584,24 @@ func servedUnreadDocs(served *servedLedger, deepDocs *docIDLedger) []string {
 	for _, d := range deepDocs.Snapshot() {
 		deep[d] = struct{}{}
 	}
-	var out []string
+	const (
+		servedUnreadMinServes = 2
+		servedUnreadMaxDocs   = 10
+	)
+	unread := []string{}
 	for _, d := range served.Docs() {
-		if _, read := deep[d]; !read {
-			out = append(out, d)
+		if _, read := deep[d]; read {
+			continue
+		}
+		if served.docs[d] < servedUnreadMinServes {
+			continue
+		}
+		unread = append(unread, d)
+		if len(unread) == servedUnreadMaxDocs {
+			break
 		}
 	}
-	return out
+	return unread
 }
 
 // servedLedgerContextKey carries one run's served ledger through the
