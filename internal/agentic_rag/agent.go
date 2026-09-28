@@ -801,6 +801,10 @@ type instrumentedTool struct {
 	// locate calls and, when the meaning-based leg is held but never called,
 	// appends one reminder to the tool result the model is about to read.
 	watch *locateWatch
+	// unread is the run's served-unread watchdog (see served_unread_watch.go):
+	// when documents pile up served-but-never-read, it names them on the tool
+	// result the model is about to read.
+	unread *servedUnreadWatch
 }
 
 // toolOutputDocNameRe pulls the document names out of the XML every retrieval
@@ -914,6 +918,10 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 			out += "\n" + nudge
 			fields = append(fields, zap.Int("locate_watchdog", 1))
 		}
+		if nudge := t.unread.observe(name); nudge != "" {
+			out += "\n" + nudge
+			fields = append(fields, zap.Int("served_unread_watchdog", 1))
+		}
 	}
 	if err != nil {
 		fields = append(fields, zap.Error(err))
@@ -1025,15 +1033,13 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// context reaches the auditor, so both agents run with the same
 		// capability.
 		tools = append(tools, webSearchTools(ctx)...)
-		// The search ledger is injected, never declared: the template's tool
-		// list describes the corpus toolset, and the run's append-only
-		// ledger is per-run state the explorer reads through
-		// read_search_ledger - the lead-consumption duty (check what the
-		// searches already surfaced before re-anchoring) is executable only
-		// if the ledger is in the explorer's hand, not just the auditor's.
-		if in.Searches != nil {
-			tools = append(tools, NewReadSearchLedgerTool(in.Searches))
-		}
+		// The search ledger tool stays OUT of the explorer's toolset,
+		// deliberately: given the tool, the measured runs never called it
+		// (zero read_search_ledger calls across #39's three runs), so the
+		// wiring only advertised a capability the model would not reach for.
+		// The served-unread watchdog carries the same information into the
+		// loop instead - it reads the ledger mechanically and names the
+		// leads on the tool result the model is already looking at.
 		// The audited question is pinned into the auditor's system prompt, so
 		// it is built for THIS run's question.
 		if auditMaxPass > 0 {
@@ -1066,6 +1072,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// holds it, so availability is established while the tools are wrapped —
 	// before the model can call anything (see locate_watch.go).
 	watch := newLocateWatch()
+	unreadWatch := newServedUnreadWatch(in.Serves, in.RetrievedDocIDs)
 	wrapped := make([]tool.BaseTool, len(tools))
 	for i, t := range tools {
 		if it, ok := t.(tool.InvokableTool); ok {
@@ -1079,6 +1086,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 				chunks:        in.ChunkReads,
 				searches:      in.Searches,
 				watch:         watch,
+				unread:        unreadWatch,
 			}
 		} else {
 			wrapped[i] = t
