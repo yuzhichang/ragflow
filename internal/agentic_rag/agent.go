@@ -201,6 +201,13 @@ type GateAuditRecord struct {
 	// apart from Rejections so a benchmark can tell "cited evidence I never read"
 	// from "no deliverable at all".
 	UnreadCitations int `json:"unread_citations,omitempty"`
+	// ChainBreaks counts the deliverables the gate refused because a
+	// Survivors line filled a downstream variable while an upstream `From`
+	// dependency still read empty, or the answer filler traced to no upstream
+	// set - the "look ahead, then come back" discipline enforced mechanically
+	// (see survivorsChainBreaks). Recorded apart from Rejections so a
+	// benchmark can tell a chain-order failure from other refusals.
+	ChainBreaks int `json:"chain_breaks,omitempty"`
 	// AuditVerdicts holds an excerpt of EVERY audit verdict, oldest first, in
 	// step with Suspects. The counts alone say a curve moved 5→3→1→0 but never
 	// WHAT was contested, so a failure could only be explained by re-reading the
@@ -1205,6 +1212,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 		searches:       in.Searches,
 		serves:         in.Serves,
 		deepDocs:       in.RetrievedDocIDs,
+		planBody:       planBody,
 		audit:          in.GateAudit,
 	})
 	if runErr != nil && gateFinal != preGateFinal {
@@ -1394,6 +1402,14 @@ func countUnreadCitation(audit *GateAuditRecord) {
 	}
 }
 
+// countChainBreak records a deliverable refused for a Survivors chain-order
+// violation. See GateAuditRecord.ChainBreaks.
+func countChainBreak(audit *GateAuditRecord) {
+	if audit != nil {
+		audit.ChainBreaks++
+	}
+}
+
 func countGateAuditFailure(audit *GateAuditRecord) {
 	if audit != nil {
 		audit.AuditFailures++
@@ -1505,6 +1521,11 @@ type deliveryGateInput struct {
 	// filled only by full-content tools) - the read half the served ledger is
 	// diffed against.
 	deepDocs *docIDLedger
+	// planBody is the stage-one plan without its resolved-question line - the
+	// structural fact (each block's Binds/From edges) the Survivors chain
+	// check walks. It is already in scope at the gate's call site, so this
+	// costs nothing to carry.
+	planBody string
 	// audit, when non-nil, receives the per-round suspect accounting of every
 	// audit this gate runs (see GateAuditRecord).
 	audit *GateAuditRecord
@@ -1602,7 +1623,23 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 					zap.Int("pass", pass+1), zap.Strings("unread_chunk_ids", unread))
 			}
 		}
-		if strings.TrimSpace(final) != "" && unreadDirective == "" {
+		// Survivors chain integrity, beside the citation grounding: the plan's
+		// From edges are structural facts, so a downstream set standing on an
+		// empty upstream slot is mechanical, not prose - refusing here buys
+		// the repair turn before the audit spends its budget on evidence the
+		// producer must replace anyway (see survivors_chain.go).
+		chainDirective := ""
+		if strings.TrimSpace(final) != "" && in.planBody != "" {
+			if blocks, _ := checkDecompositionBlocks(in.planBody); len(blocks) > 0 {
+				if breaks := survivorsChainBreaks(final, blocks); len(breaks) > 0 {
+					countChainBreak(in.audit)
+					chainDirective = survivorsChainDirective(breaks)
+					common.WarnCtx(ctx, "agentic_rag: delivery gate refused the deliverable — Survivors chain order broken",
+						zap.Int("pass", pass+1), zap.Strings("breaks", breaks))
+				}
+			}
+		}
+		if strings.TrimSpace(final) != "" && unreadDirective == "" && chainDirective == "" {
 			// The gate audits the deliverable it actually holds — audit-target
 			// freshness is structural, not tracked. The question lives in the
 			// auditor's system prompt, so the payload carries the deliverable
