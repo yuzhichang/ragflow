@@ -784,7 +784,13 @@
       "1262",
       "1263",
       "1264",
-      "1266"
+      "1266",
+      "161",
+      "487",
+      "835",
+      "1019",
+      "1185",
+      "1211"
     ],
     "passed_suspicious_judge": [
       "78",
@@ -802,19 +808,16 @@
       "25",
       "109",
       "156",
-      "161",
       "322",
       "350",
       "362",
       "418",
-      "487",
       "490",
       "507",
       "513",
       "655",
       "710",
       "716",
-      "835",
       "870",
       "875",
       "883",
@@ -829,12 +832,9 @@
       "999",
       "1004",
       "1005",
-      "1019",
       "1150",
       "1164",
-      "1185",
       "1193",
-      "1211",
       "1213",
       "1249",
       "1265"
@@ -3274,5 +3274,13 @@
     "6bbee637f279454f8c065f6a11a8e71b",
     "f0ce03c2833141979782fd20aa57cb61",
     "f237a7ddb5b2473fb10c7f66bc1278bb"
-  ]
+  ],
+  "question_notes": {
+    "161": "RE-RUN 2026-09-28 (c2_smoke44_reval_20260928, full mechanism stack git 3d6a5601c) -> passed （原 failed_retrieval_strategy）: strict judge 判对（leaderboard per_query_judgements, correct=true）",
+    "487": "RE-RUN 2026-09-28 (c2_smoke44_reval_20260928, full mechanism stack git 3d6a5601c) -> passed （原 failed_retrieval_strategy）: strict judge 判对（leaderboard per_query_judgements, correct=true）",
+    "835": "RE-RUN 2026-09-28 (c2_smoke44_reval_20260928, full mechanism stack git 3d6a5601c) -> passed （原 failed_retrieval_strategy）: strict judge 判对（leaderboard per_query_judgements, correct=true）",
+    "1019": "RE-RUN 2026-09-28 (c2_smoke44_reval_20260928, full mechanism stack git 3d6a5601c) -> passed （原 failed_retrieval_strategy）: strict judge 判对（leaderboard per_query_judgements, correct=true）",
+    "1185": "RE-RUN 2026-09-28 (c2_smoke44_reval_20260928, full mechanism stack git 3d6a5601c) -> passed （原 failed_retrieval_strategy）: strict judge 判对（leaderboard per_query_judgements, correct=true）",
+    "1211": "RE-RUN 2026-09-28 (c2_smoke44_reval_20260928, full mechanism stack git 3d6a5601c) -> passed （原 failed_retrieval_strategy）: strict judge 判对（leaderboard per_query_judgements, correct=true）"
+  }
 }
