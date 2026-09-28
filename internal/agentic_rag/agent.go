@@ -1025,6 +1025,15 @@ func Run(ctx context.Context, in Input) (string, error) {
 		// context reaches the auditor, so both agents run with the same
 		// capability.
 		tools = append(tools, webSearchTools(ctx)...)
+		// The search ledger is injected, never declared: the template's tool
+		// list describes the corpus toolset, and the run's append-only
+		// ledger is per-run state the explorer reads through
+		// read_search_ledger - the lead-consumption duty (check what the
+		// searches already surfaced before re-anchoring) is executable only
+		// if the ledger is in the explorer's hand, not just the auditor's.
+		if in.Searches != nil {
+			tools = append(tools, NewReadSearchLedgerTool(in.Searches))
+		}
 		// The audited question is pinned into the auditor's system prompt, so
 		// it is built for THIS run's question.
 		if auditMaxPass > 0 {
