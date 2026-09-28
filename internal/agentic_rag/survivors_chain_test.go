@@ -78,15 +78,29 @@ func TestSurvivorsChainAcceptsOrderedFill(t *testing.T) {
 	}
 }
 
-// The answer-provenance half: an answer filler no upstream set holds entered
-// from outside the run - named even when every slot is filled.
-func TestSurvivorsChainNamesOutsideAnswer(t *testing.T) {
+// A property-type answer (the institution where a person died) is a PROPERTY
+// of the upstream entity and never a member of any Survivors set - the
+// removed provenance check refused such correct deliverables ten passes in a
+// row (#42), so the order-only rule must leave it silent. The fill is in
+// chain order and every upstream slot is filled.
+func TestSurvivorsChainToleratesPropertyAnswer(t *testing.T) {
 	final := "## Candidate Matrix\n" +
-		"- Survivors: {?school: [St Sithians], ?attendee: [Kevin Anderson], ?twin: [Kevin B. Anderson], ?answer: [Steve McQueen]}"
-	blocks, _ := checkDecompositionBlocks(chainPlan)
-	got := survivorsChainBreaks(final, blocks)
-	if len(got) != 1 || !strings.Contains(got[0], "Steve McQueen") {
-		t.Fatalf("an outside answer filler must be named, got %q", got)
+		"- Survivors: {?person: [George Carlin], ?answer: [St. John's Health Center]}"
+	propertyPlan := `### Sub-question 1: ?person is the individual — slot: name — kind: person
+- Op: lookup
+- Binds: ?person
+- From: none
+- Constraints: c1 = ?person is the individual
+
+### Sub-question 2: ?answer is the institution where ?person died — slot: name — kind: institution
+- Op: follow
+- Binds: ?answer
+- From: ?person (block 1)
+- Constraints: c2 = ?answer is where ?person died
+`
+	blocks, _ := checkDecompositionBlocks(propertyPlan)
+	if got := survivorsChainBreaks(final, blocks); len(got) != 0 {
+		t.Fatalf("a property-type answer in chain order must not be flagged, got %q", got)
 	}
 }
 

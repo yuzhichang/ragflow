@@ -23,7 +23,16 @@ import (
 )
 
 // Survivors chain integrity: the mechanical half of the "look ahead, then
-// come back" discipline.
+// come back" discipline. Only the ORDER half is enforced here. An earlier
+// version also refused an answer filler that traced to no upstream Survivors
+// set ("entered from outside the run"); #42 measured that as a false-positive
+// generator - a property-type answer (the institution where a person died)
+// legitimately names a value that is a PROPERTY of the upstream entity and
+// never a member of any Survivors set, so the check refused correct
+// deliverables ten passes in a row and burned the audit budget. The
+// chain-outside-answer defect that motivated it is caught by the order rule
+// itself (the measured case had the downstream filled over an empty
+// upstream), so the provenance half is gone.
 //
 // A Survivors line is a structural artifact - a variable, a set - and the
 // plan's `From` edges are structural facts the stage-one check already
@@ -118,45 +127,6 @@ func survivorsChainBreaks(final string, blocks []*decompositionBlock) []string {
 		}
 	}
 
-	// 2) Chain provenance: every answer filler must trace to some other
-	// variable's set - a value no upstream slot holds entered from outside
-	// the run (world knowledge, an unanchored probe), not from the corpus.
-	answerVar := ""
-	for i, b := range blocks {
-		v := trimVar(b.binds)
-		if v == "" {
-			continue
-		}
-		if strings.EqualFold(v, "answer") {
-			answerVar = v
-			break
-		}
-		if i == len(blocks)-1 {
-			answerVar = v
-		}
-	}
-	for _, f := range sets[answerVar] {
-		lf := strings.ToLower(f)
-		traced := false
-		for u, fillers := range sets {
-			if u == answerVar {
-				continue
-			}
-			for _, g := range fillers {
-				lg := strings.ToLower(g)
-				if strings.Contains(lg, lf) || strings.Contains(lf, lg) {
-					traced = true
-					break
-				}
-			}
-			if traced {
-				break
-			}
-		}
-		if !traced {
-			add(fmt.Sprintf("the answer filler %q traces to no upstream Survivors set - it entered from outside the run", f))
-		}
-	}
 	return breaks
 }
 
@@ -168,7 +138,6 @@ func survivorsChainDirective(breaks []string) string {
 		"Fill a downstream variable only when every variable its block's `From` declares is already filled on " +
 		"the same Survivors line. The repair is to COME BACK: re-open the empty upstream block - re-sweep its " +
 		"relation with fresh wording, read the served-but-unread documents, add candidates to its ledger - and " +
-		"establish it first; a value that entered from outside the run is not a corpus finding and must be " +
-		"dropped, not kept. Then re-render the COMPLETE deliverable (`## Candidate Matrix`, `## Reasoning " +
+		"establish it first. Then re-render the COMPLETE deliverable (`## Candidate Matrix`, `## Reasoning " +
 		"Chain`, and the Final/Guessed Answer line) in this same turn."
 }
