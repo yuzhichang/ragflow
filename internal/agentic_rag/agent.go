@@ -201,6 +201,18 @@ type GateAuditRecord struct {
 	// apart from Rejections so a benchmark can tell "cited evidence I never read"
 	// from "no deliverable at all".
 	UnreadCitations int `json:"unread_citations,omitempty"`
+	// ModelKilledTurns counts the gate-loop turns (repair turns, audit rounds)
+	// that a model-chain failure killed outright — the failover chain exhausted
+	// every model on a 529/overload. It is the causal link between a question's
+	// failure and the provider: a FAIL record with ModelKilledTurns > 0 died to
+	// the model chain, not to the deliverable's content, and the run's row
+	// should be read as infrastructure-shaped even though it ships an answer.
+	ModelKilledTurns int `json:"model_killed_turns,omitempty"`
+	// LastModelKill carries the provider-facing reason of the most recent
+	// model-killed turn, so the run's own error can describe itself
+	// ("model failure killed 2 gate turn(s): provider overloaded (HTTP 529)")
+	// instead of the row reading like a content refusal.
+	LastModelKill string `json:"last_model_kill,omitempty"`
 	// ChainBreaks counts the deliverables the gate refused because a
 	// Survivors line filled a downstream variable while an upstream `From`
 	// dependency still read empty, or the answer filler traced to no upstream
@@ -1009,9 +1021,9 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// accounting as the explorer's. The stage is skipped for caller-owned
 	// toolsets (a different product shape, like the auditor) and for templates
 	// that do not decompose.
-	plan, conversational := "", false
+	plan, conversational, planStageErr := "", false, error(nil)
 	if in.TemplateID == "smart-reasoning" && len(in.Tools) == 0 {
-		plan, conversational = runPlanStage(ctx, in)
+		plan, conversational, planStageErr = runPlanStage(ctx, in)
 	}
 	if conversational {
 		// The stage classified the message as purely conversational: the
@@ -1154,6 +1166,14 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// (caller-owned toolsets, non-decomposing templates) legitimately have no
 	// plan and skip the message formatting below.
 	if plan == "" && in.TemplateID == "smart-reasoning" {
+		// The stage's own error rides along: a model-chain death (529
+		// overload exhausting the failover chain) makes the run error
+		// self-describing instead of a bare "returned no plan" (#44: 22
+		// such rows whose provider cause was buried in a rotated log).
+		if planStageErr != nil {
+			return "", fmt.Errorf("agentic_rag: plan stage returned no plan for question %q: %w",
+				lastUserQuestion(in.Messages), planStageErr)
+		}
 		return "", fmt.Errorf("agentic_rag: plan stage returned no plan for question %q", lastUserQuestion(in.Messages))
 	}
 	// The run's input, when the plan stage produced a plan, is ONE user
@@ -1200,7 +1220,7 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// process narration straight to the user (observed on q55, where one
 	// grep_chunks error aborted the loop right before the synthesis step).
 	preGateFinal := final
-	gateFinal, auditedFinal := runDeliveryGate(ctx, deliveryGateInput{
+	gateFinal, auditedFinal, gateModelErr := runDeliveryGate(ctx, deliveryGateInput{
 		explorer:       explorerAgent,
 		auditor:        auditorAgent,
 		sess:           sess,
@@ -1361,6 +1381,18 @@ func Run(ctx context.Context, in Input) (string, error) {
 	// settled on it. Everything the loop said on the way there already went
 	// out live as thinking, so the user watched the work without being handed
 	// several competing "Final Answer" blocks.
+	// Upper-layer check of turn-level errors — the ONE place model-caused
+	// turn deaths are attributed: a model failure that killed a gate turn
+	// (repair turn, audit round) surfaces into the run error, so the row's
+	// ragflow_error names the provider instead of reading like a content
+	// refusal (#44: 39 such rows). The gate certifying the answer clears it —
+	// a recovered run is degraded, not failed.
+	if gateModelErr != nil && (in.GateAudit == nil || !in.GateAudit.Passed) && runErr == nil {
+		runErr = fmt.Errorf("agentic_rag: %w", gateModelErr)
+		common.WarnCtx(ctx, "agentic_rag: model failure killed a gate turn — surfaced into the run error",
+			zap.Int("model_killed_turns", in.GateAudit.ModelKilledTurns),
+			zap.String("cause", in.GateAudit.LastModelKill), zap.Error(gateModelErr))
+	}
 	emit(ctx, in.OnDelta, final, "")
 	return final, runErr
 }
@@ -1394,7 +1426,50 @@ func countCitationGrounding(audit *GateAuditRecord) {
 	}
 }
 
-// countUnreadCitation records a deliverable refused for citing chunks the run
+// modelFailureRe recognizes the error shapes that mean the model chain — not
+// the content — failed a call: the failover layer's own verdicts (retries
+// exhausted, every model in the chain failed, cooldown short-circuit) and the
+// provider's overload response. #44's plan-stage deaths and repair-turn
+// aborts were all these shapes, and the question-level record carried none of
+// them (the gate loop swallowed the error and shipped the negative
+// declaration, so the row looked like a normal completion).
+var modelFailureRe = regexp.MustCompile(`exceeds max retries|failed on every model|short-circuited by failover cooldown|overloaded_error|status 529`)
+
+// modelFailure reports whether an error means the model chain, not the run's
+// content, failed the call.
+func modelFailure(err error) bool {
+	return err != nil && modelFailureRe.MatchString(err.Error())
+}
+
+// modelCause extracts the provider-facing reason from a model-failure error,
+// for the one-line record the question's failure carries. A non-model
+// failure has no model cause.
+func modelCause(err error) string {
+	if err == nil || !modelFailure(err) {
+		return ""
+	}
+	s := err.Error()
+	if m := regexp.MustCompile(`status (\d+)`).FindStringSubmatch(s); m != nil {
+		if strings.Contains(s, "overloaded_error") {
+			return fmt.Sprintf("provider overloaded (HTTP %s)", m[1])
+		}
+		return fmt.Sprintf("provider error (HTTP %s)", m[1])
+	}
+	return "model chain failure"
+}
+
+// countModelKilledTurn records a gate-loop turn (repair turn, audit round)
+// that a model-chain failure killed outright, with the provider-facing cause.
+// The attribution happens ONCE at the run's end (see Run's model-failure
+// record), never per turn.
+func countModelKilledTurn(audit *GateAuditRecord, cause string) {
+	if audit != nil {
+		audit.ModelKilledTurns++
+		audit.LastModelKill = cause
+	}
+}
+
+// countGateAuditFailure records a deliverable refused for citing chunks the run
 // never received. See GateAuditRecord.UnreadCitations.
 func countUnreadCitation(audit *GateAuditRecord) {
 	if audit != nil {
@@ -1548,9 +1623,15 @@ type deliveryGateInput struct {
 // one repair directive (full toolset, so repairs can list_chunks-read the
 // flagged steps). Nothing depends on the model choosing to call the auditor
 // — the audit never runs inside the agent, so compliance cannot be defied.
-func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string) {
+// runDeliveryGate drives the audit loop and returns the adopted final answer,
+// the deliverable the auditor last examined (auditedFinal), and the error of
+// the last gate turn a model-chain failure killed outright (nil when no turn
+// died to the provider) — the upper layer checks that error and surfaces it
+// into the run's own error, so a provider death is recorded AND
+// self-describing instead of reading like a content refusal (#44: 39 rows).
+func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string, error) {
 	if in.auditMaxPass <= 0 {
-		return in.final, ""
+		return in.final, "", nil
 	}
 	final := in.final
 	// auditedFinal: the deliverable the auditor last examined or was about to
@@ -1559,6 +1640,10 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 	// FOS answer line — an audit-failed but structured deliverable beats blind
 	// synthesis (see the finalizeAnswer gate in Run).
 	auditedFinal := final
+	// modelErr is the error of the last gate turn a model-chain failure killed
+	// outright (repair turn, audit round) — nil when none died to the
+	// provider. It rides back for the upper layer to check (#44 forensics).
+	modelErr := error(nil)
 	// The auditor's OWN conversation, threaded across passes: user payload ->
 	// (tool-call turns + verdict) -> next payload -> ... One continuous audit
 	// session means the auditor remembers its earlier opinions and the chunks
@@ -1594,7 +1679,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		if err := ctx.Err(); err != nil {
 			common.WarnCtx(ctx, "agentic_rag: delivery gate out of time",
 				zap.Int("pass", pass+1), zap.Error(err))
-			return final, auditedFinal
+			return final, auditedFinal, modelErr
 		}
 		// A blank deliverable cannot produce anything but the auditor's
 		// mechanical first opinion — `schema integrity: final_message is
@@ -1675,7 +1760,11 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 				countGateAuditFailure(in.audit)
 				common.WarnCtx(ctx, "agentic_rag: delivery gate audit failed",
 					zap.Int("pass", pass+1), zap.Error(err))
-				return final, auditedFinal
+				if modelFailure(err) {
+					countModelKilledTurn(in.audit, modelCause(err))
+					modelErr = fmt.Errorf("gate audit round: %w", err)
+				}
+				return final, auditedFinal, modelErr
 			}
 			// Per-round suspect accounting for benchmarks (Input.GateAudit):
 			// every audit is recorded, PASS rounds included — a PASS verdict
@@ -1817,6 +1906,13 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 					"different tool or a different query."), gateErr)
 				common.WarnCtx(ctx, "agentic_rag: delivery gate repair turn aborted",
 					zap.Int("pass", pass+1), zap.Error(gateErr))
+				// Silent accounting only: the model-caused death is recorded
+				// here and attributed ONCE, at the run's end, so the cause
+				// does not scatter across per-turn logs (#44 forensics).
+				if modelFailure(gateErr) {
+					countModelKilledTurn(in.audit, modelCause(gateErr))
+					modelErr = fmt.Errorf("gate repair turn: %w", gateErr)
+				}
 			}
 
 			// A repair attempt that aborted because the shared budget expired
@@ -1843,7 +1939,7 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string)
 		// Next pass re-audits whatever final now stands.
 	}
 
-	return final, auditedFinal
+	return final, auditedFinal, modelErr
 }
 
 // runRepairAttempt performs ONE explorer continuation for a repair directive,

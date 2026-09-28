@@ -17,9 +17,47 @@
 package agentic_rag
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+// The model-failure classifier is what lets the upper layer attribute a
+// turn's death to the provider: the shapes are the failover layer's own
+// verdicts and the provider's overload response, both measured in #44.
+func TestModelFailureClassification(t *testing.T) {
+	yes := []string{
+		"[NodeRunError] exceeds max retries: last error: models: EinoChatModel.Generate(MiniMax-M3): API request failed with status 529",
+		"models: eino generate failed on every model in the chain",
+		"models: eino generate short-circuited by failover cooldown",
+		`API request failed with status 529: {"type":"error","error":{"type":"overloaded_error"}}`,
+	}
+	for _, s := range yes {
+		if !modelFailure(errors.New(s)) {
+			t.Fatalf("must classify as model failure: %q", s[:60])
+		}
+	}
+	no := []string{
+		"plan stage returned no readable plan",
+		"delivery gate refused the deliverable — Survivors chain order broken",
+		"",
+	}
+	for _, s := range no {
+		if modelFailure(errors.New(s)) {
+			t.Fatalf("must NOT classify as model failure: %q", s[:60])
+		}
+	}
+	if modelFailure(nil) {
+		t.Fatal("nil error is not a model failure")
+	}
+	// The cause names the provider in the shape the row's error carries.
+	if got := modelCause(errors.New(`exceeds max retries: last error: status 529: {"error":{"type":"overloaded_error"}}`)); got != "provider overloaded (HTTP 529)" {
+		t.Fatalf("cause = %q", got)
+	}
+	if got := modelCause(errors.New("plan stage returned no readable plan")); got != "" {
+		t.Fatalf("a content failure has no model cause, got %q", got)
+	}
+}
 
 // chainPlan is a four-block chain: school -> attendee -> twin -> answer, each
 // consuming the previous variable - the shape the Survivors line must respect.

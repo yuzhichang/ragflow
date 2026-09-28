@@ -264,7 +264,7 @@ func TestRunDeliveryGateRetriesToolFailureWithoutReAuditing(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, audited := runDeliveryGate(context.Background(), in)
+	final, audited, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != 1 {
 		t.Errorf("audits = %d, want 1 - a failed repair must not trigger a re-audit", auditor.runs)
 	}
@@ -295,7 +295,7 @@ func TestRunDeliveryGateSkipsAuditWithoutBudget(t *testing.T) {
 		auditMaxPass: 0,
 	}
 
-	final, audited := runDeliveryGate(context.Background(), in)
+	final, audited, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != 0 || explorer.runs != 0 {
 		t.Errorf("audits = %d / repair turns = %d, want 0 each - no budget means no gate", auditor.runs, explorer.runs)
 	}
@@ -324,7 +324,7 @@ func TestRunDeliveryGateStopsAtTemplateBudget(t *testing.T) {
 		auditMaxPass: 3,
 	}
 
-	runDeliveryGate(context.Background(), in)
+	_, _, _ = runDeliveryGate(context.Background(), in)
 	if auditor.runs != 3 {
 		t.Errorf("audits = %d, want 3 - the template's budget, not a hardcoded ceiling", auditor.runs)
 	}
@@ -350,7 +350,7 @@ func TestRunDeliveryGateReAuditsAfterAdoptingRepair(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, _ := runDeliveryGate(context.Background(), in)
+	final, _, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != testAuditMaxPass {
 		t.Errorf("audits = %d, want auditMaxPass=%d (each adopted repair deserves a re-audit)",
 			auditor.runs, testAuditMaxPass)
@@ -375,7 +375,7 @@ func TestRunDeliveryGateStopsWhenSuspectsStall(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, _ := runDeliveryGate(context.Background(), in)
+	final, _, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != gateStallWindow {
 		t.Errorf("audits = %d, want gateStallWindow=%d - identical verdicts must not buy more passes",
 			auditor.runs, gateStallWindow)
@@ -408,7 +408,7 @@ func TestRunDeliveryGateGivesLowSuspectsNoExtraSlack(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, _ := runDeliveryGate(context.Background(), in)
+	final, _, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != gateStallWindow {
 		t.Errorf("audits = %d, want gateStallWindow=%d - low counts are cut as fast as high ones",
 			auditor.runs, gateStallWindow)
@@ -475,7 +475,7 @@ func TestRunDeliveryGateStallOnObservedFramesSequences(t *testing.T) {
 				auditMaxPass: testAuditMaxPass,
 			}
 
-			runDeliveryGate(context.Background(), in)
+			_, _, _ = runDeliveryGate(context.Background(), in)
 			if auditor.runs != tc.wantRuns {
 				t.Errorf("audits = %d, want %d (repair turns = %d)\nverdicts: %v",
 					auditor.runs, tc.wantRuns, explorer.runs, auditor.emitted)
@@ -504,7 +504,7 @@ func TestRunDeliveryGateStopsWhenSuspectsClimbBack(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, _ := runDeliveryGate(context.Background(), in)
+	final, _, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != 4 {
 		t.Errorf("audits = %d, want 4 - a count climbing back is not progress", auditor.runs)
 	}
@@ -529,7 +529,7 @@ func TestRunDeliveryGateRetriesNarrationWithoutReAuditing(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, _ := runDeliveryGate(context.Background(), in)
+	final, _, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != 1 {
 		t.Errorf("audits = %d, want 1 - a rejected continuation must not trigger a re-audit", auditor.runs)
 	}
@@ -582,7 +582,7 @@ func TestRunDeliveryGateStopsOnExpiredBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // budget gone
 
-	final, audited := runDeliveryGate(ctx, in)
+	final, audited, _ := runDeliveryGate(ctx, in)
 	if auditor.runs != 0 {
 		t.Errorf("audits = %d, want 0 - an expired budget must skip auditing", auditor.runs)
 	}
@@ -662,7 +662,7 @@ func TestRunDeliveryGateRejectsBareAnswerLine(t *testing.T) {
 		auditMaxPass: testAuditMaxPass,
 	}
 
-	final, _ := runDeliveryGate(context.Background(), in)
+	final, _, _ := runDeliveryGate(context.Background(), in)
 	if auditor.runs != 1 {
 		t.Errorf("audits = %d, want 1 - a bare answer line advances nothing", auditor.runs)
 	}

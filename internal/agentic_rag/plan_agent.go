@@ -190,16 +190,16 @@ func extractResolvedQuestion(plan string) string {
 // question is the last user message, and the turns before it are the context
 // a follow-up's references resolve against (priorTurns). No caller-side
 // splitting of in.Messages — the stage owns the reading of its input.
-func runPlanStage(ctx context.Context, in Input) (string, bool) {
+func runPlanStage(ctx context.Context, in Input) (string, bool, error) {
 	question := lastUserQuestion(in.Messages)
 	prior := priorTurns(in.Messages)
 	if strings.TrimSpace(question) == "" {
-		return "", false
+		return "", false, nil
 	}
 	agent, err := NewPlannerAgent(ctx, planStageModelFor(in), in.TenantID, in.DatasetIDs, question, in.ToolCallDurations)
 	if err != nil {
 		common.WarnCtx(ctx, "agentic_rag: plan stage planner unavailable", zap.Error(err))
-		return "", false
+		return "", false, nil
 	}
 	// The stage owns a private conversation: one planner session per Run, no
 	// history reuse (the explorer's session semantics do not apply here).
@@ -243,16 +243,20 @@ func runPlanStage(ctx context.Context, in Input) (string, bool) {
 				break
 			}
 			common.WarnCtx(ctx, "agentic_rag: plan stage run failed", zap.Error(err))
-			return "", false
+			// The death rides back as the return error: the upper layer
+			// (Run) checks it and makes the run's own error self-describing
+			// ("...: 529 overloaded"), instead of the row reading
+			// "returned no plan" with the cause buried here (#44's 22 rows).
+			return "", false, err
 		}
 		plan = extractPlan(final)
 		if plan == "" {
 			if strings.Contains(final, noPlanMarker) {
 				common.InfoCtx(ctx, "agentic_rag: plan stage skipped (conversational message)")
-				return "", true
+				return "", true, nil
 			}
 			common.WarnCtx(ctx, "agentic_rag: plan stage returned no readable plan")
-			return "", false
+			return "", false, nil
 		}
 		findings := checkDecomposition(plan)
 		if len(findings) == 0 {
@@ -272,7 +276,7 @@ func runPlanStage(ctx context.Context, in Input) (string, bool) {
 			if len(audited) == 0 {
 				common.InfoCtx(ctx, "agentic_rag: plan stage verified",
 					zap.Int("rounds", round+1), zap.Int("plan_bytes", len(plan)))
-				return plan, false
+				return plan, false, nil
 			}
 			common.WarnCtx(ctx, "agentic_rag: plan audit reported findings",
 				zap.Int("round", round+1), zap.Strings("findings", audited))
@@ -286,7 +290,7 @@ func runPlanStage(ctx context.Context, in Input) (string, bool) {
 			"\n\nFix every finding and return ONLY the corrected plan."
 	}
 	common.WarnCtx(ctx, "agentic_rag: plan stage audit budget exhausted - keeping the last mechanically valid plan")
-	return plan, false
+	return plan, false, nil
 }
 
 // NewPlanAuditorAgent builds the independent plan auditor: a separate agent

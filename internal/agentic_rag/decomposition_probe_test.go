@@ -127,7 +127,10 @@ func TestPlanStageProbe(t *testing.T) {
 				ToolCallCounts:    map[string]int{},
 				ToolCallDurations: NewDurationAccumulator(),
 			}
-			plan, conversational := runPlanStage(ctx, in)
+			plan, conversational, psErr := runPlanStage(ctx, in)
+			if psErr != nil {
+				t.Fatalf("plan stage error: %v", psErr)
+			}
 			if conversational {
 				t.Logf("stage one ruled the message conversational; no plan")
 				return
