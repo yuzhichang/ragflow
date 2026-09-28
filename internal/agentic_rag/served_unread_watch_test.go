@@ -24,9 +24,10 @@ import (
 // The served-unread watchdog turns the lead-consumption duty from a line in
 // the system prompt into a line on the tool result: documents served
 // repeatedly but never deep-read are named where the model is looking when it
-// decides what to query next. A deep read consumes the lead and re-arms the
-// watchdog; a pile below the threshold stays silent; so does a non-search
-// call.
+// decides what to query next. The reminder repeats on a cadence while the
+// pile stands - #40 showed a run opening unrelated documents by the dozen
+// while the named leads sat unread, so only the pile shrinking below the
+// threshold counts as progress and silences the watchdog.
 func TestServedUnreadWatch(t *testing.T) {
 	served := NewServedLedger()
 	deep := NewDocIDLedger()
@@ -43,46 +44,68 @@ func TestServedUnreadWatch(t *testing.T) {
 	}
 
 	// Three documents served repeatedly and never opened: the watchdog
-	// speaks, naming the stems, once.
+	// speaks on the cadence, naming the stems and the deep-read tool.
 	for _, d := range []string{"13204", "16606", "10509"} {
 		served.Add(d)
 		served.Add(d)
 		served.Add(d)
 	}
+	if got := w.observe(searchBm25ChunksToolName); got != "" {
+		t.Fatalf("the first search of the cadence must stay silent, got %q", got)
+	}
+	if got := w.observe(grepChunksToolName); got != "" {
+		t.Fatalf("the second search of the cadence must stay silent, got %q", got)
+	}
 	got := w.observe(searchBm25ChunksToolName)
 	if got == "" {
-		t.Fatal("a three-document unread pile must trigger the reminder")
+		t.Fatal("the third search must trigger the reminder")
 	}
-	for _, want := range []string{"10509", "list_chunks"} {
+	for _, want := range []string{"10509", "13204", "list_chunks"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("reminder must name the lead and the tools, got %q", got)
+			t.Fatalf("reminder must name the leads and the deep-read tool, got %q", got)
 		}
 	}
 
-	// One reminder per deep-read epoch: searches stay quiet until a lead is
-	// consumed.
-	if again := w.observe(grepChunksToolName); again != "" {
-		t.Fatalf("the same epoch must not be reminded twice, got %q", again)
+	// A deep read of an UNRELATED document is not progress: the pile stands,
+	// and the reminder returns on the next cadence tick.
+	deep.Add("99999")
+	if got := w.observe(listChunksToolName); got != "" {
+		t.Fatalf("a deep read must be silent in itself, got %q", got)
+	}
+	if got := w.observe(grepChunksToolName); got != "" {
+		t.Fatalf("cadence restart 1 must be silent, got %q", got)
+	}
+	if got := w.observe(grepChunksToolName); got != "" {
+		t.Fatalf("cadence restart 2 must be silent, got %q", got)
+	}
+	if got := w.observe(searchBm25ChunksToolName); got == "" || !strings.Contains(got, "10509") {
+		t.Fatalf("an unrelated read must not silence the watchdog, got %q", got)
 	}
 
-	// Opening one lead re-arms the watchdog, but the opened document leaves
-	// the pile and the remainder is below the threshold: silent.
+	// Opening one named lead shrinks the pile below the threshold: silence,
+	// and the cadence restarts from zero.
 	deep.Add("13204")
 	if got := w.observe(listChunksToolName); got != "" {
-		t.Fatalf("a deep read must be silent, got %q", got)
+		t.Fatalf("a deep read must be silent in itself, got %q", got)
 	}
-	if again := w.observe(grepChunksToolName); again != "" {
-		t.Fatalf("a pile below the threshold must stay silent, got %q", again)
+	for i := 0; i < 5; i++ {
+		if got := w.observe(grepChunksToolName); got != "" {
+			t.Fatalf("a consumed pile must stay silent (call %d), got %q", i+1, got)
+		}
 	}
 
-	// A fresh pile above the threshold is named again.
+	// A fresh pile above the threshold is named again on the cadence.
 	for _, d := range []string{"17061", "17062", "1756"} {
 		served.Add(d)
 		served.Add(d)
 		served.Add(d)
 	}
-	got = w.observe(searchSemanticChunksToolName)
-	if got == "" || !strings.Contains(got, "17061") {
+	for i := 0; i < 2; i++ {
+		if got := w.observe(searchBm25ChunksToolName); got != "" {
+			t.Fatalf("fresh-pile cadence %d must be silent, got %q", i+1, got)
+		}
+	}
+	if got := w.observe(searchSemanticChunksToolName); got == "" || !strings.Contains(got, "17061") {
 		t.Fatalf("a fresh pile must be named, got %q", got)
 	}
 

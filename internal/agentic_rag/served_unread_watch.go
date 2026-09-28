@@ -56,6 +56,14 @@ const (
 	// servedUnreadWatchMaxNamed caps how many stems the reminder names; the
 	// ledger tool holds the full list.
 	servedUnreadWatchMaxNamed = 5
+
+	// servedUnreadWatchEvery is how many search calls pass between reminders
+	// while the pile stands: #40's first firing re-armed on ANY deep read -
+	// the model opened unrelated documents and never heard of the named
+	// leads again. Progress here is the pile shrinking, not a read happening,
+	// so the reminder repeats on this cadence until the pile drops below the
+	// threshold.
+	servedUnreadWatchEvery = 3
 )
 
 // servedUnreadWatch is the per-run watchdog behind the reminder. One instance
@@ -66,10 +74,11 @@ type servedUnreadWatch struct {
 	mu     sync.Mutex
 	served *servedLedger
 	deep   *docIDLedger
-	// nudged marks that the current deep-read epoch has already heard the
-	// reminder. A deep read clears it: the run consumed a lead, and the next
-	// pile - if one forms - deserves a fresh mention.
-	nudged bool
+	// searchesSince counts search calls since the last reminder (or since
+	// the pile last dropped below the threshold). It is the reminder's
+	// cadence: while the pile stands, the model hears it every Nth search;
+	// a shrinking pile is progress and silences the watchdog.
+	searchesSince int
 }
 
 // newServedUnreadWatch returns the watchdog for one run. Nil ledgers (probe
@@ -118,23 +127,24 @@ func (w *servedUnreadWatch) observe(tool string) string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// A deep read is the run consuming a lead: whatever it found, the pile
-	// changed shape. Re-arm, stay quiet.
-	if tool == listChunksToolName {
-		w.nudged = false
-		return ""
-	}
+	// A deep read does not by itself reset anything: #40 showed a run
+	// opening unrelated documents by the dozen while the named leads sat
+	// unread. Only the pile shrinking below the threshold is progress.
 	if _, searching := locateWatchToolNames[tool]; !searching {
 		return ""
 	}
-	if w.nudged {
-		return ""
-	}
+	w.searchesSince++
 	unread := w.unreadRepeatedlyServed()
 	if len(unread) < servedUnreadWatchMinUnread {
+		// The pile is consumed (or not yet formed): silence, and the
+		// cadence restarts when a fresh pile forms.
+		w.searchesSince = 0
 		return ""
 	}
-	w.nudged = true
+	if w.searchesSince%servedUnreadWatchEvery != 0 {
+		return ""
+	}
+	w.searchesSince = 0
 	return "\n<served-unread-notice> The search results keep surfacing documents you have never opened: " +
 		strings.Join(unread, ", ") +
 		". These are leads - the corpus keeps returning them because they keep matching what you asked for. " +
