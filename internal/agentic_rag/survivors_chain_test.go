@@ -31,6 +31,7 @@ func TestModelFailureClassification(t *testing.T) {
 		"models: eino generate failed on every model in the chain",
 		"models: eino generate short-circuited by failover cooldown",
 		`API request failed with status 529: {"type":"error","error":{"type":"overloaded_error"}}`,
+		"[NodeRunError] models: EinoChatModel.Generate(MiniMax-M3): minimax API error: insufficient balance",
 	}
 	for _, s := range yes {
 		if !modelFailure(errors.New(s)) {
@@ -40,6 +41,8 @@ func TestModelFailureClassification(t *testing.T) {
 	no := []string{
 		"plan stage returned no readable plan",
 		"delivery gate refused the deliverable — Survivors chain order broken",
+		"[NodeRunError] run node[ChatModel] pre processor fail: exceeds max iterations",
+		"[GraphRunError] context has been canceled: context deadline exceeded",
 		"",
 	}
 	for _, s := range no {

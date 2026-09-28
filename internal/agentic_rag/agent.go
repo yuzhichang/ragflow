@@ -1428,12 +1428,15 @@ func countCitationGrounding(audit *GateAuditRecord) {
 
 // modelFailureRe recognizes the error shapes that mean the model chain — not
 // the content — failed a call: the failover layer's own verdicts (retries
-// exhausted, every model in the chain failed, cooldown short-circuit) and the
-// provider's overload response. #44's plan-stage deaths and repair-turn
-// aborts were all these shapes, and the question-level record carried none of
-// them (the gate loop swallowed the error and shipped the negative
-// declaration, so the row looked like a normal completion).
-var modelFailureRe = regexp.MustCompile(`exceeds max retries|failed on every model|short-circuited by failover cooldown|overloaded_error|status 529`)
+// exhausted, every model in the chain failed, cooldown short-circuit), the
+// provider's overload response, and the provider's balance exhaustion. #44's
+// plan-stage deaths and repair-turn aborts were all these shapes, and the
+// question-level record carried none of them (the gate loop swallowed the
+// error and shipped the negative declaration, so the row looked like a
+// normal completion). Shapes deliberately NOT matched: "exceeds max
+// iterations" (the agent's own ReAct cap) and wall-clock deadline deaths —
+// those are budget/cadence failures, not provider ones.
+var modelFailureRe = regexp.MustCompile(`exceeds max retries|failed on every model|short-circuited by failover cooldown|overloaded_error|status 529|insufficient balance`)
 
 // modelFailure reports whether an error means the model chain, not the run's
 // content, failed the call.
