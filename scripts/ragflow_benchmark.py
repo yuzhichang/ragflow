@@ -677,6 +677,9 @@ def _answer_phase_once(
     concurrency: int = 1,
 ) -> bool:
     """One dispatch round. Returns True when the quota breaker saw a wall."""
+    stripped = _strip_damaged_rows(answers_path)
+    if stripped:
+        print(f"[answers] resume: stripped {stripped} damaged row(s) (ragflow_error set); backup kept beside the file", flush=True)
     completed = {key for key, row in _read_jsonl_by_id(answers_path).items() if not (row.get("ragflow_error") or "").strip()}
     chat_cfg = cfg.get("ragflow_chat", {})
     shared_session_id = None
@@ -2786,6 +2789,43 @@ def _read_jsonl_by_id(path: Path) -> dict[str, dict[str, Any]]:
         if key is not None:
             keyed[key] = row
     return keyed
+
+
+def _strip_damaged_rows(path: Path) -> int:
+    """Drop every row whose ragflow_error is set, before a resume re-runs them.
+
+    A resume already retries damaged rows, but it does so by APPENDING a fresh
+    row for the same question id, so the file accumulates one dead row per
+    failed attempt and the good row hides among duplicates. Stripping here
+    keeps the file holding exactly one row per question: the good ones. A
+    timestamped backup is written beside the file before the rewrite, and a
+    file with no damaged rows is left untouched (no backup spam on clean
+    resumes). Rows the parser cannot read are treated as damaged and dropped.
+    """
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return 0
+    kept: list[str] = []
+    damaged = 0
+    for line in raw_lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            damaged += 1
+            continue
+        if not isinstance(row, dict) or (row.get("ragflow_error") or "").strip():
+            damaged += 1
+            continue
+        kept.append(line)
+    if damaged == 0:
+        return 0
+    backup = path.with_name(f"{path.name}.bak_strip_{time.strftime('%m%d_%H%M%S')}")
+    backup.write_text("\n".join(raw_lines) + ("\n" if raw_lines else ""), encoding="utf-8")
+    path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    return damaged
 
 
 def _resolve_path(value: str, base_dir: Path) -> Path:
