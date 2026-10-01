@@ -172,6 +172,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -2832,6 +2833,48 @@ def _read_jsonl_by_id(path: Path) -> dict[str, dict[str, Any]]:
     return keyed
 
 
+FINGERPRINT_NAME = "_prompt_fingerprint.json"
+
+
+def _record_run_provenance(output_dir: Path) -> str | None:
+    """Stamp the run's git commit into _prompt_fingerprint.json, once.
+
+    The archived rows must answer "what code produced them" without log
+    archaeology (the #46 regression review needed exactly that, and had to
+    reconstruct it from launch scripts). A fingerprint that already carries a
+    commit is left untouched: a resumed run must not overwrite the commit of
+    the run that produced the rows. Returns the recorded commit, or None when
+    git is unavailable or the commit was already recorded."""
+    fingerprint = output_dir / FINGERPRINT_NAME
+    try:
+        existing = json.loads(fingerprint.read_text(encoding="utf-8")) if fingerprint.exists() else {}
+    except (OSError, ValueError) as exc:
+        print(f"[run] could not read {fingerprint.name}: {exc}; a fresh one will be written")
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    if existing.get("git_commit"):
+        return str(existing["git_commit"])
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short=9", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except Exception as exc:  # noqa: BLE001 - provenance is best-effort
+        print(f"[run] git commit not recorded: {exc}")
+        return None
+    existing["git_commit"] = commit
+    existing.setdefault("git_commit_recorded_at", time.strftime("%Y-%m-%d %H:%M:%S"))
+    tmp = fingerprint.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(fingerprint)
+    print(f"[run] git commit recorded: {commit} -> {fingerprint.name}", flush=True)
+    return commit
+
+
 def _strip_damaged_rows(path: Path) -> int:
     """Drop every row whose ragflow_error is set, before a resume re-runs them.
 
@@ -3177,6 +3220,15 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Provenance before any phase: the fingerprint carries the commit of the
+    # run that produced the rows, so --overwrite must drop a stale one (its
+    # commit no longer describes what is about to be written), while a resume
+    # keeps the original.
+    fingerprint_path = output_dir / FINGERPRINT_NAME
+    if args.overwrite and fingerprint_path.exists():
+        fingerprint_path.unlink()
+    _record_run_provenance(output_dir)
 
     if not args.skip_answers:
         if args.overwrite and answers_path.exists():
