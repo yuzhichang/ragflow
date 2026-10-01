@@ -95,6 +95,10 @@ Re-running a batch efficiently (resume):
                 **ERROR** text a quota wall leaves) are retried.
                 `[resume] ... N answered + P persistent-error (skipped),
                 M transient failed/aborted will be retried` prints the split.
+       parking: a TRANSIENT failure never writes a damaged row - the question
+                parks ERROR_RETRY_WAIT_SEC (30 min) in process and retries
+                until it succeeds, so no external watcher is needed to sweep
+                error rows after a run.
        judge:   verdicts live in leaderboard.json's per_query_judgements and are
                 persisted one row at a time, so judging resumes at the first row
                 without one; a verdict that is ITSELF a backend error is re-judged
@@ -298,6 +302,14 @@ WALL_WAIT_LOG_EVERY_SEC = 300  # progress line while waiting
 # while multiplying rate-limit damage). Dropped per user decision 2026-09-30:
 # with 700+ rows to judge a capped judge phase became the long pole of the
 # whole run, so judging now runs at the SAME concurrency as the answers.
+
+# A retryable failure (quota wall, connection abort, provider hiccup) parks
+# its question for this long and then retries IN PROCESS - no damaged row is
+# written, so no external watcher is needed to sweep error rows afterwards
+# (this replaced scripts/watch46.sh, whose off-process rescans kept firing
+# after the run they watched had been archived). Persistent errors (content
+# policy rejections) do not park: they are terminal and recorded as such.
+ERROR_RETRY_WAIT_SEC = 1800
 
 # A judge call that comes back as a provider error is retried before the row is
 # recorded as unjudged. The backend decorates provider failures into the ANSWER
@@ -775,13 +787,29 @@ def _answer_phase_once(
         def _run_one(seq: int, question: dict[str, Any], run_id: str) -> bool:
             """Answer one question, append its row, run the quota breaker.
             Returns True only for a genuine wall (a burst pauses and probes
-            again instead of ending the run). Client-side timing: the backend
-            logs each question's token/latency summary, but those logs rotate
-            away (the launch log is rewritten on every restart), so wall-clock
-            is kept here to make a run analysable from its own artefacts
-            alone."""
+            again instead of ending the run). A TRANSIENT failure does not
+            produce a row: the question parks for ERROR_RETRY_WAIT_SEC and
+            retries in process, for as long as it takes - the provider being
+            down is a property of the clock, not of the question. A
+            PERSISTENT failure (content policy) is terminal and recorded.
+            Client-side timing: the backend logs each question's token/latency
+            summary, but those logs rotate away (the launch log is rewritten
+            on every restart), so wall-clock is kept here to make a run
+            analysable from its own artefacts alone (it includes any parking
+            time)."""
             started_one = time.time()
-            row = _answer_one(seq, question, run_id)
+            attempt = 0
+            while True:
+                row = _answer_one(seq, question, run_id)
+                err = (row.get("ragflow_error") or "").strip()
+                if not err or _is_persistent_ragflow_error(err):
+                    break
+                attempt += 1
+                print(
+                    f"[answers] {seq}/{total} {run_id}: retryable error (attempt {attempt}) - {err[:160]}; parking {ERROR_RETRY_WAIT_SEC}s, no row recorded",
+                    flush=True,
+                )
+                time.sleep(ERROR_RETRY_WAIT_SEC)
             row["answer_elapsed_seconds"] = round(time.time() - started_one, 3)
             with write_lock:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -948,11 +976,26 @@ def _judge_phase_once(
 
     def _finish_judge(seq: int, row: dict[str, Any]) -> bool:
         """Judge one row, persist its verdict, run the quota breaker. Returns
-        True only for a genuine wall (a burst pauses and probes again)."""
+        True only for a genuine wall (a burst pauses and probes again). A
+        TRANSIENT judge error does not persist a verdict: the row parks for
+        ERROR_RETRY_WAIT_SEC and re-judges in process. A PERSISTENT error
+        (content policy) is recorded - it is re-judged after a resume, which
+        is the judge-side analogue of the answer phase's settled rows."""
         started_one = time.time()
-        record = _judge_one(row)
-        elapsed = round(time.time() - started_one, 3)
         key = _row_run_key(row)
+        attempt = 0
+        while True:
+            record = _judge_one(row)
+            jerr = (record.get("judge_error") or "").strip()
+            if not jerr or _is_persistent_ragflow_error(jerr) or jerr == "excluded_due_to_ragflow_error":
+                break
+            attempt += 1
+            print(
+                f"[judge] {seq}/{len(pending)} {key}: retryable judge error (attempt {attempt}) - {jerr[:160]}; parking {ERROR_RETRY_WAIT_SEC}s, no verdict recorded",
+                flush=True,
+            )
+            time.sleep(ERROR_RETRY_WAIT_SEC)
+        elapsed = round(time.time() - started_one, 3)
         record["query_id"] = str(row.get("question_id") or key or "")
         record["run_key"] = key
         record["judge_elapsed_seconds"] = elapsed
