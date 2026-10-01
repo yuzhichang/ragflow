@@ -87,10 +87,14 @@ Re-running a batch efficiently (resume):
      its JSONL and starts clean.)
 
   3. Skipping finished work IS the resume - no state file, no bookkeeping:
-       answers: a question counts as finished only when its row carries an answer
-                and NO ragflow_error, so rows killed mid-flight (the **ERROR**
-                text a quota wall leaves) are retried. `[resume] ... N answered
-                (skipped), M failed/aborted will be retried` prints the split.
+       answers: a question counts as finished when its row carries an answer
+                and NO ragflow_error, OR when its error is PERSISTENT (the
+                provider refused the input itself - content policy, e.g.
+                MiniMax's `input new_sensitive`; a retry reproduces the
+                refusal). Rows killed mid-flight with a TRANSIENT error (the
+                **ERROR** text a quota wall leaves) are retried.
+                `[resume] ... N answered + P persistent-error (skipped),
+                M transient failed/aborted will be retried` prints the split.
        judge:   verdicts live in leaderboard.json's per_query_judgements and are
                 persisted one row at a time, so judging resumes at the first row
                 without one; a verdict that is ITSELF a backend error is re-judged
@@ -678,8 +682,11 @@ def _answer_phase_once(
     """One dispatch round. Returns True when the quota breaker saw a wall."""
     stripped = _strip_damaged_rows(answers_path)
     if stripped:
-        print(f"[answers] resume: stripped {stripped} damaged row(s) (ragflow_error set); backup kept beside the file", flush=True)
-    completed = {key for key, row in _read_jsonl_by_id(answers_path).items() if not (row.get("ragflow_error") or "").strip()}
+        print(f"[answers] resume: stripped {stripped} damaged row(s) (transient ragflow_error); backup kept beside the file", flush=True)
+    # A row counts as done when it is clean OR when its error is PERSISTENT -
+    # the provider refused the input itself, and a retry would only reproduce
+    # the refusal (see _is_persistent_ragflow_error).
+    completed = {key for key, row in _read_jsonl_by_id(answers_path).items() if not (row.get("ragflow_error") or "").strip() or _is_persistent_ragflow_error(row.get("ragflow_error") or "")}
     chat_cfg = cfg.get("ragflow_chat", {})
     shared_session_id = None
     concurrency = max(1, int(concurrency or 1))
@@ -2835,6 +2842,26 @@ def _read_jsonl_by_id(path: Path) -> dict[str, dict[str, Any]]:
 
 FINGERPRINT_NAME = "_prompt_fingerprint.json"
 
+# Markers of an error that makes a retry pointless: the provider refused the
+# INPUT itself (content policy), so the same question fails identically on
+# every attempt. Measured case: q744 - five identical "input new_sensitive"
+# failures across as many resumes before this distinction existed. Everything
+# else (quota walls, connection aborts, timeouts, retry exhaustion with a
+# recoverable cause) stays transient and is retried; an unknown error also
+# defaults to transient - one wasted retry beats one silently abandoned
+# question.
+PERSISTENT_ERROR_MARKERS = (
+    "new_sensitive",
+    "sensitive content",
+    "content_filter",
+    "content filter",
+)
+
+
+def _is_persistent_ragflow_error(err: str) -> bool:
+    text = (err or "").lower()
+    return any(marker in text for marker in PERSISTENT_ERROR_MARKERS)
+
 
 def _record_run_provenance(output_dir: Path) -> str | None:
     """Stamp the run's git commit into _prompt_fingerprint.json, once.
@@ -2876,16 +2903,19 @@ def _record_run_provenance(output_dir: Path) -> str | None:
 
 
 def _strip_damaged_rows(path: Path) -> int:
-    """Drop every row whose ragflow_error is set, before a resume re-runs them.
+    """Drop rows a resume should re-run, keep the ones it must not.
 
-    A resume already retries damaged rows, but it does so by APPENDING a fresh
-    row for the same question id, so the file accumulates one dead row per
-    failed attempt and the good row hides among duplicates. Stripping here
-    keeps the file holding exactly one row per question: the good ones. A
+    A row whose ragflow_error is TRANSIENT (quota wall, connection abort,
+    timeout, retry exhaustion with a recoverable cause) is dropped: the
+    resume re-runs it and appends a fresh row. A row carrying a PERSISTENT
+    error - the provider refused the input itself (content policy, e.g.
+    MiniMax's `input new_sensitive`), so every retry fails identically - is
+    KEPT and treated as settled: re-running it would burn quota to reproduce
+    the same refusal forever (q744: 5+ identical failures across resumes).
+    Rows the parser cannot read are treated as damaged and dropped. A
     timestamped backup is written beside the file before the rewrite, and a
-    file with no damaged rows is left untouched (no backup spam on clean
-    resumes). Rows the parser cannot read are treated as damaged and dropped.
-    """
+    file with nothing to strip is left untouched. Returns the number of rows
+    removed."""
     try:
         raw_lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -2900,7 +2930,11 @@ def _strip_damaged_rows(path: Path) -> int:
         except json.JSONDecodeError:
             damaged += 1
             continue
-        if not isinstance(row, dict) or (row.get("ragflow_error") or "").strip():
+        if not isinstance(row, dict):
+            damaged += 1
+            continue
+        err = (row.get("ragflow_error") or "").strip()
+        if err and not _is_persistent_ragflow_error(err):
             damaged += 1
             continue
         kept.append(line)
@@ -3183,8 +3217,12 @@ def main() -> int:
     if answers_path.exists() and not args.overwrite:
         existing = _dedupe_last(_read_jsonl(answers_path))
         answered = sum(1 for row in existing if not (row.get("ragflow_error") or "").strip())
+        persistent = sum(1 for row in existing if _is_persistent_ragflow_error(row.get("ragflow_error") or ""))
+        transient = len(existing) - answered - persistent
         judged = sum(1 for record in _read_judgements(leaderboard_path).values() if not _is_backend_error_verdict(record))
-        print(f"[resume] {answers_path.name}: {len(existing)} row(s) - {answered} answered (skipped), {len(existing) - answered} failed/aborted will be retried; {judged} verdict(s) already stored")
+        print(
+            f"[resume] {answers_path.name}: {len(existing)} row(s) - {answered} answered + {persistent} persistent-error (skipped), {transient} transient failed/aborted will be retried; {judged} verdict(s) already stored"
+        )
 
     # Parallelism: the CLI flag wins, then the config's top-level
     # "concurrency", then 1 (strictly serial).
