@@ -288,13 +288,11 @@ WALL_MAX_WAITS = 0  # 0 = keep waiting until the plan refills
 WALL_WAIT_SLICE_SEC = 30  # sleep slice: keeps Ctrl-C and the log responsive
 WALL_WAIT_LOG_EVERY_SEC = 300  # progress line while waiting
 
-# The judge phase runs its own, SMALLER concurrency: judging is a single
-# short chat call, so the throughput win of a high concurrency is nil while a
-# burst of rate-limit failures costs real verdicts (judge calls that fail with
-# a provider error leave the row unjudged, and an unjudged row counts as
-# incorrect). Two workers are enough; the answer phase keeps the configured
-# concurrency.
-JUDGE_CONCURRENCY_CAP = 2
+# The judge phase used to cap its own concurrency below the answer phase's
+# (rationale: one short chat call per row, so high concurrency bought little
+# while multiplying rate-limit damage). Dropped per user decision 2026-09-30:
+# with 700+ rows to judge a capped judge phase became the long pole of the
+# whole run, so judging now runs at the SAME concurrency as the answers.
 
 # A judge call that comes back as a provider error is retried before the row is
 # recorded as unjudged. The backend decorates provider failures into the ANSWER
@@ -886,14 +884,23 @@ def _judge_phase_once(
         raise FileNotFoundError(f"Missing answers file: {answers_path}")
 
     rows = _dedupe_last(_read_jsonl(answers_path))
+    stripped = _strip_damaged_judgements(leaderboard_path, rows)
+    if stripped:
+        print(f"[judge] resume: stripped {stripped} judgement(s) standing on damaged answer row(s); backup kept beside the file", flush=True)
+    # Judging scope: the answer rows MINUS the rows still carrying a
+    # ragflow_error (those are going to be re-run by the answer phase; judging
+    # them now would only record "excluded_due_to_ragflow_error" and be thrown
+    # away on the next round), MINUS the questions already judged from an
+    # error-free row.
+    judged_rows = [row for row in rows if not (row.get("ragflow_error") or "").strip()]
     # A judgement whose verdict text is a backend error (e.g. a provider quota
     # wall) is NOT "done": it must be re-judged on the next run, which
     # overwrites the failed record.
     completed = {key for key, record in _read_judgements(leaderboard_path).items() if not _is_backend_error_verdict(record)}
 
-    todo = [row for row in rows if _row_run_key(row) not in completed]
+    todo = [row for row in judged_rows if _row_run_key(row) not in completed]
     pending = list(enumerate(todo, start=1))
-    skipped = len(rows) - len(pending)
+    skipped = len(judged_rows) - len(pending)
     if skipped:
         print(f"[judge] skip {skipped} existing row(s)")
 
@@ -924,12 +931,9 @@ def _judge_phase_once(
         return record
 
     concurrency = max(1, int(concurrency or 1))
-    # Judging is one short chat call per row: a high concurrency buys no
-    # throughput but multiplies the damage of a rate-limit burst, so the judge
-    # phase is capped independently of the answer phase.
-    if concurrency > JUDGE_CONCURRENCY_CAP:
-        print(f"[judge] capping concurrency to {JUDGE_CONCURRENCY_CAP} (configured: {concurrency})")
-        concurrency = JUDGE_CONCURRENCY_CAP
+    # Judging runs at the SAME parallelism as the answer phase (user decision,
+    # 2026-09-30): with hundreds of rows a capped judge phase is the long pole
+    # of the whole run.
     breaker = QuotaBreaker()
     aborted = False
     write_lock = threading.Lock()
@@ -1016,6 +1020,43 @@ def _read_judgements(leaderboard_path: Path) -> dict[str, dict[str, Any]]:
     if not isinstance(records, list):
         return {}
     return {str(record.get("run_key")): record for record in records if isinstance(record, dict) and record.get("run_key")}
+
+
+def _strip_damaged_judgements(leaderboard_path: Path, rows: list[dict[str, Any]]) -> int:
+    """Drop judgements standing on an answer row that carries a ragflow_error.
+
+    The answer phase re-runs damaged rows, so a judgement recorded as
+    "excluded_due_to_ragflow_error" (or any verdict stored while the row was
+    damaged) is stale state: it must not survive a resume, or the re-run's
+    fresh judgement has to fight an old one. A timestamped backup is written
+    beside the file before the rewrite; a leaderboard with nothing to strip is
+    left untouched. Returns the number of records removed.
+    """
+    if not leaderboard_path.exists():
+        return 0
+    try:
+        leaderboard = json.loads(leaderboard_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"[judge] could not read {leaderboard_path}: {exc}")
+        return 0
+    records = leaderboard.get("per_query_judgements") if isinstance(leaderboard, dict) else None
+    if not isinstance(records, list):
+        return 0
+    damaged_keys: set[str] = set()
+    for row in rows:
+        if (row.get("ragflow_error") or "").strip():
+            key = _row_run_key(row)
+            if key is not None:
+                damaged_keys.add(key)
+    kept = [record for record in records if isinstance(record, dict) and str(record.get("run_key") or "") not in damaged_keys]
+    removed = len(records) - len(kept)
+    if removed == 0:
+        return 0
+    backup = leaderboard_path.with_name(f"{leaderboard_path.name}.bak_strip_{time.strftime('%m%d_%H%M%S')}")
+    backup.write_text(json.dumps(leaderboard, ensure_ascii=False, indent=2), encoding="utf-8")
+    leaderboard["per_query_judgements"] = kept
+    _write_json(leaderboard_path, leaderboard)
+    return removed
 
 
 def _merge_judgements(
