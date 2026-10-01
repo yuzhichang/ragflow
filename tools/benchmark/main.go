@@ -251,6 +251,30 @@ func run() int {
 // ---------------------------------------------------------------------------
 
 func asFloat(v any) *float64 {
+	// Usage rows and judgement records store their optional numbers as
+	// *int/*float64 (the asInt/asFloat results). Unwrap one pointer level
+	// here, or every reader of those rows reads zeros through the pointer.
+	switch x := v.(type) {
+	case *float64:
+		if x == nil {
+			return nil
+		}
+		f := *x
+		return &f
+	case *int:
+		if x == nil {
+			return nil
+		}
+		f := float64(*x)
+		return &f
+	case *json.Number:
+		if x == nil {
+			return nil
+		}
+		return asFloat(*x)
+	case *bool:
+		return nil
+	}
 	switch x := v.(type) {
 	case nil:
 		return nil
@@ -334,6 +358,21 @@ func strAny(m map[string]any, key, def string) string {
 		return x
 	case nil:
 		return def
+	case *int:
+		if x == nil {
+			return def
+		}
+		return fmt.Sprintf("%d", *x)
+	case *float64:
+		if x == nil {
+			return def
+		}
+		return fmt.Sprintf("%v", *x)
+	case *bool:
+		if x == nil {
+			return def
+		}
+		return fmt.Sprintf("%v", *x)
 	default:
 		return fmt.Sprintf("%v", x)
 	}
@@ -981,6 +1020,15 @@ func askRagflow(c *httpClient, cfg map[string]any, question, sessionID string) (
 }
 
 func boolOf(v any) bool {
+	// Judgement records store "correct" as *bool (the leaderboardCorrect
+	// result); unwrap before the type assertion or every false reads as false
+	// AND every pointer reads as non-nil.
+	if p, ok := v.(*bool); ok {
+		if p == nil {
+			return false
+		}
+		return *p
+	}
 	b, _ := v.(bool)
 	return b
 }
