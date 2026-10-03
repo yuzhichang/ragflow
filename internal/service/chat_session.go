@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"ragflow/internal/agentic_rag"
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
 	"ragflow/internal/storage"
@@ -1256,8 +1257,8 @@ func (s *ChatSessionService) ChatCompletions(
 		}
 	}
 
-	// Correlate every log line this request emits (retrieval, model calls)
-	// with the conversation turn's session id.
+	// Correlate every log line this request emits (agent, delivery gate,
+	// auditor, tools, retrieval) with the conversation turn's session id.
 	ctx = common.WithSessionID(ctx, sessionID)
 
 	common.Info("ChatCompletions started")
@@ -1308,9 +1309,9 @@ func (s *ChatSessionService) ChatCompletions(
 				return fail(err)
 			}
 			sessionID = session.ID
-			// Fresh-session requests carry no session_id, so the correlation
-			// tag has to be (re)applied with the id the server just
-			// allocated.
+			// Fresh-session requests (e.g. the benchmark) carry no session_id,
+			// so the correlation tag has to be (re)applied with the id the
+			// server just allocated.
 			ctx = common.WithSessionID(ctx, sessionID)
 		}
 
@@ -1413,9 +1414,14 @@ func (s *ChatSessionService) ChatCompletions(
 						}
 						sendOrCancel(fmt.Sprintf("data:%s\n\n", sseMarshalChunk(sanitizeJSONFloats(ans).(map[string]interface{}), chatID)))
 					}
-					// Synchronize the in-memory session snapshot with the final
-					// event before building the response. This does not write
-					// through to the DAO.
+					// Turn compaction: progressive persistence has been
+					// writing every delta into the assistant message, and for
+					// an agentic run those deltas are the WHOLE ReAct
+					// trajectory — the intermediate narration between tool
+					// calls, not just the answer. The next turn re-enters
+					// AsyncChat with this session as its history, so the
+					// stored message must end up holding the turn's final
+					// answer alone.
 					s.compactSessionAssistant(session, result.Answer, messageID)
 					finalLegacyAnswer = s.structureAnswer(session, result.Answer, messageID, sessionID, reference)
 					continue
@@ -1454,9 +1460,13 @@ func (s *ChatSessionService) ChatCompletions(
 				sendOrCancel(fmt.Sprintf("data:%s\n\n", sseMarshalChunk(sanitizeJSONFloats(ans).(map[string]interface{}), chatID)))
 			} else {
 				if result.Final {
-					// Synchronize the in-memory session snapshot with the final
-					// event before building the response. This does not write
-					// through to the DAO.
+					// Turn compaction, same as the legacy branch: progressive
+					// persistence wrote every delta into the assistant
+					// message, and for an agentic run those deltas are the
+					// whole ReAct trajectory — the narration between tool
+					// calls, not just the answer. The next user input
+					// re-enters AsyncChat with this session as history, so the
+					// stored message must hold the final answer alone.
 					s.compactSessionAssistant(session, result.Answer, messageID)
 					if strings.Contains(result.Answer, "**ERROR**") {
 						ans := s.structureAnswer(session, result.Answer, messageID, sessionID, reference)
@@ -1473,6 +1483,40 @@ func (s *ChatSessionService) ChatCompletions(
 						ans["prompt"] = result.Prompt
 						if result.CreatedAt != 0 {
 							ans["created_at"] = result.CreatedAt
+						}
+						// Retrieval accounting, same rule as the non-stream path.
+						if len(result.ToolCallCounts) > 0 {
+							ans["tool_call_counts"] = result.ToolCallCounts
+						}
+						if len(result.ToolCallErrors) > 0 {
+							ans["tool_call_errors"] = result.ToolCallErrors
+						}
+						if len(result.ToolErrorSamples) > 0 {
+							ans["tool_error_samples"] = result.ToolErrorSamples
+						}
+						if len(result.RetrievedDocIDs) > 0 {
+							ans["retrieved_docids"] = result.RetrievedDocIDs
+						}
+						if result.GateAudit != nil {
+							ans["gate_audit"] = result.GateAudit
+						}
+						if result.DeepReadChunks > 0 {
+							ans["deep_read_chunks"] = result.DeepReadChunks
+						}
+						if result.ShallowReadChunks > 0 {
+							ans["shallow_read_chunks"] = result.ShallowReadChunks
+						}
+						if len(result.DeepReadChunkIDs) > 0 {
+							ans["deep_read_chunk_ids"] = result.DeepReadChunkIDs
+						}
+						if len(result.ShallowReadChunkIDs) > 0 {
+							ans["shallow_read_chunk_ids"] = result.ShallowReadChunkIDs
+						}
+						if result.Usage != nil {
+							ans["usage"] = result.Usage
+						}
+						if result.ElapsedSeconds > 0 {
+							ans["elapsed_seconds"] = result.ElapsedSeconds
 						}
 						ans["final"] = true
 						if chatID != "" {
@@ -1516,7 +1560,8 @@ func (s *ChatSessionService) ChatCompletions(
 				// Citations ship ONLY on the final event: the intermediate
 				// deltas have nothing to cite yet, and an empty
 				// `reference: {chunks: []}` on every chunk just buries the
-				// real payload.
+				// real payload (and once the agentic reference exists it
+				// would leak onto thinking deltas).
 				delete(ans, "reference")
 				ans["start_to_think"] = result.StartToThink
 				ans["end_to_think"] = result.EndToThink
@@ -1583,6 +1628,15 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	var audioBinary interface{}
 	var prompt string
 	var createdAt float64
+	var toolCallCounts map[string]int
+	var toolCallErrors map[string]int
+	var toolErrorSamples map[string]string
+	var retrievedDocIDs []string
+	var gateAudit *agentic_rag.GateAuditRecord
+	var deepReadChunks, shallowReadChunks int
+	var deepReadChunkIDs, shallowReadChunkIDs []string
+	var usage *TurnUsage
+	var elapsedSeconds float64
 	for result := range resultChan {
 		if result.Final {
 			// The final event carries the complete (decorated) answer;
@@ -1594,6 +1648,17 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 			audioBinary = result.AudioBinary
 			prompt = result.Prompt
 			createdAt = result.CreatedAt
+			toolCallCounts = result.ToolCallCounts
+			toolCallErrors = result.ToolCallErrors
+			toolErrorSamples = result.ToolErrorSamples
+			retrievedDocIDs = result.RetrievedDocIDs
+			gateAudit = result.GateAudit
+			deepReadChunks = result.DeepReadChunks
+			shallowReadChunks = result.ShallowReadChunks
+			deepReadChunkIDs = result.DeepReadChunkIDs
+			shallowReadChunkIDs = result.ShallowReadChunkIDs
+			usage = result.Usage
+			elapsedSeconds = result.ElapsedSeconds
 		} else if result.Answer != "" {
 			answer.WriteString(result.Answer)
 		}
@@ -1612,6 +1677,44 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	}
 	if createdAt != 0 {
 		ans["created_at"] = createdAt
+	}
+	// Retrieval accounting for benchmark clients (agentic runs only). Omitted
+	// when empty so a classic pipeline response keeps its historical shape.
+	if len(toolCallCounts) > 0 {
+		ans["tool_call_counts"] = toolCallCounts
+	}
+	if len(toolCallErrors) > 0 {
+		ans["tool_call_errors"] = toolCallErrors
+	}
+	if len(toolErrorSamples) > 0 {
+		ans["tool_error_samples"] = toolErrorSamples
+	}
+	if len(retrievedDocIDs) > 0 {
+		ans["retrieved_docids"] = retrievedDocIDs
+	}
+	if gateAudit != nil {
+		ans["gate_audit"] = gateAudit
+	}
+	if deepReadChunks > 0 {
+		ans["deep_read_chunks"] = deepReadChunks
+	}
+	if shallowReadChunks > 0 {
+		ans["shallow_read_chunks"] = shallowReadChunks
+	}
+	// The chunk identifiers behind those counts: the counts say how much the
+	// run read, the ids say which chunks — the one fact that separates a
+	// passage read and never used from a passage never read.
+	if len(deepReadChunkIDs) > 0 {
+		ans["deep_read_chunk_ids"] = deepReadChunkIDs
+	}
+	if len(shallowReadChunkIDs) > 0 {
+		ans["shallow_read_chunk_ids"] = shallowReadChunkIDs
+	}
+	if usage != nil {
+		ans["usage"] = usage
+	}
+	if elapsedSeconds > 0 {
+		ans["elapsed_seconds"] = elapsedSeconds
 	}
 	return ans
 }
@@ -1801,10 +1904,20 @@ func (s *ChatSessionService) appendAssistantToSession(session *entity.ChatSessio
 	session.Message, _ = json.Marshal(messages)
 }
 
-// compactSessionAssistant replaces the assistant content in the in-memory
-// session snapshot with a non-blank final answer. It does not write to the DAO;
-// any persistence is handled by the caller. A blank final leaves the accumulated
-// content unchanged.
+// compactSessionAssistant rewrites the session's stored assistant message to
+// the turn's FINAL answer, which is what the next turn must see.
+//
+// Streaming persistence (appendAssistantToSession on every delta) deliberately
+// keeps partial text in the session so a client that refreshes mid-stream still
+// sees what was produced — but for an agentic run those deltas are the ReAct
+// trajectory: the thinking and narration the agent emitted between tool calls,
+// tens of thousands of tokens of it. The next user input re-enters
+// AsyncChat with this session as its history, so leaving the trajectory there
+// means every turn pays for, and is steered by, every earlier turn's dead ends.
+//
+// A turn therefore ends compacted to question + final answer. A blank final
+// (an error result, or a run that produced nothing) leaves the streamed text
+// standing rather than blanking the message the user can already see.
 func (s *ChatSessionService) compactSessionAssistant(session *entity.ChatSession, final, messageID string) {
 	if session == nil || strings.TrimSpace(final) == "" {
 		return
@@ -1986,10 +2099,10 @@ func sanitizeJSONFloats(v interface{}) interface{} {
 // sseMarshalChunk converts an answer map to the ordered sseAnswerChunk struct
 // and marshals it with Python-compatible JSON formatting (spaces, field order).
 func sseMarshalChunk(ans map[string]interface{}, chatID string) string {
-	// Reference is emitted only when the producer set one: the delta branch
-	// deletes the key so intermediate chunks stay reference-free, and silently
-	// re-adding an empty `{"chunks": []}` here would undo that — every
-	// intermediate chunk would carry a citation payload it cannot back.
+	// Reference is emitted only when the producer set one: the agentic delta
+	// branch deletes the key so intermediate chunks stay reference-free, and
+	// silently re-adding an empty `{"chunks": []}` here would undo that —
+	// every thinking chunk would carry a citation payload it cannot back.
 	ref := map[string]interface{}{"chunks": []interface{}{}}
 	if raw, hasRef := ans["reference"]; hasRef {
 		if m, ok := raw.(map[string]interface{}); ok && m != nil {
