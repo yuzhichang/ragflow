@@ -20,6 +20,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"ragflow/internal/entity/models"
 )
 
 // TestRun_NilModel: Run must reject a nil model up front.
@@ -30,24 +32,42 @@ func TestRun_NilModel(t *testing.T) {
 	}
 }
 
-// TestPrompt: the fallback prompt must declare the toolset the template ships
-// and carry the mechanical provenance contract, with no removed tool
-// references (get_document_info / query_knowledge_graph), no leftover
-// placeholders and no trace of the removed intermediate deliverable.
+// TestAuditModelFor pins which model the auditor runs on: its own when the
+// caller built one (pinned sampling, separate failover state), the producer's
+// when not — and nil when neither, so Run's up-front nil check owns that error.
+func TestAuditModelFor(t *testing.T) {
+	producer := &models.EinoChatModel{}
+	auditor := &models.EinoChatModel{}
+
+	if got := auditModelFor(Input{Model: producer}); got != producer {
+		t.Error("with no AuditModel the auditor must run on the producer's model")
+	}
+	if got := auditModelFor(Input{Model: producer, AuditModel: auditor}); got != auditor {
+		t.Error("with an AuditModel the auditor must run on ITS OWN instance, not the producer's")
+	}
+	if got := auditModelFor(Input{Model: producer, AuditModel: nil}); got != producer {
+		t.Error("an explicit nil AuditModel must fall back to Model")
+	}
+	if got := auditModelFor(Input{}); got != nil {
+		t.Error("with no model at all the fallback must stay nil")
+	}
+}
+
+// TestPrompt: the prompt must declare the six tools and contain no removed
+// tool references (get_document_info / web_search / query_knowledge_graph) and
+// no leftover placeholders.
 func TestPrompt(t *testing.T) {
 	p := Prompt()
 	for _, want := range []string{
-		"grep_chunks", "search_bm25_chunks", "search_semantic_chunks", "list_chunks",
-		"todo_write", "think", "run_javascript", "chunk_id:", "Evidence-First",
+		"grep_chunks", "search_chunks", "list_chunks",
+		"todo_write", "think", "run_javascript",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt must mention %q", want)
 		}
 	}
 	for _, banned := range []string{
-		"get_document_info", "query_knowledge_graph", "web_fetch",
-		"Candidate Matrix", "Reasoning Chain", "Sub-question",
-		"question decomposition", "auditor", "Final Answer", "Guessed Answer",
+		"get_document_info", "query_knowledge_graph", "web_search", "web_fetch",
 		"{{", "}}",
 	} {
 		if strings.Contains(p, banned) {

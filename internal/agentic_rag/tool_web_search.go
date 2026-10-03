@@ -73,11 +73,13 @@ type WebSearchFunc func(ctx context.Context, query string) ([]WebResult, error)
 type webSearchCtxKey struct{}
 
 // WithWebSearch returns a copy of ctx carrying search, the conversation's web
-// search provider. The explorer a run builds takes it back with webSearchFrom.
-// It rides on the context rather than on Input because the provider is a
-// property of the conversation, not of a call's arguments: runs for different
-// chats (different providers, or none) interleave in one process, and
-// package-level state would leak one conversation's capability into another's.
+// search provider. Both agents a run builds — the explorer in Run and the
+// answer_auditor auditor — take it back with webSearchFrom, so one injection
+// reaches both. It rides on the context rather than on Input because the
+// provider is a property of the conversation, not of a call's arguments: runs
+// for different chats (different providers, or none) interleave in one process,
+// and package-level state would leak one conversation's capability into
+// another's.
 func WithWebSearch(ctx context.Context, search WebSearchFunc) context.Context {
 	if search == nil {
 		return ctx

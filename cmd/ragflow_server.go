@@ -507,6 +507,10 @@ func main() {
 		logLevel = "info"
 	}
 
+	// Temporary pre-config logger: STDOUT ONLY (empty FileOutput). The port
+	// is not known yet, so a file here would be an orphaned log (e.g.
+	// logs/api_server.log next to the real logs/api_server_9384.log); the
+	// real file sink is attached by the post-config re-initialization below.
 	if err = common.InitLogger(logLevel, common.FileOutput{}, serverName); err != nil {
 		panic("failed to initialize logger: " + err.Error())
 	}
