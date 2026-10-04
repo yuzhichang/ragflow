@@ -542,6 +542,39 @@ func TestRunDeliveryGateStopsWhenSuspectsClimbBack(t *testing.T) {
 	}
 }
 
+// TestServedUnreadDocsRanksAndLabelsTheCensus pins the gate's served-unread
+// census: most-served first, each lead labelled with the count the retrieval
+// served it, deep-read documents excluded, capped at the caller's limit, and a
+// document below the lead threshold ENDS the walk because Docs() is ranked.
+//
+// The label is what the audit opinion and the log report, and the cap is why
+// the re-anchor round asks for a longer list than the auditor: on the smoke53
+// run q1093's two answer-bearing documents had been served twice each and ranked
+// below ten louder leads, so the auditor's ten never mentioned them.
+func TestServedUnreadDocsRanksAndLabelsTheCensus(t *testing.T) {
+	served := NewServedLedger()
+	for _, d := range []string{"b", "a", "b", "a", "c", "c", "c"} {
+		served.Add(d)
+	}
+	deep := NewDocIDLedger()
+	deep.Add("c") // opened: no longer a lead
+
+	want := "[a (x2) b (x2)]"
+	if got := fmt.Sprintf("%v", servedUnreadDocs(served, deep, servedUnreadAuditorMax)); got != want {
+		t.Fatalf("census = %s, want %s (most-served first, ties by id, deep reads excluded)", got, want)
+	}
+	if got := fmt.Sprintf("%v", servedUnreadDocs(served, deep, 1)); got != "[a (x2)]" {
+		t.Fatalf("capped census = %s, want [a (x2)]", got)
+	}
+	served.Add("d") // served once: below the lead threshold
+	if got := fmt.Sprintf("%v", servedUnreadDocs(served, deep, servedUnreadAuditorMax)); got != want {
+		t.Fatalf("census after a single serve = %s, want %s", got, want)
+	}
+	if got := fmt.Sprintf("%v", servedUnreadDocs(nil, deep, servedUnreadAuditorMax)); got != "[]" {
+		t.Fatalf("census with no ledger = %s, want []", got)
+	}
+}
+
 // The re-anchor round is ADOPTED when the continuation really adds a
 // `Searched:` line, and then it buys one more audit: the stalled count gets a
 // verdict from a deliverable whose search actually moved, and a second stall

@@ -564,6 +564,19 @@ func (l *servedLedger) Add(docID string) {
 	l.docs[docID]++
 }
 
+// Serves returns how many times a document was served this run (0 when it was
+// never served). Callers that report a lead's weight read it through this
+// accessor rather than the document map, which Docs() hands out a copy of,
+// unlocked.
+func (l *servedLedger) Serves(docID string) int {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.docs[docID]
+}
+
 // Docs returns the served documents, most-served first (ties broken by id).
 func (l *servedLedger) Docs() []string {
 	if l == nil {
@@ -592,31 +605,51 @@ func (l *servedLedger) Docs() []string {
 	return out
 }
 
+// How many serve events make a document a named lead, and how many leads each
+// consumer is handed. The auditor gets a short list; the RE-ANCHOR round gets a
+// longer one, because that round exists to put the right unread documents in
+// front of the producer and the answer-bearing ones can rank below the
+// auditor's cap: measured on the smoke53 run, q1093's two documents carrying the
+// answer's own series had been served twice each and never opened, and neither
+// reached the auditor's ten while ten louder leads did.
+const (
+	servedUnreadMinServes   = 2
+	servedUnreadAuditorMax  = 10
+	servedUnreadReanchorMax = 20
+)
+
 // servedUnreadDocs returns the served documents that were never deep-read and
 // that the retrieval kept surfacing (at least servedUnreadMinServes serve
-// events), capped: these are the candidates a failing chain never opened.
-func servedUnreadDocs(served *servedLedger, deepDocs *docIDLedger) []string {
-	if served == nil {
+// events), MOST-SERVED FIRST - Docs() ranks them - labelled with the count the
+// retrieval served them ("<doc> (xN)"), and capped at limit.
+//
+// The label is the point of the census: the count is how a reader (the auditor,
+// or whoever reads the log) tells a lead the retrieval insisted on from one it
+// mentioned once, and it is the same "<doc> (xN)" phrasing the mid-run
+// watchdog's notice uses.
+func servedUnreadDocs(served *servedLedger, deepDocs *docIDLedger, limit int) []string {
+	if served == nil || limit <= 0 {
 		return nil
 	}
 	deep := map[string]struct{}{}
 	for _, d := range deepDocs.Snapshot() {
 		deep[d] = struct{}{}
 	}
-	const (
-		servedUnreadMinServes = 2
-		servedUnreadMaxDocs   = 10
-	)
 	unread := []string{}
-	for _, d := range served.Docs() {
+	for _, d := range served.Docs() { // most-served first, ties broken by id
 		if _, read := deep[d]; read {
 			continue
 		}
-		if served.docs[d] < servedUnreadMinServes {
-			continue
+		serves := served.Serves(d)
+		if serves < servedUnreadMinServes {
+			break // Docs() is ranked: every remaining document is quieter still
 		}
-		unread = append(unread, d)
-		if len(unread) == servedUnreadMaxDocs {
+		// The serve count rides along in the auditor's payload and in the log:
+		// the number is what tells a reader how hard the retrieval insisted on
+		// this lead, and the auditor cites it in the opinion. Same "<doc> (xN)"
+		// convention as the mid-run watchdog's notice.
+		unread = append(unread, fmt.Sprintf("%s (x%d)", d, serves))
+		if len(unread) == limit {
 			break
 		}
 	}
@@ -1758,7 +1791,16 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 				zap.String("gate_answer_label", answerLbl),
 				zap.String("deliverable_tail", lastNonBlankLine(final)))
 			var err error
-			unread := servedUnreadDocs(in.serves, in.deepDocs)
+			unread := servedUnreadDocs(in.serves, in.deepDocs, servedUnreadAuditorMax)
+			if len(unread) > 0 {
+				// One greppable INFO line per audit round carrying the census with
+				// its frequencies: the DEBUG payload below has them too, but the
+				// question "was the answer's document served and unread, and how
+				// hard did the retrieval insist?" is asked long after the run, when
+				// only the INFO tier survives.
+				common.InfoCtx(ctx, "agentic_rag: served-unread census",
+					zap.Int("pass", pass+1), zap.Int("leads", len(unread)), zap.Strings("lead_docs", unread))
+			}
 			verdict, err = gateRunAudit(ctx, in.auditor, in.sess.auditor, final, in.toolCallCounts, in.searches, unread)
 			if err != nil {
 				// The auditor itself failed (LLM timeout, tool outage).
@@ -1834,10 +1876,18 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 				if f3 >= f1 && f3 >= f2 {
 					if !reanchored {
 						reanchored = true
-						reanchorDirective = auditReanchorDirective(suspectHist, unread)
+						// The round gets the LONGER census: its job is to put the right
+						// unread documents in front of the producer, and the ranking is
+						// by serve count, not by relevance to the answer, so the extra
+						// slots are the only way a quieter answer-bearing lead makes the
+						// list (q1093's two, served twice each, ranked below ten louder
+						// ones).
+						leads := servedUnreadDocs(in.serves, in.deepDocs, servedUnreadReanchorMax)
+						reanchorDirective = auditReanchorDirective(suspectHist, leads)
 						common.InfoCtx(ctx, "agentic_rag: delivery gate re-anchor round — the suspect count stopped falling",
 							zap.Int("pass", pass+1), zap.Ints("suspects", suspectHist),
-							zap.Int("served_unread", len(unread)), zap.Strings("served_unread_docs", unread))
+							zap.Int("auditor_leads", len(unread)), zap.Int("reanchor_leads", len(leads)),
+							zap.Strings("reanchor_lead_docs", leads))
 					} else {
 						common.InfoCtx(ctx, "agentic_rag: delivery gate short-circuit — suspect count stopped falling after the re-anchor round",
 							zap.Int("pass", pass+1), zap.Ints("suspects", suspectHist))
@@ -2166,7 +2216,7 @@ func anchorDemand(failures int, hist []int) string {
 func auditReanchorDirective(hist []int, servedUnread []string) string {
 	docs := ""
 	if len(servedUnread) > 0 {
-		docs = " These documents were SERVED to you and never deep-read: " +
+		docs = " These documents were SERVED to you and never deep-read - most-served first, each with the count the retrieval served it: " +
 			strings.Join(servedUnread, ", ") + ". Read each with `list_chunks` and profile it as a candidate before you re-render."
 	}
 	return "ANCHOR CHANGE REQUIRED — THIS IS THE GATE'S LAST REPAIR ROUND. Your suspect count moved " +
