@@ -226,6 +226,13 @@ type flakyExplorer struct {
 	failures int
 	runs     int
 	msgs     []*schema.Message
+	// reply, when set, replaces the default continuation. The re-anchor round's
+	// enforcement reads the continuation's `Searched:` lines, so a test that wants
+	// that round ADOPTED has to script a reply that carries one. replies is the
+	// per-attempt sequence (attempt i uses replies[i]); both fall back to the
+	// default continuation.
+	reply   string
+	replies []string
 }
 
 func (f *flakyExplorer) Name(context.Context) string { return "flaky-explorer" }
@@ -244,7 +251,16 @@ func (f *flakyExplorer) Run(_ context.Context, input *adk.AgentInput, _ ...adk.A
 			gen.Close()
 			return
 		}
-		gen.Send(assistantMsgEvent("## Reasoning Chain\n- Clue: x\nFinal Answer: **1897**", nil))
+		reply := ""
+		switch {
+		case len(f.replies) >= f.runs:
+			reply = f.replies[f.runs-1]
+		case f.reply != "":
+			reply = f.reply
+		default:
+			reply = "## Reasoning Chain\n- Clue: x\nFinal Answer: **1897**"
+		}
+		gen.Send(assistantMsgEvent(reply, nil))
 		gen.Close()
 	}()
 	return iter
@@ -361,9 +377,16 @@ func TestRunDeliveryGateReAuditsAfterAdoptingRepair(t *testing.T) {
 }
 
 // A count that never falls is the plain stall: the newest verdict matches both
-// of its predecessors, so the third observation ends the loop. q99 sat on 4
-// suspects for 16 passes, q481 on 5 for 12, q371 on 9 for 9 — the ceiling used
-// to let each spend 20 passes to establish what three had already shown.
+// of its predecessors, so the third observation ends the NORMAL repair sequence.
+// q99 sat on 4 suspects for 16 passes, q481 on 5 for 12, q371 on 9 for 9 — the
+// ceiling used to let each spend 20 passes to establish what three had already
+// shown.
+//
+// A stall now buys ONE re-anchor round instead of ending outright, and this fake
+// never adds the `Searched:` line that round requires, so every attempt of it is
+// rejected (gateNoProgressLimit of them) and it never reaches the auditor: the
+// audit count stays at the stall window and the deliverable in hand ships.
+// TestRunDeliveryGateReanchorRoundAdoptsANewAnchor pins the adopted path.
 func TestRunDeliveryGateStopsWhenSuspectsStall(t *testing.T) {
 	auditor := &fakeAuditorAgent{verdict: "Audit Result: FAIL (5 suspects)"}
 	explorer := &flakyExplorer{} // every repair is adopted; the count never moves
@@ -380,9 +403,12 @@ func TestRunDeliveryGateStopsWhenSuspectsStall(t *testing.T) {
 		t.Errorf("audits = %d, want gateStallWindow=%d - identical verdicts must not buy more passes",
 			auditor.runs, gateStallWindow)
 	}
-	// The stalling audit exits before buying its repair turn.
-	if explorer.runs != gateStallWindow-1 {
-		t.Errorf("repair turns = %d, want %d", explorer.runs, gateStallWindow-1)
+	// gateStallWindow-1 adopted repairs, then the re-anchor round's rejections: a
+	// continuation that re-renders the same matrix with no new `Searched:` line is
+	// discarded, and that round ends on gateNoProgressLimit.
+	if want := gateStallWindow - 1 + gateNoProgressLimit; explorer.runs != want {
+		t.Errorf("repair turns = %d, want %d (gateStallWindow-1 adopted repairs, then gateNoProgressLimit rejected re-anchor attempts)",
+			explorer.runs, want)
 	}
 	// A stall ships the deliverable in hand - the same one the loop would have
 	// ended on after burning the full ceiling.
@@ -508,11 +534,45 @@ func TestRunDeliveryGateStopsWhenSuspectsClimbBack(t *testing.T) {
 	if auditor.runs != 4 {
 		t.Errorf("audits = %d, want 4 - a count climbing back is not progress", auditor.runs)
 	}
-	if explorer.runs != 3 {
-		t.Errorf("repair turns = %d, want 3 (all but the stalling pass)", explorer.runs)
+	if want := 3 + gateNoProgressLimit; explorer.runs != want {
+		t.Errorf("repair turns = %d, want %d (3 adopted repairs, then the re-anchor round's rejected attempts)", explorer.runs, want)
 	}
 	if !hasAnswerLine(final) {
 		t.Errorf("final = %q, want the repaired deliverable shipped", final)
+	}
+}
+
+// The re-anchor round is ADOPTED when the continuation really adds a
+// `Searched:` line, and then it buys one more audit: the stalled count gets a
+// verdict from a deliverable whose search actually moved, and a second stall
+// after that ships what stands. This is the round the smoke47 re-run's two
+// failures never got — q1093's wrong anchor (a series the auditor named in round
+// three) ended the loop there, while four served-and-never-read documents of the
+// RIGHT series sat untouched, and q351 stalled on a category that seven served
+// documents carried.
+func TestRunDeliveryGateReanchorRoundAdoptsANewAnchor(t *testing.T) {
+	oneSearch := "## Candidate Matrix\n- Searched: search_bm25_chunks(\"the held candidate\")\n## Reasoning Chain\n- Clue: x\nFinal Answer: **1897**"
+	twoSearches := oneSearch + "\n- Searched: grep_chunks(\"the other roster|the year list\")"
+	auditor := &fakeAuditorAgent{verdict: "Audit Result: FAIL (5 suspects)"}
+	explorer := &flakyExplorer{replies: []string{oneSearch, oneSearch, twoSearches}}
+	in := deliveryGateInput{
+		explorer:     explorer,
+		auditor:      auditor,
+		baseMessages: []*schema.Message{schema.UserMessage("q?")},
+		final:        "old final",
+		auditMaxPass: testAuditMaxPass,
+	}
+
+	final, _, _ := runDeliveryGate(context.Background(), in)
+	if want := gateStallWindow + 1; auditor.runs != want {
+		t.Errorf("audits = %d, want %d (the stall window, then the re-anchor round, then the second stall)",
+			auditor.runs, want)
+	}
+	if want := gateStallWindow; explorer.runs != want {
+		t.Errorf("repair turns = %d, want %d (every re-anchor attempt was adopted on its first try)", explorer.runs, want)
+	}
+	if !strings.Contains(final, "the other roster") {
+		t.Errorf("final = %q, want the re-anchored deliverable shipped", final)
 	}
 }
 

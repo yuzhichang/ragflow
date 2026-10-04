@@ -1657,6 +1657,15 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 	// behaved: a count that fell 15→11→6→5 before freezing reads very
 	// differently from one that never moved. The stall check reads its tail.
 	suspectHist := make([]int, 0, in.auditMaxPass)
+	// reanchored bounds the RE-ANCHOR round to one per run. The stall check used
+	// to end the loop outright; measured on the smoke47 re-run, that shipped a
+	// wrong anchor after the count stopped falling (q1093: 10→12→13 in three
+	// rounds, the correct series never named once while four of its documents sat
+	// in the served set; q351: 13→10→6→7→10 in five). One round that forces the
+	// search onto a different anchor — with the served-but-unread documents NAMED
+	// and a new `Searched:` line REQUIRED — is the cheapest thing that can move
+	// such a count; a second flat count after it is the same evidence re-bought.
+	reanchored := false
 	// repairFeedback: why the last attempt was discarded, appended to the
 	// next attempt's directive — a silently discarded attempt leaves the
 	// model repeating the same narration (observed on q716).
@@ -1683,6 +1692,12 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 		// audits as soon as a deliverable exists.
 		verdict := ""
 		directive := ""
+		// reanchorRound marks the single round the reanchored flag buys, so the
+		// adoption rule below can ENFORCE it: the continuation must add a new
+		// `Searched:` line, or a re-render of the same matrix would consume the
+		// round without changing the search that produced it.
+		reanchorRound := false
+		reanchorDirective := ""
 		// The gate reads the answer LABEL, not the answer: `hasAnswerLine` is what it
 		// knows without guessing at content, and the auditor owns the rest (see
 		// answerLabel). The label rides into the payload as evidence for the
@@ -1800,20 +1815,34 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 				zap.String("verdict", auditFindings(verdict)))
 
 			suspectHist = append(suspectHist, auditSuspectCount(verdict))
-			// Stall check fires}BEFORE the repair turn: once three observations
-			// are in, stop as soon as the newest count is no better than BOTH of
+			// Stall check fires BEFORE the repair turn: once three observations
+			// are in, act as soon as the newest count is no better than BOTH of
 			// the two before it. Equal counts are only the special case - this
 			// also catches a count climbing back (f1 < f2 < f3), where the
 			// repair is making the deliverable worse and shipping what stands
 			// strictly beats buying another pass. A count that is still falling
 			// keeps the loop alive. The trend is read off the tail of the full
 			// history.
+			//
+			// A stall no longer ends the loop on its own: it buys ONE re-anchor
+			// round first (auditReanchorDirective), because every directive up to
+			// this point asks for a repair of the RECORD while a stalled count
+			// says the SEARCH never moved. Only a second stall - the count no
+			// better after the anchor was forced to change - ships what stands.
 			if n := len(suspectHist); n >= gateStallWindow {
 				f1, f2, f3 := suspectHist[n-3], suspectHist[n-2], suspectHist[n-1]
 				if f3 >= f1 && f3 >= f2 {
-					common.InfoCtx(ctx, "agentic_rag: delivery gate short-circuit — suspect count stopped falling",
-						zap.Int("pass", pass+1), zap.Ints("suspects", suspectHist))
-					break
+					if !reanchored {
+						reanchored = true
+						reanchorDirective = auditReanchorDirective(suspectHist, unread)
+						common.InfoCtx(ctx, "agentic_rag: delivery gate re-anchor round — the suspect count stopped falling",
+							zap.Int("pass", pass+1), zap.Ints("suspects", suspectHist),
+							zap.Int("served_unread", len(unread)), zap.Strings("served_unread_docs", unread))
+					} else {
+						common.InfoCtx(ctx, "agentic_rag: delivery gate short-circuit — suspect count stopped falling after the re-anchor round",
+							zap.Int("pass", pass+1), zap.Ints("suspects", suspectHist))
+						break
+					}
 				}
 			}
 		}
@@ -1836,6 +1865,13 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 			// and re-auditing a deliverable it just refused would spend a pass on a
 			// verdict it can predict.
 			directive = unreadDirective
+		} else if reanchorDirective != "" {
+			// The audit ran and the suspect count has stalled: this round moves the
+			// SEARCH instead of repairing the same record again (see the stall check
+			// above), and it is enforced below.
+			directive = reanchorDirective
+			reanchorDirective = ""
+			reanchorRound = true
 		} else {
 			directive = auditRepairDirective(auditSuspectCount(verdict), verdict, suspectHist)
 		}
@@ -1873,16 +1909,27 @@ func runDeliveryGate(ctx context.Context, in deliveryGateInput) (string, string,
 				// it throws away a structured (if failing) deliverable and
 				// buys a re-audit that can only repeat the coverage defect
 				// (q1093 burned 16 audit passes that way).
-				if adoptableContinuation(trimmed) {
+				// The re-anchor round is ENFORCED, not merely requested: the
+				// continuation must add at least one new `Searched:` line. Without
+				// this the directive's demand is prose a re-render satisfies
+				// (q1093 bought three audits with the anchor never moving, and
+				// q351 five).
+				newSearches := searchedLineCount(trimmed) > searchedLineCount(final)
+				if adoptableContinuation(trimmed) && (!reanchorRound || newSearches) {
 					final = trimmed // deliverable-shaped continuation → adopt
 					noProgress = 0
 					repairFeedback = ""
 					pass++ // the final changed: the next audit is worth running
 					break
 				}
+				discardWhy := "did not render the COMPLETE deliverable (it was missing the FOS answer line, or the " +
+					"`## Candidate Matrix` / `## Reasoning Chain` sections, or both)"
+				if reanchorRound && adoptableContinuation(trimmed) {
+					discardWhy = "rendered the deliverable but added NO new `Searched:` line - this round requires " +
+						"retrieval on a DIFFERENT anchor, and a re-render of the same matrix is discarded"
+				}
 				repairFeedback = ("REJECTION NOTICE: your previous repair continuation was DISCARDED - it " +
-					"did not render the COMPLETE deliverable (it was missing the FOS answer line, or the " +
-					"`## Candidate Matrix` / `## Reasoning Chain` sections, or both). Your next reply must " +
+					discardWhy + ". Your next reply must " +
 					"render it in the SAME turn: the `## Candidate Matrix` blocks, then " +
 					"`## Reasoning Chain`, and the LAST line `Final Answer: **<value>**` or " +
 					"`Guessed Answer: **<value>** (assumption: ...)` - a bare answer line or any narration " +
@@ -2094,6 +2141,44 @@ func anchorDemand(failures int, hist []int) string {
 		"listing/overview query the constraint makes enumerable (the game/show/book list, the roster, the year list) and test " +
 		"each hit against the slot. An anchor that can only return more about the candidate you already hold keeps this count " +
 		"where it is, and the gate ships what stands.")
+}
+
+// auditReanchorDirective is the gate's LAST repair round: it is spent only when
+// the suspect count has stopped falling, and it moves the SEARCH instead of
+// repairing the record once more.
+//
+// Everything else in the loop asks the producer to fix a finding. A stalled
+// count is different evidence: measured on the smoke47 re-run, the two failed
+// questions were the two whose suspect count never fell (q1093 10→12→13 over
+// three rounds - the right series was named ZERO times while four documents
+// containing it sat in the served set and were never read; q351 13→10→6→7→10
+// over five - the answer's own award category appeared in seven served documents
+// and never on the answer line, while its two expected documents were never
+// served at all). Repairing the record cannot fix that; only a different query
+// can.
+//
+// Three parts, all mechanical: the anchor must change, the documents the run was
+// SERVED and never deep-read are NAMED (the pipeline already computes that set
+// for the auditor - naming it turns the demand into a to-do list), and the round
+// is enforced in runRepairAttempt's adoption rule by requiring a new `Searched:`
+// line. It is explicitly the last round: if the count does not fall, the gate
+// ships what stands rather than buying more of the same.
+func auditReanchorDirective(hist []int, servedUnread []string) string {
+	docs := ""
+	if len(servedUnread) > 0 {
+		docs = " These documents were SERVED to you and never deep-read: " +
+			strings.Join(servedUnread, ", ") + ". Read each with `list_chunks` and profile it as a candidate before you re-render."
+	}
+	return "ANCHOR CHANGE REQUIRED — THIS IS THE GATE'S LAST REPAIR ROUND. Your suspect count moved " +
+		joinInts(hist) + " across the failed audits and has stopped falling, which is the signature of " +
+		"re-querying and re-rendering the SAME anchor." + docs +
+		" OPEN this turn with retrieval on a DIFFERENT anchor than any already in your matrix: query the rarest " +
+		"proper noun ALONE, or a `grep_chunks` co-occurrence regex over two clue terms, or the broad listing the " +
+		"failing constraint makes enumerable (the roster, the year list, the episode list, the award table), then " +
+		"test every hit against the slot. Your re-render MUST carry at least one NEW `Searched:` line for that " +
+		"anchor - a turn that only re-renders the matrix is DISCARDED and this round is wasted. When the new anchor " +
+		"still cannot move the count, ship the best-supported candidate and say on its line which constraint the " +
+		"corpus does not establish: this round is the last one, and the gate ships what stands after it."
 }
 
 func joinInts(values []int) string {

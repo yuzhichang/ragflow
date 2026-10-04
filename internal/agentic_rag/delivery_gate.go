@@ -245,6 +245,15 @@ var locateToolNames = []string{"grep_chunks", "search_bm25_chunks", "search_sema
 // tool name it credits.
 var searchedLineRe = regexp.MustCompile(`(?im)Searched:\s*(grep_chunks|search_bm25_chunks|search_semantic_chunks|search_chunks)`)
 
+// searchedLineCount counts the matrix lines that credit a locate call. The
+// re-anchor round (see auditReanchorDirective) is the ONE place the pipeline
+// enforces the anchor demand: the continuation must carry more `Searched:` lines
+// than the deliverable it replaces, which is a reading of the RECORD's own
+// membership - never of the value - so it stays on the gate's side of the line.
+func searchedLineCount(matrix string) int {
+	return len(searchedLineRe.FindAllString(matrix, -1))
+}
+
 // unrecordedLocateTools returns the locate tools the run actually called but the
 // deliverable never credits on a `Searched:` line, sorted.
 //
