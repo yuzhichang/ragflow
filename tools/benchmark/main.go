@@ -627,10 +627,33 @@ func normalizeDocID(value any) string {
 }
 
 // uniqueDocIDs ports _unique_doc_ids: first occurrence wins, empties dropped.
+// asAnyList accepts the two shapes a JSON array reaches this file in: a freshly
+// decoded []any, and the []string a previous uniqueDocIDs/uniqueIDs call
+// produced. The second shape is the one that bites: extractRunStats stores its
+// own result back into the row, so any value that passes through these helpers
+// AGAIN is a []string - and an []any-only assertion fell through to
+// normalizeDocID, which fmt.Sprintf'd the whole list into ONE scalar
+// ("[5580 15715 ...]"). Measured on the smoke47 re-run: every freshly written
+// row carried gold_doc_served=[], while the disk-decoded leaderboard path (JSON
+// gives []any) computed Recall 61.3% from the same rows.
+func asAnyList(values any) ([]any, bool) {
+	if list, ok := values.([]any); ok {
+		return list, true
+	}
+	if list, ok := values.([]string); ok {
+		out := make([]any, len(list))
+		for i, value := range list {
+			out[i] = value
+		}
+		return out, true
+	}
+	return nil, false
+}
+
 func uniqueDocIDs(values any) []string {
 	seen := map[string]bool{}
 	var ids []string
-	list, ok := values.([]any)
+	list, ok := asAnyList(values)
 	if !ok {
 		if s := normalizeDocID(values); s != "" {
 			return []string{s}
@@ -663,7 +686,7 @@ func asDocIDList(value any) []string {
 // uniqueIDs ports _unique_ids: deduplicate opaque identifiers (chunk ids),
 // preserving the backend's own order - NO document-name normalisation.
 func uniqueIDs(values any) []string {
-	list, ok := values.([]any)
+	list, ok := asAnyList(values)
 	if !ok {
 		return nil
 	}

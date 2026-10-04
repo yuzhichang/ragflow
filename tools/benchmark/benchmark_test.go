@@ -131,3 +131,46 @@ func TestBuildLeaderboardMerged830(t *testing.T) {
 		t.Errorf("Recall: go=%v py=%v", goRecall, pyRecall)
 	}
 }
+
+// TestAsDocIDListAcceptsTheShapeExtractRunStatsProduces pins the bug that zeroed
+// gold_doc_served / gold_doc_cited on every freshly written row:
+// extractRunStats stores uniqueDocIDs' OWN []string result back into the row, so
+// the served-set builder later reads a []string - not the []any a JSON decode
+// gives. An []any-only assertion fell through to normalizeDocID, which
+// fmt.Sprintf'd the entire list into ONE scalar ("[5580 15715 ...]"), matching
+// no expected document. The leaderboard path reads answers.jsonl back from disk
+// (JSON decoding gives []any), so Recall stayed correct and only the in-run rows
+// were wrong - which is exactly what the smoke47 re-run showed: 10 rows with
+// gold_doc_served=[], Recall 61.3% from the same rows.
+func TestAsDocIDListAcceptsTheShapeExtractRunStatsProduces(t *testing.T) {
+	want := "[5580 15715]"
+
+	// 1. What a JSON decode gives.
+	if got := fmt.Sprintf("%v", asDocIDList([]any{"5580", "15715"})); got != want {
+		t.Fatalf("asDocIDList([]any) = %s, want %s", got, want)
+	}
+	// 2. What extractRunStats produces (and stores back into the row).
+	stored := uniqueDocIDs([]any{"5580.md", "15715", "5580"})
+	if got := fmt.Sprintf("%v", asDocIDList(stored)); got != want {
+		t.Fatalf("asDocIDList([]string) = %s, want %s (the list collapsed into one scalar: %v)", got, want, stored)
+	}
+	// 3. The served-set intersection the answer phase runs on that value.
+	expected := map[string]bool{"5580": true, "15715": true, "37106": true}
+	var served []string
+	for _, id := range asDocIDList(stored) {
+		if expected[id] {
+			served = append(served, id)
+		}
+	}
+	if got := fmt.Sprintf("%v", served); got != want {
+		t.Fatalf("served = %s, want %s", got, want)
+	}
+	// 4. uniqueIDs (chunk ids) shares the contract.
+	if got := fmt.Sprintf("%v", uniqueIDs([]string{"a", "b", "a"})); got != "[a b]" {
+		t.Fatalf("uniqueIDs([]string) = %s, want [a b]", got)
+	}
+	// 5. A plain scalar still normalises to a one-element list.
+	if got := fmt.Sprintf("%v", asDocIDList("5580.md")); got != "[5580]" {
+		t.Fatalf("asDocIDList(scalar) = %s, want [5580]", got)
+	}
+}
