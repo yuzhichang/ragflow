@@ -36,19 +36,20 @@ func TestServedUnreadWatch(t *testing.T) {
 		t.Fatal("a watchdog over live ledgers must exist")
 	}
 
-	// A document served once is a neighbour, not a pattern: silent even
-	// after a search.
-	served.Add("10509")
+	// A document one query returned is a neighbour, not a pattern: silent
+	// even after a search.
+	served.Add("q-one", "10509")
 	if got := w.observe(grepChunksToolName); got != "" {
-		t.Fatalf("one serve event must stay silent, got %q", got)
+		t.Fatalf("one query must stay silent, got %q", got)
 	}
 
-	// Three documents served repeatedly and never opened: the watchdog
-	// speaks on the cadence, naming the stems and the deep-read tool.
+	// Three documents several DIFFERENT queries returned and nobody opened:
+	// the watchdog speaks on the cadence, naming the stems and the deep-read
+	// tool.
 	for _, d := range []string{"13204", "16606", "10509"} {
-		served.Add(d)
-		served.Add(d)
-		served.Add(d)
+		served.Add("q1", d)
+		served.Add("q2", d)
+		served.Add("q3", d)
 	}
 	if got := w.observe(searchBm25ChunksToolName); got != "" {
 		t.Fatalf("the first search of the cadence must stay silent, got %q", got)
@@ -96,9 +97,9 @@ func TestServedUnreadWatch(t *testing.T) {
 
 	// A fresh pile above the threshold is named again on the cadence.
 	for _, d := range []string{"17061", "17062", "1756"} {
-		served.Add(d)
-		served.Add(d)
-		served.Add(d)
+		served.Add("q1", d)
+		served.Add("q2", d)
+		served.Add("q3", d)
 	}
 	for i := 0; i < 2; i++ {
 		if got := w.observe(searchBm25ChunksToolName); got != "" {

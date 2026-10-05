@@ -1497,6 +1497,9 @@ func (s *ChatSessionService) ChatCompletions(
 						if len(result.RetrievedDocIDs) > 0 {
 							ans["retrieved_docids"] = result.RetrievedDocIDs
 						}
+						if len(result.ServedDocIDs) > 0 {
+							ans["served_docids"] = result.ServedDocIDs
+						}
 						if result.GateAudit != nil {
 							ans["gate_audit"] = result.GateAudit
 						}
@@ -1632,6 +1635,7 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	var toolCallErrors map[string]int
 	var toolErrorSamples map[string]string
 	var retrievedDocIDs []string
+	var servedDocIDs []string
 	var gateAudit *agentic_rag.GateAuditRecord
 	var deepReadChunks, shallowReadChunks int
 	var deepReadChunkIDs, shallowReadChunkIDs []string
@@ -1652,6 +1656,7 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 			toolCallErrors = result.ToolCallErrors
 			toolErrorSamples = result.ToolErrorSamples
 			retrievedDocIDs = result.RetrievedDocIDs
+			servedDocIDs = result.ServedDocIDs
 			gateAudit = result.GateAudit
 			deepReadChunks = result.DeepReadChunks
 			shallowReadChunks = result.ShallowReadChunks
@@ -1691,6 +1696,9 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	}
 	if len(retrievedDocIDs) > 0 {
 		ans["retrieved_docids"] = retrievedDocIDs
+	}
+	if len(servedDocIDs) > 0 {
+		ans["served_docids"] = servedDocIDs
 	}
 	if gateAudit != nil {
 		ans["gate_audit"] = gateAudit

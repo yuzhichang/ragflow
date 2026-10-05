@@ -1070,28 +1070,16 @@ func renderJudgePrompt(row map[string]any) string {
 	).Replace(graderTemplate)
 }
 
-// judgeLLMIDs ports judge_llm_ids: the llm_ids to try when judging, in order.
-// The judge chat is a PLAIN chat (no agent_mode), so it has NO failover chain
-// - it is pinned to the single instance it is bound to, and when that
-// instance's plan is exhausted every judgement fails. Asking for another of
-// the tenant's instances explicitly is what lets judging survive a
-// single-instance quota wall.
-func judgeLLMIDs(cfg map[string]any) []string {
-	if list, ok := cfg["judge_llm_ids"].([]any); ok {
-		var ids []string
-		for _, id := range list {
-			if s := strings.TrimSpace(fmt.Sprintf("%v", id)); s != "" {
-				ids = append(ids, s)
-			}
-		}
-		if len(ids) > 0 {
-			return ids
-		}
+// judgeInstanceOverride reports whether the config still names judge instances.
+// It selects nothing: the judge chat carries its OWN failover group, the same
+// mechanism the answering chat uses (RAGFlow chat-level model failover), so
+// naming an instance would PIN the request to that one and defeat the group.
+// The key is read only to warn that it is ignored.
+func judgeInstanceOverride(cfg map[string]any) bool {
+	if list, ok := cfg["judge_llm_ids"].([]any); ok && len(list) > 0 {
+		return true
 	}
-	if single := strings.TrimSpace(strAny(cfg, "judge_llm_id", "")); single != "" {
-		return []string{single}
-	}
-	return []string{""}
+	return strings.TrimSpace(strAny(cfg, "judge_llm_id", "")) != ""
 }
 
 // isTransientJudgeAnswer ports _is_transient_judge_answer: True when a judge
@@ -1113,46 +1101,39 @@ func isTransientJudgeAnswer(answer string) bool {
 var judgeMaxRetries = 3
 var judgeRetryBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
 
-// askJudgeWithRetry ports ask_judge_with_retry: ask_judge with backoff
-// retries, then with the next configured instance. Two failure classes,
-// handled in order of cost: a transient burst (retried on the SAME instance
-// with backoff) and an exhausted instance (retried on the NEXT llm_id).
+// askJudgeWithRetry ports ask_judge_with_retry: ask_judge with backoff retries.
+// ONE failure class is handled now - a transient provider burst, retried on the
+// SAME chat with backoff. The instance rotation that used to sit on top of it is
+// GONE: the judge chat's own failover group covers an exhausted instance (the
+// same chat-level failover the answering chat uses), and naming an instance
+// would pin the request to it and disable the group, turning one exhausted plan
+// into a wall that no retry could pass.
 func askJudgeWithRetry(c *httpClient, cfg map[string]any, row map[string]any) string {
 	answer := ""
-	for _, llmID := range judgeLLMIDs(cfg) {
-		payload, judgeErr := askJudge(c, cfg, row, llmID)
+	for attempt := 0; attempt <= judgeMaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(judgeRetryBackoff[min(attempt-1, len(judgeRetryBackoff)-1)])
+		}
+		payload, judgeErr := askJudge(c, cfg, row)
 		if judgeErr != nil {
 			answer = "**ERROR**: " + judgeErr.Error()
 		} else {
 			answer = extractAnswerText(payload)
 		}
-		for attempt := 0; attempt < judgeMaxRetries; attempt++ {
-			if !isTransientJudgeAnswer(answer) {
-				return answer
-			}
-			time.Sleep(judgeRetryBackoff[min(attempt, len(judgeRetryBackoff)-1)])
-			payload, judgeErr := askJudge(c, cfg, row, llmID)
-			if judgeErr != nil {
-				answer = "**ERROR**: " + judgeErr.Error()
-			} else {
-				answer = extractAnswerText(payload)
-			}
+		if !isTransientJudgeAnswer(answer) {
+			return answer
 		}
-		// Retries on this instance are exhausted; fall through to the next id
-		// (when the remaining failure is a plan wall, not a burst).
 	}
 	return answer
 }
 
-// askJudge ports ask_judge.
-func askJudge(c *httpClient, cfg map[string]any, row map[string]any, llmID string) (any, error) {
+// askJudge ports ask_judge. No `llm_id` is sent: the judge chat resolves its own
+// failover group, exactly like the answering chat.
+func askJudge(c *httpClient, cfg map[string]any, row map[string]any) (any, error) {
 	body := map[string]any{
 		"chat_id":  strAny(cfg, "judge_chat_id", ""),
 		"question": renderJudgePrompt(row),
 		"stream":   boolOf(cfg["judge_stream"]),
-	}
-	if llmID != "" {
-		body["llm_id"] = llmID
 	}
 	if boolOf(body["stream"]) {
 		return c.postEventstream("/api/v1/chat/completions", body)
@@ -1721,9 +1702,20 @@ func answerPhaseOnce(c *httpClient, cfg map[string]any, questions []*question, a
 		rid string
 	}
 	var jobs []job
-	for _, q := range questions {
-		if !completed[q.questionID] {
-			jobs = append(jobs, job{len(jobs) + 1, q, q.questionID})
+	for i, q := range questions {
+		// The run id is UNIQUE PER SELECTION SLOT, not the question id. With
+		// rid == questionID a selection that repeats a question (a repeat
+		// experiment, a re-asked question) wrote several rows under ONE key and
+		// dedupeLast collapsed them to the last one BEFORE judging - measured
+		// 2026-10-05 on a q11 x5 run: five attempts ran, one row was judged, and
+		// the leaderboard printed "Accuracy 100%" off a 1/1 denominator while the
+		// true rate was 3/5. The number is the SELECTION POSITION, not the
+		// pending-job counter, so a resumed run reproduces the same ids and the
+		// resume check below still matches; question_id keeps the bare id for
+		// scoring and grouping.
+		rid := fmt.Sprintf("%s#%d", q.questionID, i+1)
+		if !completed[rid] {
+			jobs = append(jobs, job{len(jobs) + 1, q, rid})
 		}
 	}
 	if skipped := len(questions) - len(jobs); skipped > 0 {
@@ -1772,11 +1764,16 @@ func answerPhaseOnce(c *httpClient, cfg map[string]any, questions []*question, a
 		} else {
 			row["ragflow_error"] = err.Error()
 		}
-		// Whether the run ever SAW the documents that carry the answer:
-		// `served` is the run's own retrieval record, `cited` is what the
-		// deliverable's own lines name - a doc can be served and still never
-		// used. Without this pair a retrieval miss is indistinguishable from
-		// a reasoning failure, and the two need opposite fixes.
+		// Whether the run ever SAW the documents that carry the answer, in the
+		// three grades the backend records: `surfaced` (a retrieval result
+		// named it, snippet-only locators included), `served`/opened (a
+		// full-content tool pulled it: this is what Recall scores against),
+		// and `cited` (the deliverable's own lines name it - a doc can surface
+		// a dozen times and still never be opened). Without this triple a
+		// retrieval miss is indistinguishable from a reasoning failure, and
+		// the two need opposite fixes: measured 2026-10-05, q1093 rows read
+		// "6 documents retrieved" while the same run had served 270, seven of
+		// them carrying the answer's own series.
 		if len(j.q.expectedDocs) > 0 {
 			expected := map[string]bool{}
 			for _, d := range j.q.expectedDocs {
@@ -1786,18 +1783,30 @@ func answerPhaseOnce(c *httpClient, cfg map[string]any, questions []*question, a
 			for _, d := range asDocIDList(row["retrieved_docids"]) {
 				servedSet[d] = true
 			}
-			var served, cited []string
+			surfacedSet := map[string]bool{}
+			for _, d := range asDocIDList(row["served_docids"]) {
+				surfacedSet[d] = true
+			}
+			var served, surfaced, cited []string
 			for d := range expected {
 				if servedSet[d] {
 					served = append(served, d)
+				}
+				// A backend that predates served_docids reports only the
+				// opened set; falling back keeps the field populated (and
+				// understated) rather than empty and unreadable.
+				if surfacedSet[d] || servedSet[d] {
+					surfaced = append(surfaced, d)
 				}
 				if strings.Contains(strAny(row, "ragflow_answer", ""), d) {
 					cited = append(cited, d)
 				}
 			}
 			sortStrings(served)
+			sortStrings(surfaced)
 			sortStrings(cited)
 			row["gold_doc_served"] = toAnySlice(served)
+			row["gold_doc_surfaced"] = toAnySlice(surfaced)
 			row["gold_doc_cited"] = toAnySlice(cited)
 		}
 		status := strAny(row, "ragflow_error", "")
@@ -1899,6 +1908,9 @@ func answerPhaseOnce(c *httpClient, cfg map[string]any, questions []*question, a
 // runJudgePhase ports run_judge_phase: judge every row without a verdict,
 // riding out an exhausted plan in process. Returns (judgements, gaveUp).
 func runJudgePhase(c *httpClient, cfg map[string]any, answersPath, leaderboardPath string, concurrency int, wallWait time.Duration, wallMaxWaits int) (map[string]map[string]any, bool) {
+	if judgeInstanceOverride(cfg) {
+		fmt.Println("[judge] note: judge_llm_ids / judge_llm_id is IGNORED - the judge chat's own failover group picks the instance (naming one would pin the request and disable the group)")
+	}
 	roundNo, waits := 0, 0
 	for {
 		roundNo++
@@ -2130,7 +2142,9 @@ func extractRunStats(payload any) map[string]any {
 		return nil
 	}
 	if _, hasDirect := source["tool_call_counts"]; !hasDirect {
-		if _, hasDocs := source["retrieved_docids"]; !hasDocs {
+		_, hasRetrieved := source["retrieved_docids"]
+		_, hasServed := source["served_docids"]
+		if !hasRetrieved && !hasServed {
 			if data, ok := payload.(map[string]any)["data"].(map[string]any); ok {
 				source = data
 			}
@@ -2166,6 +2180,15 @@ func extractRunStats(payload any) map[string]any {
 	}
 	if docs, ok := source["retrieved_docids"].([]any); ok {
 		stats["retrieved_docids"] = uniqueDocIDs(docs)
+	}
+	// Served = every document a retrieval result NAMED (snippet-only locators
+	// included); retrieved = the subset the run opened with full content. Both
+	// ride the response, and the row needs both: measured 2026-10-05, a run
+	// reported 6 retrieved documents while its retrieval had served 270, and
+	// every analysis of "was the answer's document ever in front of the model"
+	// read the wrong one of the two.
+	if docs, ok := source["served_docids"].([]any); ok {
+		stats["served_docids"] = uniqueDocIDs(docs)
 	}
 	if usage, ok := source["usage"].(map[string]any); ok {
 		out := map[string]any{}
@@ -3368,6 +3391,7 @@ func buildLeaderboard(rows []map[string]any, cfg map[string]any, evidenceByID ma
 	var confidences []float64
 	var correctness []bool
 	var recalls []float64
+	var recallsSurfaced []float64
 	toolTotals := map[string]float64{}
 	toolErrorTotals := map[string]float64{}
 	toolErrorSamples := map[string]string{}
@@ -3406,25 +3430,45 @@ func buildLeaderboard(rows []map[string]any, cfg map[string]any, evidenceByID ma
 
 		evidence := uniqueDocIDs(toAnySlice(firstNonEmptySlice(evidenceByID[queryID], asDocIDList(row["evidence_doc_ids"]))))
 		recall := (*float64)(nil)
+		recallSurfaced := (*float64)(nil)
 		if len(evidence) > 0 {
 			retrievedSet := map[string]bool{}
 			for _, d := range asDocIDList(row["retrieved_docids"]) {
 				retrievedSet[d] = true
 			}
-			hits := 0
+			// Surfaced = named by ANY retrieval result (snippet-only locators
+			// included), i.e. everything that was ever in front of the model.
+			// Recall above scores the OPENED set; the pair separates "the
+			// retrieval never found it" from "the model had it and never
+			// opened it" - opposite failures behind the same miss.
+			surfacedSet := map[string]bool{}
+			for _, d := range asDocIDList(row["served_docids"]) {
+				surfacedSet[d] = true
+			}
+			for _, d := range asDocIDList(row["retrieved_docids"]) {
+				surfacedSet[d] = true
+			}
+			hits, hitsSurfaced := 0, 0
 			for _, d := range evidence {
 				if retrievedSet[d] {
 					hits++
+				}
+				if surfacedSet[d] {
+					hitsSurfaced++
 				}
 			}
 			r := float64(hits) / float64(len(evidence))
 			recall = &r
 			recalls = append(recalls, r)
+			rs := float64(hitsSurfaced) / float64(len(evidence))
+			recallSurfaced = &rs
+			recallsSurfaced = append(recallsSurfaced, rs)
 		}
 		perQueryMetrics = append(perQueryMetrics, map[string]any{
-			"query_id": queryID,
-			"correct":  correct,
-			"recall":   roundPercentNil(recall),
+			"query_id":        queryID,
+			"correct":         correct,
+			"recall":          roundPercentNil(recall),
+			"recall_surfaced": roundPercentNil(recallSurfaced),
 		})
 
 		if row["judge_correct"] != nil || row["judge_error"] != nil {
@@ -3561,6 +3605,17 @@ func buildLeaderboard(rows []map[string]any, cfg map[string]any, evidenceByID ma
 		}
 		recallPercent = round2(sum / float64(len(recalls)) * 100)
 	}
+	// Same average over the SURFACED set: how often the evidence documents
+	// were in front of the model at all, opened or not. Recall (%) minus this
+	// is the share of evidence the run had in hand and did not read.
+	surfacedRecallPercent := any(nil)
+	if len(recallsSurfaced) > 0 {
+		sum := 0.0
+		for _, r := range recallsSurfaced {
+			sum += r
+		}
+		surfacedRecallPercent = round2(sum / float64(len(recallsSurfaced)) * 100)
+	}
 
 	avgToolStats := map[string]float64{}
 	if total > 0 {
@@ -3598,6 +3653,7 @@ func buildLeaderboard(rows []map[string]any, cfg map[string]any, evidenceByID ma
 		"Retriever":             orDefault(strAny(lbCfg, "retriever", ""), "change me when submitting"),
 		"Accuracy (%)":          accuracyPercent,
 		"Recall (%)":            recallPercent,
+		"Surfaced Recall (%)":   surfacedRecallPercent,
 		"Search Calls":          round2(searchCalls),
 		"Calibration Error (%)": calibrationErrorPercent,
 		"Link":                  orDefault(strAny(lbCfg, "link", ""), "change me when submitting"),
@@ -3699,6 +3755,7 @@ func leaderboardSummary(leaderboard map[string]any) string {
 	}
 	lines = append(lines,
 		fmt.Sprintf("  Recall (%%)       : %v", leaderboard["Recall (%)"]),
+		fmt.Sprintf("  Surfaced Recall  : %v", leaderboard["Surfaced Recall (%)"]),
 		fmt.Sprintf("  Search Calls     : %v", leaderboard["Search Calls"]),
 		fmt.Sprintf("  Calibration (%%)  : %v", leaderboard["Calibration Error (%)"]),
 		fmt.Sprintf("  avg_tool_stats   : %v", leaderboard["avg_tool_stats"]),

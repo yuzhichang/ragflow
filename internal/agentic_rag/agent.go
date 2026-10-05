@@ -538,34 +538,51 @@ func (l *searchLedger) Add(tool, args string) {
 }
 
 // servedLedger records the documents the retrieval tools served to the model,
-// counting how many serve events each document appeared in. The delivery gate
-// diffs it against the deep-read document set (RetrievedDocIDs, filled only by
-// full-content tools) and reports the documents that kept surfacing - served
-// repeatedly - and were never opened: those are the candidates a failing chain
-// never looked at. A document served once in a passing sweep is noise; one the
-// retrieval kept returning is a candidate.
+// counting - per document - the DISTINCT QUERIES that returned it. The delivery
+// gate diffs it against the deep-read document set (RetrievedDocIDs, filled only
+// by full-content tools) and reports the documents that kept surfacing and were
+// never opened: those are the candidates a failing chain never looked at. A
+// document served once in a passing sweep is noise; one several different
+// searches returned is a candidate.
+//
+// The unit is the QUERY, never the chunk. Counting serves per chunk made the
+// weight a function of how many chunks of one document a single result carried:
+// measured 2026-10-05 on q1093 of a ten-question run, the run's own latched
+// document reached 35 chunk-serves while every unread lead it was supposed to
+// consider stood at 2-4, so the census's top five was one document repeated and
+// the leads it exists to name never made the list. Counting distinct queries
+// drops that same document to 8 - still the loudest, because the run really did
+// ask about it eight times, but the inflation is gone.
 type servedLedger struct {
 	mu   sync.Mutex
-	docs map[string]int // document stem -> serve events
+	docs map[string]map[string]struct{} // document stem -> the distinct queries that served it
 }
 
 // NewServedLedger returns an empty served ledger for one run.
 func NewServedLedger() *servedLedger {
-	return &servedLedger{docs: map[string]int{}}
+	return &servedLedger{docs: map[string]map[string]struct{}{}}
 }
 
-// Add records one served document (the benchmark's file stem).
-func (l *servedLedger) Add(docID string) {
+// Add records one served document (the benchmark's file stem) under the query
+// that returned it. Repeats of the same (query, document) pair collapse: the
+// weight is how many different searches insisted on the document, not how many
+// times one search was re-run.
+func (l *servedLedger) Add(query, docID string) {
 	if l == nil || docID == "" {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.docs[docID]++
+	queries, ok := l.docs[docID]
+	if !ok {
+		queries = map[string]struct{}{}
+		l.docs[docID] = queries
+	}
+	queries[query] = struct{}{}
 }
 
-// Serves returns how many times a document was served this run (0 when it was
-// never served). Callers that report a lead's weight read it through this
+// Serves returns how many DISTINCT queries returned this document during the run
+// (0 when none did). Callers that report a lead's weight read it through this
 // accessor rather than the document map, which Docs() hands out a copy of,
 // unlocked.
 func (l *servedLedger) Serves(docID string) int {
@@ -574,7 +591,7 @@ func (l *servedLedger) Serves(docID string) int {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.docs[docID]
+	return len(l.docs[docID])
 }
 
 // Docs returns the served documents, most-served first (ties broken by id).
@@ -588,8 +605,8 @@ func (l *servedLedger) Docs() []string {
 	}
 	var ps []pair
 	l.mu.Lock()
-	for d, n := range l.docs {
-		ps = append(ps, pair{d, n})
+	for d, queries := range l.docs {
+		ps = append(ps, pair{d, len(queries)})
 	}
 	l.mu.Unlock()
 	sort.Slice(ps, func(i, j int) bool {
@@ -605,13 +622,16 @@ func (l *servedLedger) Docs() []string {
 	return out
 }
 
-// How many serve events make a document a named lead, and how many leads each
-// consumer is handed. The auditor gets a short list; the RE-ANCHOR round gets a
-// longer one, because that round exists to put the right unread documents in
-// front of the producer and the answer-bearing ones can rank below the
+// How many DISTINCT QUERIES make a document a named lead, and how many leads
+// each consumer is handed. The auditor gets a short list; the RE-ANCHOR round
+// gets a longer one, because that round exists to put the right unread documents
+// in front of the producer and the answer-bearing ones can rank below the
 // auditor's cap: measured on the smoke53 run, q1093's two documents carrying the
 // answer's own series had been served twice each and never opened, and neither
-// reached the auditor's ten while ten louder leads did.
+// reached the auditor's ten while ten louder leads did. The unit is the query on
+// purpose - see servedLedger - because the run's own latched candidate is what
+// pumps a document's count, and one query returning many chunks of it must not
+// be allowed to crowd the list of leads the run has NOT considered.
 const (
 	servedUnreadMinServes   = 2
 	servedUnreadAuditorMax  = 10
@@ -2116,6 +2136,19 @@ func auditRepairDirective(suspects int, verdict string, hist []int) string {
 		"in the candidate matrix`, a cited chunk that contradicts it, a constraint the value FAILS - IS evidence against that "+
 		"value, so the repair is to CHANGE THE VALUE: re-derive it from a candidate that satisfies the slot, or, when the corpus "+
 		"holds no such candidate, ship the corpus's negative result under `Guessed Answer` with the searches that showed it. "+
+		// REVERTED 2026-10-05: the value-slot clause that replaced the licence
+		// above measured NET NEGATIVE over ten questions (smoke63 5/10 against
+		// smoke61's 8/10 on the same build, three previously-stable questions
+		// lost, tokens flat at 54M), and the single-pair win it was approved on
+		// (smoke62 q11+q351) did not replicate: q11 went back to seven audits
+		// and 10.3M tokens. The failure shape was uniform - every wrong
+		// delivery shipped `Guessed Answer: **<candidate>** (assumption: ...)`
+		// and q679 passed the gate in two rounds on a wrong candidate - i.e.
+		// telling the producer that the value slot MUST hold a candidate turned
+		// "keep verifying" into "name what you already have". The contradiction
+		// with the auditor's `answer value is not a slot filler` remains real
+		// and is left as it was: fixing it needs an evaluation that can
+		// actually resolve it, which a ten-question single run cannot.
 		"Class (ii) is not what the rule below forbids: what is forbidden is a swap with no evidence behind it, and what is "+
 		"equally forbidden is re-rendering the same value a third time when the auditor has shown a constraint it fails. "+
 		// (c) Repair the RECORD, not the conclusion. The cheapest repair

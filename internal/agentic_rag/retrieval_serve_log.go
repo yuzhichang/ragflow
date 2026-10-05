@@ -86,7 +86,7 @@ func logServedChunks(ctx context.Context, tool, query string, hits []snippetHit)
 	// never deep-read.
 	if l := servedLedgerFrom(ctx); l != nil {
 		for _, hit := range hits {
-			l.Add(docNameStem(hit.chunk.DocumentName))
+			l.Add(query, docNameStem(hit.chunk.DocumentName))
 		}
 	}
 	if len(hits) == 0 {

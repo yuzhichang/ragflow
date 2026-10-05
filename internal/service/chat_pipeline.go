@@ -120,11 +120,25 @@ type AsyncChatResult struct {
 	// without opening the server logs. Same population rule.
 	ToolErrorSamples map[string]string `json:"tool_error_samples,omitempty"`
 	// RetrievedDocIDs is every document identifier (doc_id and doc_name) the
-	// turn's retrieval tools surfaced, deduplicated and sorted. It is the
-	// union of everything the agent pulled, which is larger than the set it
-	// finally cited — benchmarks score retrieval recall against the union.
-	// Same population rule as ToolCallCounts.
+	// turn's retrieval tools RETRIEVED - opened with full chunk content
+	// (list_chunks, search_chunks, search_semantic_chunks), deduplicated and
+	// sorted. A document seen only through a <match_snippet> window
+	// (search_bm25_chunks, grep_chunks) was LOCATED, not retrieved, and does
+	// NOT appear here: the two sets answer different questions, and the
+	// benchmark's Recall (%) scores against this one. Same population rule as
+	// ToolCallCounts. Measured 2026-10-05: q1093 of a ten-question run
+	// reported 6 ids here while its retrieval had served 270 documents -
+	// reading this field as "what the agent saw" understates the context by an
+	// order of magnitude. ServedDocIDs is the set for that question.
 	RetrievedDocIDs []string `json:"retrieved_docids,omitempty"`
+	// ServedDocIDs is every document identifier the turn's retrieval tools
+	// SURFACED: the full-content tools above PLUS the snippet-only locators
+	// (search_bm25_chunks, grep_chunks), ranked most-served first. It is the
+	// set that answers "was the answer's own document ever in front of the
+	// model", which RetrievedDocIDs cannot: a document can surface a dozen
+	// times and never be opened, and that gap is exactly where a retained
+	// candidate sits on a document nobody read.
+	ServedDocIDs []string `json:"served_docids,omitempty"`
 	// GateAudit carries the delivery gate's per-round suspect accounting of
 	// the answer auditor (agentic runs only) — how many suspects each audit
 	// pass flagged and whether the last one concluded PASS. Benchmarks report
@@ -2752,6 +2766,12 @@ func (s *ChatPipelineService) agenticRag(
 		// is measured against the union, and the citation payload only carries
 		// the subset the answer quotes.
 		retrievedDocs := agentic_rag.NewDocIDLedger()
+		// The same accounting split by "surfaced" vs "opened": the served
+		// ledger records EVERY document a retrieval tool named (snippet-only
+		// locators included) together with how often, so a benchmark row can
+		// say whether the answer's own document was ever in front of the model
+		// instead of only whether it was opened.
+		servedDocs := agentic_rag.NewServedLedger()
 		// Chunk-read accounting: how many chunks the retrieval tools put in
 		// front of the model, split by read depth (full content vs snippet).
 		chunkReads := agentic_rag.NewChunkReadLedger()
@@ -2780,6 +2800,7 @@ func (s *ChatPipelineService) agenticRag(
 			ToolErrorSamples:  toolErrorSamples,
 			ToolCallDurations: toolDurations,
 			RetrievedDocIDs:   retrievedDocs,
+			Serves:            servedDocs,
 			ChunkReads:        chunkReads,
 			GateAudit:         gateAudit,
 			OnDelta: func(contentDelta, thinkingDelta string) {
@@ -2913,6 +2934,7 @@ func (s *ChatPipelineService) agenticRag(
 			ToolCallErrors:      toolErrors,
 			ToolErrorSamples:    toolErrorSamples,
 			RetrievedDocIDs:     retrievedDocs.Snapshot(),
+			ServedDocIDs:        servedDocs.Docs(),
 			GateAudit:           gateAudit,
 			Usage:               turnUsage,
 			ElapsedSeconds:      elapsed.Seconds(),

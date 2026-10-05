@@ -35,17 +35,20 @@ import (
 // result it is looking at does not.
 //
 // What it counts is leads, not activity: the tally is the served documents
-// that accumulated at least servedUnreadWatchMinServes serve events and have
-// never reached a deep read. A run that opens one of them has consumed the
+// that at least servedUnreadWatchMinServes DIFFERENT QUERIES returned and that
+// have never reached a deep read (the unit is the query, never the chunk - see
+// servedLedger for what counting chunks did to the ranking). A run that opens
+// one of them has consumed the
 // lead and hears nothing (and the reminder re-arms for the next batch); a run
 // that keeps enumerating new candidates while the same documents pile up
 // unheard hears the same short reminder naming them. One reminder per
 // deep-read epoch - the reset is the cap.
 const (
-	// servedUnreadWatchMinServes is how many serve events make a document a
-	// repeatedly-surfaced candidate rather than a neighbour of one query.
-	// Matches the gate's served-unread census so the mid-run nudge and the
-	// end-of-run payload describe the same set.
+	// servedUnreadWatchMinServes is how many different QUERIES must have
+	// returned a document before it counts as a repeatedly-surfaced candidate
+	// rather than the neighbour of one search. Matches the gate's
+	// served-unread census so the mid-run nudge and the end-of-run payload
+	// describe the same set.
 	servedUnreadWatchMinServes = 2
 
 	// servedUnreadWatchMinUnread is how many unread repeatedly-served
@@ -103,10 +106,10 @@ func (w *servedUnreadWatch) unreadRepeatedlyServed() []string {
 		if _, read := deep[d]; read {
 			continue
 		}
-		if w.served.docs[d] < servedUnreadWatchMinServes {
+		if w.served.Serves(d) < servedUnreadWatchMinServes {
 			break // Docs() is most-served first; the rest are quieter still
 		}
-		out = append(out, fmt.Sprintf("%s (x%d)", d, w.served.docs[d]))
+		out = append(out, fmt.Sprintf("%s (x%d)", d, w.served.Serves(d)))
 		if len(out) == servedUnreadWatchMaxNamed {
 			break
 		}

@@ -551,11 +551,22 @@ func TestRunDeliveryGateStopsWhenSuspectsClimbBack(t *testing.T) {
 // the re-anchor round asks for a longer list than the auditor: on the smoke53
 // run q1093's two answer-bearing documents had been served twice each and ranked
 // below ten louder leads, so the auditor's ten never mentioned them.
+//
+// The weight is the DISTINCT QUERY count, never the chunk count: measured
+// 2026-10-05, a latched document reached 35 chunk-serves while every unread lead
+// stood at 2-4, so the census's whole top five was that one document. A repeat
+// of the SAME query is one search (pinned below), which is what stops a run from
+// pumping its own anchor to the top of the list of leads it has not considered.
 func TestServedUnreadDocsRanksAndLabelsTheCensus(t *testing.T) {
 	served := NewServedLedger()
-	for _, d := range []string{"b", "a", "b", "a", "c", "c", "c"} {
-		served.Add(d)
-	}
+	served.Add("q1", "b")
+	served.Add("q2", "b")
+	served.Add("q1", "a")
+	served.Add("q2", "a")
+	served.Add("q1", "c")
+	served.Add("q2", "c")
+	served.Add("q3", "c")
+	served.Add("q3", "c") // same query again: still ONE search
 	deep := NewDocIDLedger()
 	deep.Add("c") // opened: no longer a lead
 
@@ -566,7 +577,7 @@ func TestServedUnreadDocsRanksAndLabelsTheCensus(t *testing.T) {
 	if got := fmt.Sprintf("%v", servedUnreadDocs(served, deep, 1)); got != "[a (x2)]" {
 		t.Fatalf("capped census = %s, want [a (x2)]", got)
 	}
-	served.Add("d") // served once: below the lead threshold
+	served.Add("q4", "d") // one query: below the lead threshold
 	if got := fmt.Sprintf("%v", servedUnreadDocs(served, deep, servedUnreadAuditorMax)); got != want {
 		t.Fatalf("census after a single serve = %s, want %s", got, want)
 	}
