@@ -6,7 +6,7 @@
   "backend": {
     "scheme": "http",
     "host": "127.0.0.1",
-    "port": 9384
+    "port": 9380
   },
   "ragflow_chat": {
     "fresh_session_per_question": true,
