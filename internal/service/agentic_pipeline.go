@@ -43,6 +43,13 @@ const agenticRunTimeout = 15 * time.Minute
 // operator who removed or renamed the template.
 const defaultAgenticTemplateID = "smart-reasoning"
 
+// gateTemplateID is the producer template the planer-explorer-auditor engine (mode 6)
+// runs: the two-stage producer whose plan is verified by check_decomposition and whose
+// deliverable the answer auditor audits. It is deliberately distinct from
+// defaultAgenticTemplateID (mode 5's plain direct-answer explorer) so the two engines
+// never share a prompt.
+const gateTemplateID = "planer-explorer-auditor"
+
 // agenticRag drives ONE conversation turn through the smart-reasoning agent
 // (internal/agentic_rag): an eino-ADK ReAct explorer whose toolset is the
 // corpus itself (grep / lexical / semantic locate, list_chunks deep read).

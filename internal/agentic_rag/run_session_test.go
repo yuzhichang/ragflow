@@ -7,15 +7,8 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/adk/session"
 	"github.com/cloudwego/eino/schema"
 )
-
-// newTestConversation returns a conversation over a fresh in-memory store,
-// detached from any run's shared log.
-func newTestConversation() *conversation {
-	return newConversation("test", session.NewInMemoryStore[adk.Message](nil))
-}
 
 // scriptedSessionAgent is an adk.Agent driven through a real Runner: it emits
 // ONE assistant message per turn and fails on demand, so a test can script the
@@ -132,7 +125,7 @@ func TestConversationRestartWhenNothingCommitted(t *testing.T) {
 	if _, err := runTurn(t, conv, agent, schema.UserMessage("first")); err == nil {
 		t.Fatal("turn 1 was scripted to fail")
 	}
-	if conv.id == "test" {
+	if conv.id == "auditor" {
 		t.Errorf("conversation id = %q, want a fresh one after an unrecoverable failure", conv.id)
 	}
 	if !conv.needsSeed() {
@@ -167,12 +160,12 @@ func TestConversationTurnMessagesSeedsOnce(t *testing.T) {
 	}
 }
 
-// lastAssistant reads the recovery path straight out of the session: the
-// newest assistant message that carries a cited answer, even when later turns
-// were pure narration.
+// lastAssistant reads the recovery ladder straight out of the session: the
+// newest assistant message that carries an answer, even when later turns were
+// pure narration.
 func TestConversationLastAssistant(t *testing.T) {
 	conv := newTestConversation()
-	const deliverable = "The pass holds 14 people.\n\nchunk_id: abc123"
+	const deliverable = "## Reasoning Chain\n- Clue: b\n\nFinal Answer: **14 人**"
 	agent := &scriptedSessionAgent{out: func(turn int) string {
 		if turn == 1 {
 			return deliverable
@@ -188,13 +181,13 @@ func TestConversationLastAssistant(t *testing.T) {
 
 	ctx := context.Background()
 	answer := func(m *schema.Message) bool {
-		return strings.TrimSpace(m.Content) != "" && strings.Contains(m.Content, "chunk_id:")
+		return strings.TrimSpace(m.Content) != "" && hasAnswerLine(m.Content)
 	}
 	if got := conv.lastAssistant(ctx, answer); got != deliverable {
 		t.Errorf("lastAssistant(answer) = %q, want the earlier deliverable", got)
 	}
 	substantive := func(m *schema.Message) bool { return strings.TrimSpace(m.Content) != "" }
-	if got := conv.lastAssistant(ctx, substantive); strings.Contains(got, "chunk_id:") || got == "" {
+	if got := conv.lastAssistant(ctx, substantive); hasAnswerLine(got) || got == "" {
 		t.Errorf("lastAssistant(substantive) = %q, want the narration tail", got)
 	}
 }

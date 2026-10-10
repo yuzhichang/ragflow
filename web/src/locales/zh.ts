@@ -1065,8 +1065,23 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
       thinkingLevelHighDescription: '深度推理',
       thinkingLevelUltra: 'Ultra',
       thinkingLevelUltraDescription: '尽力思考',
-      thinkingLevelAgentic: 'Agentic',
+      thinkingLevelAgentic: 'react',
       thinkingLevelAgenticDescription: '自主探索语料库',
+      thinkingLevelPlanExplorerAuditor: 'planer-explorer-auditor',
+      thinkingLevelPlanExplorerAuditorDescription:
+        '先规划问题分解，再在交付门禁下探索',
+      thinkingLevelIterative: 'IterSynth',
+      thinkingLevelIterativeDescription: '每轮重写研究摘要',
+      thinkingLevelCodex: 'coding-agent',
+      thinkingLevelCodexDescription: '交由共享 Codex 智能体阅读知识库',
+      failoverModels: '备用模型',
+      failoverModelsTip:
+        '当主模型遇到服务商故障时，Agentic智能体按此列表顺序切换到下一个模型。',
+      failoverModelsPrimaryLabel: '主模型',
+      failoverModelsNoPrimary: '租户默认',
+      failoverModelsEmpty:
+        '暂无备用模型。至少添加一个，才能在服务商故障时继续服务。',
+      failoverModelsAdd: '添加备用模型',
       thinkingTip:
         '仅控制官方模型提供商中的 Qwen、Kimi 和 GLM 模型思考模式。系统默认会关闭 Qwen 思考，以避免任务长时间运行。',
       quote: '显示引文',

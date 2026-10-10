@@ -28,9 +28,9 @@ import (
 // The naive pipeline earns its [ID:N] markers two probabilistic ways: a
 // prompt asking the model to emit them, and an embedding-similarity pass
 // (InsertCitations) guessing which sentence came from which chunk. The
-// agentic answer needs neither: EVERY factual line already cites
-// its provenance explicitly as `chunk_id: <id>`, exactly as the tool output
-// printed it. So the port
+// agentic deliverable needs neither: EVERY matrix/chain line already cites
+// its provenance explicitly as `chunk_id: <id>` — fields the answer auditor
+// verifies character-for-character against list_chunks output. So the port
 // is deterministic: extract the cited ids, and let the caller (chat
 // pipeline) fetch those chunks and number them; [ID:N] markers are then
 // appended mechanically, N being the chunk's position in the reference

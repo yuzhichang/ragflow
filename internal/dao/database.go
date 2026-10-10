@@ -217,6 +217,8 @@ func InitDB(ctx context.Context, migrateDB bool) error {
 		// from these tables at runtime, so the Go side must guarantee they exist.
 		&entity.CompilationTemplate{},
 		&entity.CompilationTemplateGroup{},
+		// mode 8 session -> Codex thread mapping (runtime table; see codexagent).
+		&entity.CodexThreadMap{},
 	}
 
 	if migrateDB {
@@ -399,6 +401,7 @@ func autoMigrateRuntimeModels(ctx context.Context, db *gorm.DB) error {
 		&entity.ConversationReference{},
 		&entity.API4ConversationMessage{},
 		&entity.API4ConversationReference{},
+		&entity.CodexThreadMap{},
 	}
 	for _, m := range goRuntimeModels {
 		if err := autoMigrateSafely(ctx, db, m); err != nil {

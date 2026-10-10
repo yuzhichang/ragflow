@@ -506,6 +506,10 @@ func main() {
 		logLevel = "info"
 	}
 
+	// Temporary pre-config logger: STDOUT ONLY (empty FileOutput). The port
+	// is not known yet, so a file here would be an orphaned log (e.g.
+	// logs/api_server.log next to the real logs/api_server_9384.log); the
+	// real file sink is attached by the post-config re-initialization below.
 	if err = common.InitLogger(logLevel, common.FileOutput{}, serverName); err != nil {
 		panic("failed to initialize logger: " + err.Error())
 	}
@@ -1101,6 +1105,11 @@ func startServer(ctx context.Context, serverName string, arguments *serverArgs) 
 	}
 
 	// Initialize service layer
+	// Install the mode-7 Codex configuration before any chat path reads it. A missing
+	// endpoint keeps mode 7 disabled (the engine degrades to the regular pipeline).
+	apiServerCfg := globalConfig.GetAPIServerConfig()
+	service.SetCodexConfig(&apiServerCfg.Codex)
+
 	userService := service.NewUserService()
 	documentService := document.NewDocumentService()
 	datasetsService := dataset.NewDatasetService()

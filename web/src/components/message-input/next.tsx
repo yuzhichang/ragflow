@@ -53,9 +53,11 @@ export type NextMessageInputOnPressEnterParameter = {
 
 // The selector only offers numeric thinking levels; a value persisted by a
 // since-removed mode is not one, so it falls back to the default rather than
-// reaching the request as NaN.
+// reaching the request as NaN. The range must cover every level the backend
+// dispatches on (5 = agentic ReAct, 6 = iterative synthesis, 7 = Codex) or a
+// stored level silently degrades to 1.
 function normalizeThinkingLevel(level: string) {
-  return /^[0-5]$/.test(level) ? level : '1';
+  return /^[0-7]$/.test(level) ? level : '1';
 }
 
 interface NextMessageInputProps {
@@ -159,10 +161,26 @@ export function NextMessageInput({
     };
   }, [isResizing]);
 
-  // Level 5 is not a deeper step on the same ladder: the backend hands it to
-  // the agentic RAG agent, which runs its own retrieval instead of the
-  // pipeline's. It still sorts first as the highest-effort choice.
+  // Levels 5–8 are not deeper steps on the same ladder: the backend hands each
+  // to a different engine that runs its own retrieval instead of the pipeline's.
+  // They sort first as the highest-effort choices: level 8 (coding-agent, a full
+  // external Codex agent), 7 (IterSynth), 6 (planer-explorer-auditor), 5 (react).
   const thinkingOptions = [
+    {
+      label: t('chat.thinkingLevelCodex'),
+      value: '8',
+      description: t('chat.thinkingLevelCodexDescription'),
+    },
+    {
+      label: t('chat.thinkingLevelIterative'),
+      value: '7',
+      description: t('chat.thinkingLevelIterativeDescription'),
+    },
+    {
+      label: t('chat.thinkingLevelPlanExplorerAuditor'),
+      value: '6',
+      description: t('chat.thinkingLevelPlanExplorerAuditorDescription'),
+    },
     {
       label: t('chat.thinkingLevelAgentic'),
       value: '5',
