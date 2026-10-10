@@ -446,6 +446,8 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 	var content, reasoning strings.Builder
 	var items []codexgo.Item
 	completed := false
+	// A detail-less error notification captured before the terminal turn.
+	var streamErr error
 
 	for {
 		select {
@@ -463,6 +465,9 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 					r.interrupt(th, turnID)
 					if err := runCtx.Err(); err != nil {
 						return nil, err
+					}
+					if streamErr != nil {
+						return nil, streamErr
 					}
 					return nil, errors.New("codexagent: event stream closed before the turn completed")
 				}
@@ -503,12 +508,22 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				if msg == "" && len(e.Data) > 0 {
 					msg = string(e.Data)
 				}
-				return nil, fmt.Errorf("codexagent: turn error (code=%q): %s", e.Code, msg)
+				if e.Code != "" || msg != "" {
+					return nil, fmt.Errorf("codexagent: turn error (code=%q): %s", e.Code, msg)
+				}
+				// The app-server can emit a detail-less error notification just
+				// before a failed turn/completed, whose turn.error carries the real
+				// cause (e.g. the upstream provider's HTTP status). Keep the bare
+				// notification and keep reading so that richer detail wins —
+				// returning here would surface an empty message and hide the cause.
+				if streamErr == nil {
+					streamErr = errors.New("codexagent: the Codex server reported an error with no detail")
+				}
 			case codexgo.TurnCompletedEvent:
 				completed = true
 				// A terminal turn that failed or was interrupted is NOT success.
 				if status := turnStatus(e); status == codexgo.TurnStatusFailed || status == codexgo.TurnStatusInterrupted {
-					return nil, fmt.Errorf("codexagent: turn %s: %s", status, turnErrorText(e.Turn))
+					return nil, fmt.Errorf("codexagent: turn %s: %s", status, turnErrorDetail(e.Turn, streamErr))
 				}
 				// The authoritative answer is the turn's final agent message. Prefer
 				// the completed message items (item/completed), then the turn's own
@@ -536,11 +551,17 @@ func turnStatus(e codexgo.TurnCompletedEvent) codexgo.TurnStatus {
 	return e.Status
 }
 
-func turnErrorText(t *codexgo.Turn) string {
-	if t == nil || len(t.Error) == 0 {
-		return "no error detail"
+// turnErrorDetail returns the most specific failure text available: the turn's own
+// error payload when present, otherwise a detail-less error notification captured
+// earlier, otherwise a fixed placeholder.
+func turnErrorDetail(t *codexgo.Turn, streamErr error) string {
+	if t != nil && len(t.Error) > 0 {
+		return string(t.Error)
 	}
-	return string(t.Error)
+	if streamErr != nil {
+		return streamErr.Error()
+	}
+	return "no error detail"
 }
 
 // interrupt asks the server to stop a turn we have given up waiting on, in its own short

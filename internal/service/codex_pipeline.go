@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,33 @@ import (
 	"ragflow/internal/mcp"
 	serverconfig "ragflow/internal/server/config"
 )
+
+// versionSegmentRe matches an API version path segment such as "/v1", "/v1beta" or
+// "/v2/". Used to decide whether a provider base URL already names a version.
+var versionSegmentRe = regexp.MustCompile(`/v[0-9]+[a-z0-9]*(/|$)`)
+
+// normalizeResponsesBaseURL makes a provider base URL usable as the Codex Responses
+// endpoint. The Codex client appends "/responses", so a base that carries no version
+// segment — e.g. MiniMax's "https://api.minimaxi.com" (its chat URL is built from a
+// separate "v1/text/chatcompletion_v2" suffix) — would call ".../responses" and 404.
+// Append "/v1" unless the path already names a version (OpenAI's ".../v1" is left
+// alone). Query/fragment are preserved and inspected apart from the path.
+func normalizeResponsesBaseURL(raw string) string {
+	base := strings.TrimSpace(raw)
+	if base == "" {
+		return base
+	}
+	suffix := ""
+	if i := strings.IndexAny(base, "?#"); i >= 0 {
+		suffix = base[i:]
+		base = base[:i]
+	}
+	base = strings.TrimRight(base, "/")
+	if versionSegmentRe.MatchString(base) {
+		return base + suffix
+	}
+	return base + "/v1" + suffix
+}
 
 // codexConfig holds the mode 8 Codex configuration. It is installed once at server
 // boot (see cmd/ragflow_server.go) and read on the chat path. A mutex makes the swap
@@ -176,10 +204,21 @@ func (s *ChatPipelineService) codexResponsesCapable(ctx context.Context, userID 
 // ModelFactory's credential-exposing accessor.
 func (s *ChatPipelineService) resolveCodexModelTarget(ctx context.Context, userID string, chat *entity.Chat) (*ResolvedModelTarget, error) {
 	access := ModelAccess{UserID: userID, TenantID: chat.TenantID}
+	var (
+		target *ResolvedModelTarget
+		err    error
+	)
 	if chat.LLMID == "" {
-		return s.ModelFactory.ResolveDefaultChatTarget(ctx, access)
+		target, err = s.ModelFactory.ResolveDefaultChatTarget(ctx, access)
+	} else {
+		target, err = s.ModelFactory.ResolveChatTarget(ctx, access, chat.LLMID)
 	}
-	return s.ModelFactory.ResolveChatTarget(ctx, access, chat.LLMID)
+	if err != nil || target == nil {
+		return target, err
+	}
+	// Codex appends "/responses" to this base; normalize the version segment first.
+	target.BaseURL = normalizeResponsesBaseURL(target.BaseURL)
+	return target, nil
 }
 
 // codexAgent runs one mode 8 (Codex) turn: it brokers the session's Codex thread (via
