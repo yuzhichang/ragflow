@@ -205,11 +205,16 @@ func (a *NLPRetrievalAdapter) Search(ctx context.Context, db *gorm.DB, req Retri
 	}
 	// Dataset authorization must use the caller identity established by the
 	// agent run, not req.UserID, which is a configurable per-user memory filter.
-	userID := ""
-	if state, stateErr := runtime.GetStateFromContext(ctx); stateErr == nil && state != nil {
-		userID, _ = state.Sys["user_id"].(string)
+	// Prefer an explicit user id on the context (the Codex MCP bridge sets it
+	// from the ticket scope, since an MCP request carries no canvas state);
+	// otherwise fall back to the run's canvas state.
+	userID := strings.TrimSpace(runtime.UserIDFromContext(ctx))
+	if userID == "" {
+		if state, stateErr := runtime.GetStateFromContext(ctx); stateErr == nil && state != nil {
+			userID, _ = state.Sys["user_id"].(string)
+			userID = strings.TrimSpace(userID)
+		}
 	}
-	userID = strings.TrimSpace(userID)
 	checker := permission.NewDatabaseChecker(db)
 	for _, datasetID := range datasets.kbIDs {
 		if err := checker.CheckResource(ctx, permission.Subject{UserID: userID}, permission.ResourceRef{

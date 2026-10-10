@@ -147,6 +147,44 @@ The Go services use NATS JetStream for ingestion, synchronization, memory, and k
 - `RAGFLOW_IMAGE`
   The Go Docker image used by `docker-compose.yml`. Use an official Go image tag documented in its release notes, or use the locally built `ragflow:go-local` tag. The RAGFlow Docker image does not include embedding models.
 
+### Codex app-server (mode 8)
+
+The `reasoning` level 8 is backed by a shared Codex app-server, run as the `codex` service. It uses the published image `infiniflow/codex:<CODEX_VERSION>` (a small alpine image around the official static app-server binary). Set `CODEX_WS_TOKEN` in `.env` and start the stack:
+
+```bash
+cd ragflow/docker
+# In .env: CODEX_WS_TOKEN=$(openssl rand -base64 32 | tr -d '\n')
+docker compose -f docker-compose.yml up -d
+```
+
+To build the image locally instead (offline, from the official release binary), fetch it host-side first and build under the same tag the compose file expects:
+
+```bash
+cd ragflow/docker
+python3 codex/download_deps.py            # SHA-256-verified; honours HTTPS_PROXY, or --proxy URL
+docker build -t infiniflow/codex:0.162.0 ./codex
+```
+
+- `CODEX_VERSION`
+  The codex release / image tag. The published image is `infiniflow/codex:<version>`. When building locally, the binary version is set in `codex/download_deps.py`; keep the two in step.
+- `CODEX_IMAGE`
+  The image to run, `infiniflow/codex:${CODEX_VERSION}`.
+- `CODEX_WS_PORT`
+  Host **loopback** port published for local diagnosis (e.g. a WS client at `ws://127.0.0.1:${CODEX_WS_PORT}`). Defaults to `8790`. The API reaches Codex over the compose network, not this port.
+- `CODEX_WS_TOKEN`
+  **Required** for mode 8, empty by default. A strong random secret (`openssl rand -base64 32 | tr -d '\n'`) that is both the app-server's WS capability token and the API's `RAGFLOW_CODEX_BEARER_TOKEN`. The codex container refuses to start without it, because a non-loopback WS listener requires authentication.
+- `RAGFLOW_CODEX_ENDPOINT`
+  How the API dials Codex: `ws://codex:8790`. Empty disables mode 8 (the engine degrades to the regular pipeline).
+- `RAGFLOW_CODEX_MCP_PUBLIC_BASE`
+  How Codex calls back into the API's MCP bridge: `http://ragflow-cpu:9380` (the API's in-network address). An empty value disables mode 8 entirely.
+- `RAGFLOW_CODEX_WORK_DIR`
+  Codex's working directory inside the codex container (`/work`, created by the image). It must exist **there**, so it cannot be an API-side temp path.
+- Optional: `RAGFLOW_CODEX_APPROVAL_POLICY`, `RAGFLOW_CODEX_SANDBOX_MODE`, `RAGFLOW_CODEX_RESPONSES_PROVIDERS`, `RAGFLOW_CODEX_TURN_TIMEOUT` (defaults are shown in `.env`). Keep the sandbox read-only.
+
+Notes:
+- The codex container needs outbound access to the dialog model's **Responses API endpoint** (external network). It carries no model credentials: the model and its key are declared per thread from the dialog configuration.
+- The startup log may report that `bubblewrap` is missing from `PATH`; the image ships only the app-server binary. Mode 8 requests a read-only sandbox but never executes commands — it only makes MCP tool calls, and command/file/approval requests are declined — so the disk sandbox is not exercised and the warning is benign. Enabling OS-level sandbox enforcement would need the full release *package* (which bundles `bubblewrap`) plus the container privileges `bwrap` requires.
+
 ### Local embedding service
 
 The optional `tei-cpu` and `tei-gpu` profiles start a local text-embeddings-inference service. Its memory requirement depends on the model, runtime backend, precision, batch-token limit, and concurrency. The `tei-cpu` profile uses system RAM; the `tei-gpu` profile primarily uses GPU memory and also consumes system RAM. Verify model loading and peak request usage on the target hardware, and leave additional host memory for RAGFlow, the document engine, databases, and operating system.

@@ -8,6 +8,10 @@ services:
       mysql:
         condition: service_healthy
         required: false
+      # The mode-8 engine dials the shared Codex app-server lazily; start it first so the
+      # first mode-8 turn does not race the container coming up.
+      codex:
+        condition: service_started
     profiles:
       - cpu
     image: ${RAGFLOW_IMAGE}
@@ -48,6 +52,11 @@ services:
     environment:
       - KVROCKS_HOST=kvrocks
       - KVROCKS_PORT=6379
+      # The WS capability token that authenticates this process to the codex service.
+      # It is mapped from CODEX_WS_TOKEN (the codex service's own entrypoint reads the
+      # same variable) so a single value in .env is the source of truth. Empty means
+      # mode 8 is unusable (the codex container also refuses to start without it).
+      - RAGFLOW_CODEX_BEARER_TOKEN=${CODEX_WS_TOKEN:-}
     networks:
       - ragflow
     restart: unless-stopped
@@ -55,4 +64,44 @@ services:
     # If you use Docker Desktop, the --add-host flag is optional. This flag ensures that the host's internal IP is exposed to the Prometheus container.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Shared Codex app-server backing the mode-8 engine. Always on with the stack: the API
+  # reaches it over the compose network at ws://codex:8790, and it calls back into this
+  # API's MCP bridge. See docker/codex/ and the README "Codex app-server" section.
+  #
+  # Runs the published image (infiniflow/codex:<version>, set via CODEX_IMAGE). To build
+  # it locally instead, run ./codex/download_deps.py and then
+  # `docker build -t infiniflow/codex:${CODEX_VERSION} ./codex`.
+  codex:
+    image: ${CODEX_IMAGE}
+    environment:
+      # The entrypoint writes this into the token file the app-server reads (the CLI
+      # does not take the token from an env var). Must match the API's
+      # RAGFLOW_CODEX_BEARER_TOKEN, which is mapped from the same variable above.
+      # Only this variable is passed in — the container gets no other stack secrets.
+      - CODEX_WS_TOKEN=${CODEX_WS_TOKEN:-}
+    # Publish to the host's loopback only, for local diagnosis (e.g. a WS client at
+    # ws://127.0.0.1:${CODEX_WS_PORT}). Inside the container the server binds 0.0.0.0 so
+    # the API container can reach it over the compose network.
+    ports:
+      - "127.0.0.1:${CODEX_WS_PORT:-8790}:8790"
+    volumes:
+      # Persist the Codex thread/rollout state so a container restart does not force the
+      # engine to rebuild every thread. The volume is seeded from the image (owned by the
+      # unprivileged `codex` user), so no host-side chown is needed.
+      - codex-home:/home/codex/.codex
+    networks:
+      - ragflow
+    restart: unless-stopped
+    healthcheck:
+      # busybox wget: exits non-zero on a non-2xx response (verified), so this fails until
+      # the listener is actually ready. The image installs nothing, so curl is not present.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8790/readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  codex-home:
 

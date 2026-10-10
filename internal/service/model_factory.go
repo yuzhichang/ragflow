@@ -1087,3 +1087,47 @@ func modelTypesFromBitmask(modelType entity.ModelType) []entity.ModelType {
 	}
 	return modelTypes
 }
+
+// ResolvedModelTarget exposes a resolved model's provider details — driver, model name,
+// base URL and credentials. Unlike ResolveInfo it deliberately DOES expose the driver and
+// credentials, so it is an internal escape hatch for paths that must hand the provider
+// endpoint and token to an external system (the mode 8 Codex agent) instead of building an
+// in-process model. Keep it out of public APIs.
+type ResolvedModelTarget struct {
+	ProviderName string
+	ModelName    string
+	Driver       modelModule.ModelDriver
+	BaseURL      string
+	APIKey       string
+}
+
+// ResolveChatTarget resolves a chat model reference to its provider details.
+func (f *ModelFactory) ResolveChatTarget(ctx context.Context, access ModelAccess, modelRef string) (*ResolvedModelTarget, error) {
+	target, err := f.resolveConfig(ctx, access, entity.ModelTypeChat, modelRef)
+	if err != nil {
+		return nil, err
+	}
+	return resolvedTargetFrom(target), nil
+}
+
+// ResolveDefaultChatTarget resolves the tenant's default chat model to its provider details.
+func (f *ModelFactory) ResolveDefaultChatTarget(ctx context.Context, access ModelAccess) (*ResolvedModelTarget, error) {
+	target, err := f.resolveDefaultConfig(ctx, access, entity.ModelTypeChat)
+	if err != nil {
+		return nil, err
+	}
+	return resolvedTargetFrom(target), nil
+}
+
+func resolvedTargetFrom(t *modelTarget) *ResolvedModelTarget {
+	r := &ResolvedModelTarget{ProviderName: t.ProviderName, ModelName: t.ModelName, Driver: t.Driver}
+	if t.APIConfig != nil {
+		if t.APIConfig.BaseURL != nil {
+			r.BaseURL = *t.APIConfig.BaseURL
+		}
+		if t.APIConfig.ApiKey != nil {
+			r.APIKey = *t.APIConfig.ApiKey
+		}
+	}
+	return r
+}

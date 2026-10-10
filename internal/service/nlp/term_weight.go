@@ -45,23 +45,30 @@ var (
 	reTagNumeric     = regexp.MustCompile(`^[0-9-]+`)
 )
 
-// Does not parse: the trailing \] escapes the closing bracket. MatchString used
-// to swallow that error and report "no match", so Pretoken's "#" substitution
-// has never fired. Compiling once keeps that behaviour.
-const pretokenPunctPattern = `[~—\t @#%!<>,\.\?":;'\{\}\[\]_=\(\)\|，。？》•●○↓《；'：""【¥ 】…￥！、·（）×\` + "`" + `&/「」\]`
+// pretokenPunctPattern is the punctuation class Pretoken collapses to "#".
+// Ported from rag/nlp/term_weight.py (0.27.x): the class ends with an escaped
+// backslash followed by the closing bracket (`\\]` — a literal backslash member,
+// then the terminator), and the quote members are the CJK ones (‘’“”). A raw Go
+// string cannot hold the backtick member, so it is concatenated in.
+const pretokenPunctPattern = `[~—\t @#%!<>,\.\?":;'\{\}\[\]_=\(\)\|，。？》•●○↓《；‘’：“”【¥ 】…￥！、·（）×` + "`" + `&\\/「」\\]`
 
-// Compiling here keeps the pattern off the per-token path, but the error cannot
-// be reported here: package-level variables are initialised before
-// common.InitLogger installs the global logger, so common.Warn would silently
-// drop it. The error is carried to warnPunctPatternOnce, which runs once the
-// logger is live. rePretokenPunct is nil while the pattern stays unparseable.
+// Compiling here keeps the pattern off the per-token path. It is anchored with
+// "^" to mirror Python's re.match(p, t): only a token that BEGINS with
+// punctuation collapses to "#". An unanchored match would also drop tokens that
+// merely CONTAIN punctuation ("abc,", "世界。"), which Python keeps.
+//
+// The error cannot be reported here: package-level variables are initialised
+// before common.InitLogger installs the global logger, so common.Warn would
+// silently drop it. warnPunctPatternOnce carries it to the first request-path
+// call, where the logger is live. That guard should never fire now that the
+// pattern parses; it stays as a regression net for a future edit.
 var (
-	rePretokenPunct, pretokenPunctErr = regexp.Compile(pretokenPunctPattern)
+	rePretokenPunct, pretokenPunctErr = regexp.Compile("^" + pretokenPunctPattern)
 	pretokenPunctWarnOnce             sync.Once
 )
 
-// warnPunctPatternOnce reports the unparseable punct pattern on the first call
-// to Pretoken. That runs on the request path, after InitLogger has installed the
+// warnPunctPatternOnce reports an unparseable punct pattern on the first call to
+// Pretoken. That runs on the request path, after InitLogger has installed the
 // global logger, which is where the warning is actually visible.
 func warnPunctPatternOnce() {
 	pretokenPunctWarnOnce.Do(func() {
@@ -214,7 +221,9 @@ func (d *TermWeightDealer) Pretoken(txt string, num bool, stpwd bool) []string {
 		if rePretokenDigit.MatchString(tk) && !num {
 			continue
 		}
-		// rePretokenPunct is nil while pretokenPunctPattern stays unparseable.
+		// Mirrors Python's re.match(p, t): a token that starts with punctuation
+		// collapses to "#" and is dropped below. nil only if the pattern failed to
+		// compile (reported once by warnPunctPatternOnce).
 		if rePretokenPunct != nil && rePretokenPunct.MatchString(t) {
 			tk = "#"
 		}

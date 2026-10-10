@@ -37,6 +37,7 @@ import (
 // stable across calls (a fresh struct{}{} per call would key
 // distinctly and break ctx.Value lookups).
 type stateCtxKey struct{}
+type userIDCtxKey struct{}
 type agentMessageEmitterCtxKey struct{}
 type canvasMessageEmitterCtxKey struct{}
 
@@ -174,6 +175,26 @@ func agentDeltaSinkFromContext(ctx context.Context) *agentDeltaSinkState {
 // before invoking a component.
 func WithState(ctx context.Context, s *CanvasState) context.Context {
 	return context.WithValue(ctx, stateCtxKey{}, s)
+}
+
+// WithUserID attaches the acting user id to ctx. The Codex MCP bridge carries the
+// ticket owner here — an MCP request has no canvas state, so retrieval's dataset
+// permission check (NLPRetrievalAdapter.Search) would otherwise see an empty caller
+// and reject every lookup as unauthenticated.
+func WithUserID(ctx context.Context, userID string) context.Context {
+	if strings.TrimSpace(userID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, userIDCtxKey{}, userID)
+}
+
+// UserIDFromContext returns the acting user id attached by WithUserID ("" when unset).
+func UserIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(userIDCtxKey{}).(string)
+	return id
 }
 
 // WithAgentMessageEmitter attaches the Agent message stream callback used by
