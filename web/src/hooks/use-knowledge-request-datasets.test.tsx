@@ -19,14 +19,20 @@ import { renderHook, waitFor } from '@testing-library/react';
 import {
   useFetchDatasetsByIds,
   useFetchKnowledgeList,
+  useFetchKnowledgeMetadataKeys,
 } from './use-knowledge-request';
 
 const mockListDataset = jest.fn();
 const mockListDatasetByIds = jest.fn();
+const mockGetMetaKeys = jest.fn();
 
 jest.mock('@/services/knowledge-service', () => ({
+  __esModule: true,
   listDataset: (...args: unknown[]) => mockListDataset(...args),
   listDatasetByIds: (...args: unknown[]) => mockListDatasetByIds(...args),
+  default: {
+    getMetaKeys: (...args: unknown[]) => mockGetMetaKeys(...args),
+  },
 }));
 
 // route-hook (imported by the hook chain) pulls in the app shell — routes
@@ -101,5 +107,29 @@ describe('useFetchKnowledgeList', () => {
     const params = mockListDataset.mock.calls[0][0];
     expect(params).not.toHaveProperty('tenant_id');
     expect(params).toMatchObject({ page: 1, keywords: 'kw' });
+  });
+});
+
+describe('useFetchKnowledgeMetadataKeys', () => {
+  beforeEach(() => {
+    mockGetMetaKeys.mockClear();
+    mockGetMetaKeys.mockResolvedValue({
+      data: { data: { author: { alice: ['doc-1'] }, year: { '2024': [] } } },
+    });
+  });
+
+  it('requests dataset_ids and returns only the field names', async () => {
+    const { result } = renderHook(
+      () => useFetchKnowledgeMetadataKeys(['b', 'a']),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(mockGetMetaKeys).toHaveBeenCalled());
+    // The Go handler requires `dataset_ids` (not `kb_ids`); ids are sorted for
+    // a stable query key.
+    expect(mockGetMetaKeys).toHaveBeenCalledWith({ dataset_ids: 'a,b' });
+    await waitFor(() =>
+      expect(result.current.data).toEqual(['author', 'year']),
+    );
   });
 });

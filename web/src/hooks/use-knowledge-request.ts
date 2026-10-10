@@ -880,9 +880,11 @@ export function useFetchKnowledgeMetadataKeys(kbIds: string[] = []) {
     gcTime: 0,
     queryFn: async () => {
       const { data } = await kbService.getMetaKeys({
-        kb_ids: sortedKbIds.join(','),
+        dataset_ids: sortedKbIds.join(','),
       });
-      return data?.data ?? [];
+      // The flattened endpoint returns map[field]map[value][]doc_id; callers
+      // only need the field names.
+      return Object.keys(data?.data ?? {});
     },
   });
 
