@@ -2493,39 +2493,75 @@ func factoryFromLLMID(llmID string) string {
 // leave nothing for the synthesis turn.
 var smartReasoningTimeout = 30 * time.Minute
 
-// buildAgenticReferenceWithWhitelist is buildAgenticReference with an optional citation
-// whitelist. When whitelist is non-nil, only cited ids it contains survive — mode 8 uses
-// it to keep citations to chunks the turn's MCP tool calls actually served. nil means no
-// restriction (modes 5/6).
-func (s *ChatPipelineService) buildAgenticReferenceWithWhitelist(ctx context.Context, tenantID string, datasetIDs []string, final string, whitelist map[string]struct{}) (map[string]interface{}, string) {
+// buildCodexReference turns a mode 8 answer's citations into the reference payload and
+// rewrites the answer's provenance to that payload's numbering. The model is asked to END
+// each sourced line with a provenance tuple
+// `(doc: <name>, doc_id: <id>, chunk_id: <id>, snippet: "<excerpt>")`; this resolves the
+// tuple's chunk_id and replaces the tuple with ` [ID:N]`, N being the id's 0-based
+// position in the returned chunks array (the frontend resolves the marker as
+// reference.chunks[N]).
+//
+// Both citations encode into ONE 0-based sequence: the corpus chunks that resolved first
+// (in citation order), then the web passages that resolved (in citation order). The
+// payload array carries the same order, so a single numbering covers both sources and the
+// client needs no source-specific rule.
+//
+// Both halves are VERIFIED, never the model's word: a corpus id must exist AND belong to
+// the conversation's datasets (fetchChunksByIDs); a `web-<hash>` id must be one this
+// turn's web search actually served (web). An unresolvable id keeps its tuple — an
+// unverifiable citation stays visible instead of pointing at a wrong index. A tuple the
+// model wrapped in backticks is left for InsertCitationMarkers, which places the marker
+// outside the code span (a marker inside <code> never becomes a citation in the client).
+func (s *ChatPipelineService) buildCodexReference(ctx context.Context, tenantID string, datasetIDs []string, final string, web []agentic_rag.WebResult) (map[string]interface{}, string) {
 	cited := agentic_rag.ExtractCitedChunkIDs(final)
-	if whitelist != nil {
-		kept := make([]string, 0, len(cited))
-		for _, id := range cited {
-			if _, ok := whitelist[id]; ok {
-				kept = append(kept, id)
-			}
-		}
-		cited = kept
-	}
 	if len(cited) == 0 {
 		return map[string]interface{}{}, final
 	}
-	rows := fetchChunksByIDs(ctx, tenantID, datasetIDs, cited)
-	if len(rows) == 0 {
-		return map[string]interface{}{}, final
+	// Split the citations by source: a served web result is resolved from the turn's own
+	// record, everything else is looked up in the conversation's datasets.
+	webByID := make(map[string]agentic_rag.WebResult, len(web))
+	for _, w := range web {
+		webByID[agentic_rag.WebResultID(w)] = w
 	}
-	// Keep only ids that actually resolved, preserving first-appearance
-	// order: the marker number IS the chunk's position in the payload array.
-	byID := make(map[string]map[string]interface{}, len(rows))
-	for _, r := range rows {
+	byID := make(map[string]map[string]interface{}, len(cited))
+	var corpusCited []string
+	for _, id := range cited {
+		w, ok := webByID[id]
+		if !ok {
+			corpusCited = append(corpusCited, id)
+			continue
+		}
+		title := w.Title
+		if title == "" {
+			title = w.URL
+		}
+		// Same shape the in-process web path builds (see buildAgenticReference), so the
+		// client renders a web citation exactly like a corpus one.
+		byID[id] = map[string]interface{}{
+			"id": id, "doc_id": w.URL, "docnm_kwd": title,
+			"content_with_weight": w.Content, "url": w.URL,
+			"kb_id": []interface{}{}, "img_id": "", "positions": []interface{}{},
+		}
+	}
+	for _, r := range fetchChunksByIDs(ctx, tenantID, datasetIDs, corpusCited) {
 		if id, ok := r["id"].(string); ok {
 			byID[id] = r
 		}
 	}
+	// One numbering, corpus first then web, each in citation order. Only ids that
+	// resolved take a number: the marker IS the payload position.
+	isWeb := make(map[string]bool, len(webByID))
+	for id := range webByID {
+		isWeb[id] = true
+	}
 	resolved := make([]string, 0, len(cited))
 	for _, id := range cited {
-		if _, ok := byID[id]; ok {
+		if _, ok := byID[id]; ok && !isWeb[id] {
+			resolved = append(resolved, id)
+		}
+	}
+	for _, id := range cited {
+		if _, ok := byID[id]; ok && isWeb[id] {
 			resolved = append(resolved, id)
 		}
 	}
@@ -2536,9 +2572,11 @@ func (s *ChatPipelineService) buildAgenticReferenceWithWhitelist(ctx context.Con
 	for _, id := range resolved {
 		ordered = append(ordered, byID[id])
 	}
-	marked := agentic_rag.InsertCitationMarkers(final, resolved)
-	common.InfoCtx(ctx, "agentic citations built",
+	marked := agentic_rag.ReplaceProvenanceTuples(final, resolved)
+	marked = agentic_rag.InsertCitationMarkers(marked, resolved)
+	common.InfoCtx(ctx, "codex citations built",
 		zap.Int("cited", len(cited)),
+		zap.Int("web_served", len(webByID)),
 		zap.Int("resolved", len(resolved)),
 		zap.Int("final_bytes", len(marked)))
 	return map[string]interface{}{

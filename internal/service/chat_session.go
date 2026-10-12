@@ -1136,7 +1136,7 @@ func (s *ChatSessionService) buildSessionPayload(session *entity.ChatSession, di
 		ID:         session.ID,
 		ChatID:     session.DialogID,
 		Name:       session.Name,
-		Messages:   parseMessages(session.Message),
+		Messages:   messagesForDisplay(parseMessages(session.Message)),
 		Reference:  references,
 		UserID:     session.UserID,
 		Avatar:     avatar,
@@ -1413,6 +1413,12 @@ func (s *ChatSessionService) ChatCompletions(
 						content = result.Answer
 					}
 					s.appendAssistantToSession(session, content, messageID)
+					// The stored content stays what the MODEL produced (the next turn
+					// replays it), but the presentation copy is what the user actually saw:
+					// the streamed reasoning plus the backend-rewritten answer, which is
+					// what the client merges in (see mergeAnswerChunk). Without it a reload
+					// would render the raw provenance text instead of the citations.
+					s.setAssistantDisplay(session, displayText(fullAnswer.String(), result.Answer), messageID)
 					if ctx.Err() == nil {
 						s.updateSessionMessages(ctx, session, s.getSessionMessagesAsSlice(session), reference)
 					}
@@ -1958,6 +1964,55 @@ func (s *ChatSessionService) compactSessionAssistant(session *entity.ChatSession
 		return
 	}
 	s.appendAssistantToSession(session, final, messageID)
+}
+
+// displayText is the text the USER saw, as opposed to what the model produced: the
+// streamed reasoning block (everything up to and including </think>) followed by the
+// backend-rewritten answer. It mirrors how the client merges the final frame
+// (mergeAnswerChunk, web/src/utils/chat.ts): the reasoning stays, the rest is replaced.
+func displayText(raw, marked string) string {
+	if marked == "" {
+		return raw
+	}
+	if end := strings.LastIndex(raw, "</think>"); end >= 0 &&
+		!strings.Contains(marked, "<think>") && !strings.Contains(marked, "</think>") {
+		return raw[:end+len("</think>")] + "\n\n" + marked
+	}
+	return marked
+}
+
+// setAssistantDisplay records the presentation copy of the turn's assistant message: what
+// the message should LOOK like when the session is read back, citations included. The
+// message's CONTENT is left as the model produced it — that is what the next turn replays
+// — and the read API swaps this in (see messagesForDisplay).
+func (s *ChatSessionService) setAssistantDisplay(session *entity.ChatSession, display, messageID string) {
+	if session == nil || strings.TrimSpace(display) == "" {
+		return
+	}
+	messages := parseMessages(session.Message)
+	if len(messages) == 0 || s.getLastRole(messages) != "assistant" {
+		return
+	}
+	last := messages[len(messages)-1]
+	if id := stringValue(last["id"]); id != "" && messageID != "" && id != messageID {
+		return
+	}
+	last["content_display"] = display
+	session.Message, _ = json.Marshal(messages)
+}
+
+// messagesForDisplay swaps each message's stored presentation copy over its content, so
+// the read API shows the user exactly what the turn showed them (citations included)
+// while the session row keeps the model's raw output for replay. Messages without a
+// presentation copy are returned as stored.
+func messagesForDisplay(messages []map[string]interface{}) []map[string]interface{} {
+	for _, m := range messages {
+		if display, ok := m["content_display"].(string); ok && display != "" {
+			m["content"] = display
+			delete(m, "content_display")
+		}
+	}
+	return messages
 }
 
 // getSessionMessagesAsSlice returns the session's messages as a slice of maps.

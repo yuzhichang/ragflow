@@ -476,3 +476,33 @@ func TestCodexRenewExtendsHandleAndBindingLease(t *testing.T) {
 		t.Fatal("Renew resurrected a released binding")
 	}
 }
+
+// The turn's served web results are what a `web-<hash>` citation is verified against:
+// recorded as the search returns them, deduped by id, and dropped with the turn.
+func TestCodexServedWebIsPerTurn(t *testing.T) {
+	kv := newFakeKV()
+	tickets := NewCodexTickets(kv)
+	ctx := context.Background()
+	handle, _ := tickets.HandleForSession(ctx, "t1", "s1")
+	if err := tickets.Bind(ctx, handle, CodexScope{TenantID: "t1", ChatID: "c1", WebSearch: true}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	first := agentic_rag.WebResult{Title: "T1", URL: "https://e/x", Content: "C1"}
+	second := agentic_rag.WebResult{Title: "T2", URL: "https://e/y", Content: "C2"}
+	tickets.RecordServedWeb(ctx, handle, []agentic_rag.WebResult{first})
+	tickets.RecordServedWeb(ctx, handle, []agentic_rag.WebResult{first, second})
+
+	got := tickets.ServedWeb(ctx, handle)
+	if len(got) != 2 {
+		t.Fatalf("served web = %+v, want 2 (deduped by id)", got)
+	}
+	if got[0].URL != "https://e/x" || got[1].URL != "https://e/y" {
+		t.Fatalf("served web order/content = %+v", got)
+	}
+
+	tickets.Unbind(ctx, handle)
+	if got := tickets.ServedWeb(ctx, handle); len(got) != 0 {
+		t.Fatalf("Unbind must clear the served web set, got %+v", got)
+	}
+}

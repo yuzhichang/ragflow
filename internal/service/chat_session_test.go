@@ -1776,3 +1776,35 @@ func TestChatCompletions_SharedSessionReadonlyForTeammate(t *testing.T) {
 		t.Fatalf("update calls=%d, want 0", len(store.updateCalled))
 	}
 }
+
+func TestDisplayTextKeepsStreamedReasoning(t *testing.T) {
+	raw := "<think>hmm</think>\n\n答案"
+	if got, want := displayText(raw, "答案 [ID:0]"), "<think>hmm</think>\n\n答案 [ID:0]"; got != want {
+		t.Fatalf("displayText = %q, want %q", got, want)
+	}
+	// A final answer that already carries think tags is used verbatim.
+	if got := displayText(raw, "<think>x</think>y"); got != "<think>x</think>y" {
+		t.Fatalf("displayText = %q", got)
+	}
+	// An empty final answer leaves the streamed text.
+	if got := displayText(raw, ""); got != raw {
+		t.Fatalf("displayText = %q, want the raw text", got)
+	}
+}
+
+func TestMessagesForDisplayPrefersPresentationCopy(t *testing.T) {
+	msgs := []map[string]interface{}{
+		{"role": "user", "content": "q"},
+		{"role": "assistant", "content": "raw chunk_id: c1", "content_display": "答案 [ID:0]"},
+	}
+	got := messagesForDisplay(msgs)
+	if got[1]["content"] != "答案 [ID:0]" {
+		t.Fatalf("content = %v, want the presentation copy", got[1]["content"])
+	}
+	if _, ok := got[1]["content_display"]; ok {
+		t.Fatal("content_display must not leak to the client")
+	}
+	if got[0]["content"] != "q" {
+		t.Fatalf("a message without a copy must be unchanged: %v", got[0]["content"])
+	}
+}

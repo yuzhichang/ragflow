@@ -442,13 +442,14 @@ func (s *ChatPipelineService) codexAgent(
 		}
 		reference := map[string]interface{}{}
 		if quote {
-			// Citations come from the model's own `chunk_id:` markers, each verified by
-			// the backend against the turn's KB scope (fetchChunksByIDs): the id must
-			// exist AND belong to this conversation's datasets to be marked. A nil
-			// whitelist is the scope-only path — there is no served-chunk ledger in mode
-			// 8, so a chunk the model names but never retrieved still resolves if it is
-			// in scope.
-			reference, final = s.buildAgenticReferenceWithWhitelist(ctx, chat.TenantID, datasetIDs, final, nil)
+			// Citations come from the model's provenance tuples, each verified by the
+			// backend: a corpus chunk_id must exist AND belong to this conversation's
+			// datasets (fetchChunksByIDs), and a `web-<hash>` id must be one this turn's
+			// web search actually served (the bridge records them per turn). There is
+			// deliberately no served-chunk ledger, so a corpus chunk the model names but
+			// never retrieved still resolves if it is in scope (see the plan, D12).
+			web := mcp.DefaultCodexTickets().ServedWeb(ctx, handle)
+			reference, final = s.buildCodexReference(ctx, chat.TenantID, datasetIDs, final, web)
 		}
 		out <- AsyncChatResult{
 			Answer:         final,
@@ -461,15 +462,22 @@ func (s *ChatPipelineService) codexAgent(
 }
 
 // codexCitationContract is the citation instruction folded into the thread's base
-// instructions. It asks Codex to name the chunk ids it used, in a form the backend can
-// parse (see the plan, D5/§4.7) — the backend, not the model, assigns [ID:N].
+// instructions (see the plan, D5/§4.7). It asks Codex to END each sourced line with that
+// passage's provenance as a TUPLE, the shape the plan-engine deliverables use, so the
+// backend — not the model — assigns [ID:N] and strips the field from the visible answer.
+// A web passage carries the same four fields: the tool prints source="web" with its url
+// and title, which map onto doc_id/doc_name.
 func codexCitationContract(quote bool) string {
 	if !quote {
 		return "Answer the user. You have retrieval tools; use them when the knowledge base is relevant."
 	}
-	return "Answer the user. You have retrieval tools; call them when the knowledge base is relevant. " +
-		"When you use a retrieved chunk, cite it by writing `chunk_id: <the exact chunk_id from the tool output>` " +
-		"on the line where you use it. Copy the chunk_id verbatim; do not invent ids and do not write [ID:N] markers."
+	return "Answer the user in prose. You have retrieval tools (the knowledge base, and web search when enabled); " +
+		"call them when they are relevant. Every line that states a fact backed by a retrieved passage must END with " +
+		"that passage's provenance, in exactly this form:\n" +
+		"(doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: \"<short verbatim excerpt>\")\n" +
+		"Copy doc_name, doc_id and chunk_id verbatim from that passage's tool output; a web passage prints " +
+		`source="web"` + " with its url and title, which go in the same fields. Never invent values. " +
+		"Do not write [ID:N] markers - the system assigns them."
 }
 
 // chatKBIDs extracts the dialog's knowledge-base ids as strings.

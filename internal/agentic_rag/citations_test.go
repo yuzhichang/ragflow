@@ -239,3 +239,61 @@ func TestGroupedHandlesResolveAfterExpansion(t *testing.T) {
 		t.Fatalf("marked = %q, want %q", marked, wantMarked)
 	}
 }
+
+func TestReplaceProvenanceTuples(t *testing.T) {
+	final := "罗贯中是作者。(doc: 三国演义.txt, doc_id: d1, chunk_id: c1, snippet: \"罗贯中著\")"
+	got := ReplaceProvenanceTuples(final, []string{"c1"})
+	if want := "罗贯中是作者。[ID:0]"; got != want {
+		t.Fatalf("ReplaceProvenanceTuples = %q, want %q", got, want)
+	}
+}
+
+func TestReplaceProvenanceTuplesNumbersFirstAppearance(t *testing.T) {
+	final := "a (doc: A, doc_id: d1, chunk_id: c1, snippet: \"x\") b (doc: B, doc_id: d2, chunk_id: c2, snippet: \"y\")"
+	got := ReplaceProvenanceTuples(final, []string{"c2", "c1"})
+	// The numbering follows chunkIDs (the payload order), not the text order.
+	if want := "a [ID:1] b [ID:0]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestReplaceProvenanceTuplesSnippetWithParen(t *testing.T) {
+	// A parenthesised snippet must not end the tuple early.
+	final := "答案。 (doc: A, doc_id: d1, chunk_id: c1, snippet: \"see (this) bit\")"
+	got := ReplaceProvenanceTuples(final, []string{"c1"})
+	if want := "答案。 [ID:0]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestReplaceProvenanceTuplesUnresolvableStaysVisible(t *testing.T) {
+	final := "(doc: A, doc_id: d9, chunk_id: nope, snippet: \"x\")"
+	if got := ReplaceProvenanceTuples(final, []string{"c1"}); got != final {
+		t.Fatalf("an unresolvable tuple must stay visible, got %q", got)
+	}
+}
+
+func TestReplaceProvenanceTuplesIgnoresNonProvenance(t *testing.T) {
+	final := "答案 (see the note) end."
+	if got := ReplaceProvenanceTuples(final, []string{"c1"}); got != final {
+		t.Fatalf("a parenthetical with no chunk_id changed: %q", got)
+	}
+}
+
+func TestReplaceProvenanceTuplesLeavesCodeSpansAlone(t *testing.T) {
+	// The plan-engine deliverables quote their provenance inside backticks, and a marker
+	// inside <code> never becomes a citation in the client: those tuples belong to
+	// InsertCitationMarkers, which places the marker outside the span.
+	final := "`- Evidence: x (doc: A, doc_id: d1, chunk_id: c1, snippet: \"y\")`"
+	if got := ReplaceProvenanceTuples(final, []string{"c1"}); got != final {
+		t.Fatalf("a tuple inside a code span must be left alone, got %q", got)
+	}
+}
+
+func TestReplaceProvenanceTuplesLeavesBareFieldAlone(t *testing.T) {
+	// The bare form (no tuple) is InsertCitationMarkers' job; this pass must not touch it.
+	final := "答案 chunk_id: c1"
+	if got := ReplaceProvenanceTuples(final, []string{"c1"}); got != final {
+		t.Fatalf("a bare chunk_id field changed: %q", got)
+	}
+}

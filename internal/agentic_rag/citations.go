@@ -127,7 +127,103 @@ func InsertCitationMarkers(final string, chunkIDs []string) string {
 	return strings.Join(lines, "\n")
 }
 
-// The [ID:n] handle path.
+// ReplaceProvenanceTuples rewrites every provenance tuple — one parenthesized group that
+// names a passage, `(doc: <name>, doc_id: <id>, chunk_id: <id>, snippet: "<excerpt>")` —
+// with the canonical `[ID:N]` marker, N being the id's 0-based position in chunkIDs, and
+// REMOVES the tuple itself. Mode 8's answers are plain prose, so leaving the tuple would
+// ship the raw provenance field to the user.
+//
+// A tuple INSIDE a code span is deliberately left alone: the client skips markers that sit
+// inside <code> (it never turns them into a citation), and a deliverable that quotes its
+// provenance in backticks is the plan-engine shape, whose fields must stay — those take
+// InsertCitationMarkers, which places the marker outside the span at line end.
+//
+// Only the group's chunk_id is read; a group with none is not a provenance tuple and is
+// left alone. A tuple whose id does not resolve keeps its text — the same rule
+// InsertCitationMarkers applies to a bare field, so an unverifiable citation stays
+// visible rather than silently vanishing or pointing at a wrong index.
+func ReplaceProvenanceTuples(final string, chunkIDs []string) string {
+	if final == "" || len(chunkIDs) == 0 || !strings.Contains(final, "chunk_id:") {
+		return final
+	}
+	idx := make(map[string]int, len(chunkIDs))
+	for i, id := range chunkIDs {
+		if _, dup := idx[id]; dup {
+			continue
+		}
+		idx[id] = i
+	}
+	var b strings.Builder
+	b.Grow(len(final))
+	fenced, inline := false, false
+	for i := 0; i < len(final); {
+		if final[i] == '`' {
+			j := i
+			for j < len(final) && final[j] == '`' {
+				j++
+			}
+			switch {
+			case j-i >= 3:
+				fenced = !fenced
+			case !fenced:
+				inline = !inline
+			}
+			b.WriteString(final[i:j])
+			i = j
+			continue
+		}
+		if final[i] != '(' || fenced || inline {
+			b.WriteByte(final[i])
+			i++
+			continue
+		}
+		end, ok := tupleEnd(final, i)
+		if !ok {
+			b.WriteByte(final[i])
+			i++
+			continue
+		}
+		group := final[i : end+1]
+		m := citedChunkIDRe.FindStringSubmatch(group)
+		if m == nil {
+			b.WriteString(group)
+			i = end + 1
+			continue
+		}
+		n, ok := idx[m[1]]
+		if !ok {
+			b.WriteString(group) // unresolvable id: keep the provenance visible
+			i = end + 1
+			continue
+		}
+		b.WriteString("[ID:" + strconv.Itoa(n) + "]")
+		i = end + 1
+	}
+	return b.String()
+}
+
+// tupleEnd returns the index of the ')' closing the '(' at start, ignoring parentheses
+// inside a double-quoted span (a snippet routinely contains them). ok is false when the
+// group is never closed, in which case the caller must not treat it as a tuple.
+func tupleEnd(s string, start int) (int, bool) {
+	inQuote := false
+	for i := start + 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			if inQuote {
+				i++ // an escaped char inside the snippet cannot close the quote
+			}
+		case '"':
+			inQuote = !inQuote
+		case ')':
+			if !inQuote {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
 //
 // The tool results the model reads carry a `ref="n"` attribute on every passage
 // (see EvidenceRegistry), and the prompt asks it to end each corpus-backed line
