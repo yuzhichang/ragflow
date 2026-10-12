@@ -92,12 +92,6 @@ func webResultID(result WebResult) string {
 	return fmt.Sprintf("web-%x", sha256.Sum256([]byte(result.URL+"\n"+result.Content)))
 }
 
-// WebResultID is the id a web passage is cited by (`chunk_id: web-<hash>`), the same one
-// the web_search tool prints. Exported so a caller that must resolve a citation outside a
-// run's registry — the mode 8 bridge, which keeps the turn's served results in its own
-// store — can identify a result the same way the tool did.
-func WebResultID(result WebResult) string { return webResultID(result) }
-
 // WebResult returns a retained web passage. Corpus ids are resolved through
 // the dataset index instead.
 func (r *EvidenceRegistry) WebResult(id string) (WebResult, bool) {

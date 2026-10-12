@@ -208,7 +208,7 @@ func (t *CodexTickets) RevokeHandle(ctx context.Context, token string) {
 		return
 	}
 	sessKey, ok, _ := t.kv.Get(ctx, codexHandleKey(token))
-	_ = t.kv.Del(ctx, codexBindKey(token), codexHandleKey(token), codexWebServedKey(token))
+	_ = t.kv.Del(ctx, codexBindKey(token), codexHandleKey(token))
 	if ok && sessKey != "" {
 		_ = t.kv.Del(ctx, sessKey)
 	}
@@ -280,71 +280,7 @@ func (t *CodexTickets) Unbind(ctx context.Context, token string) {
 	if t == nil || t.kv == nil || token == "" {
 		return
 	}
-	_ = t.kv.Del(ctx, codexBindKey(token), codexWebServedKey(token))
-}
-
-// codexWebServedKeyF holds the web results a turn's web_search actually returned, so the
-// turn-end citation build resolves the answer's `web-<hash>` citations against what was
-// served rather than against the model's word. It lives in the shared KV for the same
-// reason the binding does: the MCP request and the turn-end build may run in different
-// processes, and one turn's searches may be split across replicas.
-const codexWebServedKeyF = codexKeyPrefix + "webserved:"
-
-func codexWebServedKey(token string) string { return codexWebServedKeyF + token }
-
-// RecordServedWeb remembers the web results one search returned. Best-effort: the set only
-// verifies citations, so a lost append costs at most one citation, never correctness.
-func (t *CodexTickets) RecordServedWeb(ctx context.Context, token string, results []agentic_rag.WebResult) {
-	if t == nil || t.kv == nil || token == "" || len(results) == 0 {
-		return
-	}
-	merged := t.ServedWeb(ctx, token)
-	seen := make(map[string]bool, len(merged)+len(results))
-	for _, r := range merged {
-		seen[agentic_rag.WebResultID(r)] = true
-	}
-	for _, r := range results {
-		if id := agentic_rag.WebResultID(r); !seen[id] {
-			merged = append(merged, r)
-			seen[id] = true
-		}
-	}
-	payload, err := json.Marshal(merged)
-	if err != nil {
-		return
-	}
-	_ = t.kv.Set(ctx, codexWebServedKey(token), string(payload), t.bindTTL)
-}
-
-// ServedWeb returns the web results this turn has served so far (nil when none).
-func (t *CodexTickets) ServedWeb(ctx context.Context, token string) []agentic_rag.WebResult {
-	if t == nil || t.kv == nil || token == "" {
-		return nil
-	}
-	payload, ok, err := t.kv.Get(ctx, codexWebServedKey(token))
-	if err != nil || !ok || payload == "" {
-		return nil
-	}
-	var out []agentic_rag.WebResult
-	if json.Unmarshal([]byte(payload), &out) != nil {
-		return nil
-	}
-	return out
-}
-
-// recordServedWeb wraps a conversation's search callback so every result it returns is
-// remembered for the turn it was served in.
-func (t *CodexTickets) recordServedWeb(token string, fn agentic_rag.WebSearchFunc) agentic_rag.WebSearchFunc {
-	if fn == nil {
-		return nil
-	}
-	return func(ctx context.Context, query string) ([]agentic_rag.WebResult, error) {
-		results, err := fn(ctx, query)
-		if err == nil {
-			t.RecordServedWeb(ctx, token, results)
-		}
-		return results, err
-	}
+	_ = t.kv.Del(ctx, codexBindKey(token))
 }
 
 // Resolve returns the LIVE BINDING for a token (the current turn's scope), refreshing its
@@ -573,12 +509,8 @@ func NewCodexHandler(tickets *CodexTickets) http.Handler {
 		// Resolve the conversation's web-search callback for this request (nil when the
 		// turn did not opt in, or no provider resolves). It stays process-local: the
 		// binding names the conversation, and the provider's credentials never leave
-		// the database. Every result it returns is recorded for the turn, so the
-		// citation build can verify the answer's web ids.
+		// the database.
 		scope.webSearch = resolveCodexWebSearch(r.Context(), scope)
-		if scope.webSearch != nil {
-			scope.webSearch = tickets.recordServedWeb(token, scope.webSearch)
-		}
 		streamable.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), codexScopeKey{}, scope)))
 	}
 	mux.HandleFunc("POST /mcp/codex/{token}", serve)

@@ -2494,41 +2494,49 @@ func factoryFromLLMID(llmID string) string {
 var smartReasoningTimeout = 30 * time.Minute
 
 // buildCodexReference turns a mode 8 answer's citations into the reference payload and
-// rewrites the answer's provenance to that payload's numbering. The model is asked to END
-// each sourced line with a provenance tuple
-// `(doc: <name>, doc_id: <id>, chunk_id: <id>, snippet: "<excerpt>")`; this resolves the
-// tuple's chunk_id and replaces the tuple with ` [ID:N]`, N being the id's 0-based
-// position in the returned chunks array (the frontend resolves the marker as
-// reference.chunks[N]).
+// rewrites the answer's provenance to that payload's numbering. The model ends each sourced
+// line with a provenance tuple — `(doc: …, doc_id: …, chunk_id: <id>, snippet: "…")` for a
+// corpus passage, `(source: web, url: <url>, title: <title>, snippet: "…")` for a web one —
+// and this resolves them, strips the tuples and appends the markers (see
+// agentic_rag.RewriteProvenance), so `[ID:N]` indexes reference.chunks[N].
 //
-// Both citations encode into ONE 0-based sequence: the corpus chunks that resolved first
-// (in citation order), then the web passages that resolved (in citation order). The
-// payload array carries the same order, so a single numbering covers both sources and the
-// client needs no source-specific rule.
+// Both sources encode into ONE 0-based sequence: the corpus chunks that resolved first (in
+// citation order), then the web passages (in citation order). The payload array carries the
+// same order, so a single numbering covers both and the client needs no source-specific
+// rule.
 //
-// Both halves are VERIFIED, never the model's word: a corpus id must exist AND belong to
-// the conversation's datasets (fetchChunksByIDs); a `web-<hash>` id must be one this
-// turn's web search actually served (web). An unresolvable id keeps its tuple — an
-// unverifiable citation stays visible instead of pointing at a wrong index. A tuple the
-// model wrapped in backticks is left for InsertCitationMarkers, which places the marker
-// outside the code span (a marker inside <code> never becomes a citation in the client).
-func (s *ChatPipelineService) buildCodexReference(ctx context.Context, tenantID string, datasetIDs []string, final string, web []agentic_rag.WebResult) (map[string]interface{}, string) {
-	cited := agentic_rag.ExtractCitedChunkIDs(final)
-	if len(cited) == 0 {
+// Verification differs by source, deliberately:
+//   - a corpus chunk_id must exist AND belong to the conversation's datasets
+//     (fetchChunksByIDs). That is the whole of the corpus check — there is no served-chunk
+//     ledger (see D12), so a chunk the model names but never retrieved still resolves as
+//     long as it is in scope;
+//   - a web url is the MODEL's own claim. The turn records nothing about what a search
+//     served, so url/title/snippet are taken from the answer as written.
+//
+// An unresolvable corpus id keeps its tuple in the answer: an unverifiable citation stays
+// visible instead of silently vanishing or pointing at a wrong index.
+func (s *ChatPipelineService) buildCodexReference(ctx context.Context, tenantID string, datasetIDs []string, final string) (map[string]interface{}, string) {
+	corpus := agentic_rag.ExtractCitedChunkIDs(final)
+	web := agentic_rag.ExtractCitedWebSources(final)
+	if len(corpus) == 0 && len(web) == 0 {
 		return map[string]interface{}{}, final
 	}
-	// Split the citations by source: a served web result is resolved from the turn's own
-	// record, everything else is looked up in the conversation's datasets.
-	webByID := make(map[string]agentic_rag.WebResult, len(web))
-	for _, w := range web {
-		webByID[agentic_rag.WebResultID(w)] = w
+	byID := make(map[string]map[string]interface{}, len(corpus)+len(web))
+	for _, r := range fetchChunksByIDs(ctx, tenantID, datasetIDs, corpus) {
+		if id, ok := r["id"].(string); ok {
+			byID[id] = r
+		}
 	}
-	byID := make(map[string]map[string]interface{}, len(cited))
-	var corpusCited []string
-	for _, id := range cited {
-		w, ok := webByID[id]
-		if !ok {
-			corpusCited = append(corpusCited, id)
+	// One numbering, corpus first then web, each in citation order. Only what resolved
+	// takes a number: the marker IS the payload position.
+	order := make([]string, 0, len(corpus)+len(web))
+	for _, id := range corpus {
+		if _, ok := byID[id]; ok {
+			order = append(order, id)
+		}
+	}
+	for _, w := range web {
+		if _, dup := byID[w.URL]; dup {
 			continue
 		}
 		title := w.Title
@@ -2537,47 +2545,27 @@ func (s *ChatPipelineService) buildCodexReference(ctx context.Context, tenantID 
 		}
 		// Same shape the in-process web path builds (see buildAgenticReference), so the
 		// client renders a web citation exactly like a corpus one.
-		byID[id] = map[string]interface{}{
-			"id": id, "doc_id": w.URL, "docnm_kwd": title,
-			"content_with_weight": w.Content, "url": w.URL,
+		byID[w.URL] = map[string]interface{}{
+			"id": w.URL, "doc_id": w.URL, "docnm_kwd": title,
+			"content_with_weight": w.Snippet, "url": w.URL,
 			"kb_id": []interface{}{}, "img_id": "", "positions": []interface{}{},
 		}
+		order = append(order, w.URL)
 	}
-	for _, r := range fetchChunksByIDs(ctx, tenantID, datasetIDs, corpusCited) {
-		if id, ok := r["id"].(string); ok {
-			byID[id] = r
-		}
-	}
-	// One numbering, corpus first then web, each in citation order. Only ids that
-	// resolved take a number: the marker IS the payload position.
-	isWeb := make(map[string]bool, len(webByID))
-	for id := range webByID {
-		isWeb[id] = true
-	}
-	resolved := make([]string, 0, len(cited))
-	for _, id := range cited {
-		if _, ok := byID[id]; ok && !isWeb[id] {
-			resolved = append(resolved, id)
-		}
-	}
-	for _, id := range cited {
-		if _, ok := byID[id]; ok && isWeb[id] {
-			resolved = append(resolved, id)
-		}
-	}
-	if len(resolved) == 0 {
+	if len(order) == 0 {
 		return map[string]interface{}{}, final
 	}
-	ordered := make([]map[string]interface{}, 0, len(resolved))
-	for _, id := range resolved {
-		ordered = append(ordered, byID[id])
+	ordered := make([]map[string]interface{}, 0, len(order))
+	index := make(map[string]int, len(order))
+	for i, key := range order {
+		ordered = append(ordered, byID[key])
+		index[key] = i
 	}
-	marked := agentic_rag.ReplaceProvenanceTuples(final, resolved)
-	marked = agentic_rag.InsertCitationMarkers(marked, resolved)
+	marked := agentic_rag.RewriteProvenance(final, index)
 	common.InfoCtx(ctx, "codex citations built",
-		zap.Int("cited", len(cited)),
-		zap.Int("web_served", len(webByID)),
-		zap.Int("resolved", len(resolved)),
+		zap.Int("corpus_cited", len(corpus)),
+		zap.Int("web_cited", len(web)),
+		zap.Int("resolved", len(order)),
 		zap.Int("final_bytes", len(marked)))
 	return map[string]interface{}{
 		"chunks":   chunksFormat(ordered),

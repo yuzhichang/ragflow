@@ -115,7 +115,7 @@
 | D2 | 作用域用 **KV 的 per-session handle（无权限）+ per-turn binding** 传递，**binding 同时就是 per-session turn 锁** | 线程 URL 里只放一个**不可猜、不携带权限的 per-session handle**（`HandleForSession`，按 `(tenant, session)` 幂等铸造）；真正的授权是本轮 turn 开始时 `Bind(CodexScope{TenantID, DatasetIDs, UserID})`、turn 结束时 `Unbind` 的 **binding**。因此授权是 **per-turn**：handle 单独不授权，turn 之外一律 403。`Bind` 是一次 KV **原子 `SetNX`**（绑不上就是 `ErrCodexTurnBusy`），所以它**天然充当同会话的 turn 锁**——互斥跨进程/多副本成立，且无需任何进程内锁。handle 与 binding 都存 **Kvrocks**（D11）。 |
 | D3 | 通过 **thread config override** 注入 MCP server（**已实测确认**），**建/恢复都注入**；但 **MCP 绑定只在建 thread 时生效** | SDK 的 `WithThreadConfigOverride`（`thread.go:86`）经 `thread/{start,resume}.config` 深合并。实测（本地 codex 0.162.0）：`thread/start` 的 `mcp_servers.<name>` overlay 生效（codex 会对该 URL 发起 MCP handshake，`mcpServerStatus/list` 可见）；**`thread/resume` 的 overlay 不会重载 `mcp_servers`**（resume 时改 URL，origin 不变）。`Client.ResumeThread` 丢弃 opts 的问题已在本 fork 修复（commit `412c6d4`），resume 会转发的字段对 model/sandbox/instructions 等有效。**该限制现已无害**：URL 里的 handle 每 session 稳定且不携带权限，授权来自 per-turn binding，故 resume 不重载 `mcp_servers` 不影响作用域；当前实现仍把 KB 集合折进 `scope_fingerprint`（KB 变化仍重建 thread），去掉它是可选后续。 |
 | D4 | **创建 Codex thread 时，模型由 dialog 配置的模型决定** | 与 dialog 的 `llm_id` 一致：用 `WithThreadModelProvider(providerID)` + `WithThreadConfigOverride("model_providers.<id>", {...})` 声明并选用 dialog 解析出的 provider/model（见 SDK `examples/custom-provider`）。模型是创建 thread 时的固定选择，不随 turn 变更。 |
-| D5 | 引用回填由 **thread 的 system prompt** 约定，交给 Codex 实现 | 在创建 thread 时（`WithThreadBaseInstructions` / `WithThreadDeveloperInstructions`）说明引用要求：每条有据可依的行**以 provenance tuple 结尾** `(doc: …, doc_id: …, chunk_id: <id>, snippet: "…")`（web 命中共用同一形状）。后端据 `chunk_id` 校验（语料查 KB 作用域、`web-*` 查本轮 served set）并把 tuple **替换**为 `[ID:N]`；模型自己不写标记（见 §5.4 / D12）。 |
+| D5 | 引用回填由 **thread 的 system prompt** 约定，交给 Codex 实现 | 在创建 thread 时（`WithThreadBaseInstructions` / `WithThreadDeveloperInstructions`）说明引用要求：每条有据可依的行**以 provenance tuple 结尾**——语料 `(doc: …, doc_id: …, chunk_id: <id>, snippet: "…")`，web `(source: web, url: <url>, title: <title>, snippet: "…")`。后端据 `chunk_id` 校验语料（KB 作用域）、web 条目信任模型，并把 tuple **原地替换**为 `[ID:N]`；模型自己不写标记（见 §5.4 / D12）。 |
 | D6 | **Codex thread 与 RAGFlow chat session 一一对应** | 一个 chat session 一个 thread，持久映射，跨 turn 复用与 resume；见 §5.2。 |
 | D7 | **不向 Codex 暴露 `think` / `todo_write` / `run_javascript` 等玩具工具** | Codex 内置的 plan / reasoning 能力远强于这几个工具，重复暴露只会造成工具选择冲突。 |
 | D8 | **mode 8 不因无 KB 而禁用；无 scope 时 MCP 检索工具返回错误** | Codex 是通用助手，无 KB 也能对话/推理。检索类工具在无 `kb_id` 作用域时返回 `IsError`，交由 Codex 读取错误后应对，绝不用空作用域检索。 |
@@ -242,8 +242,8 @@ client.StartThread(ctx,
 
 - quote gate 语义与 mode 5/6/7 保持一致：请求 kwargs 优先，`prompt_config` 只能进一步收紧（`quoteEnabled`）。
 - **引用由 Codex 按 thread system prompt 的约定实现（D5）**：创建 thread 时通过 `WithThreadBaseInstructions`（或 `WithThreadDeveloperInstructions`）注入一段“引用契约”，要求 Codex 标注来源，后端据台账生成 `reference.chunks`。
-  - ⚠️ **契约必须固定为「引用 chunk ID」，而不是让 Codex 自己编 `[ID:N]`**：现有 `ExtractCitedChunkIDs` 只识别 `chunk_id:\s*<id>`（`citations.go:42`），`InsertCitationMarkers` 对已含 `[ID:` 的整行会跳过（`citations.go:102`）。因此**模型的原始 `[ID:N]` 既无法被解析、也无法被可靠校正**——一旦后端过滤掉无效 chunk，模型给的编号会与最终 reference 顺序错位。
-  - **正确做法**：契约要求 Codex 在其答案中按 `chunk_id: <id>` 形式（或等价的稳定、可解析 id 形式）标注来源；后端收集这些 id（复用 `ExtractCitedChunkIDs`）→ 用本 turn MCP 台账做白名单校验 → **由后端按校验后的顺序统一生成 `[ID:N]` 标记与 `reference.chunks`**（复用现有 numbering/`InsertCitationMarkers` 逻辑），模型不参与编号。
+  - ⚠️ **契约必须固定为「引用 chunk ID」，而不是让 Codex 自己编 `[ID:N]`**：现有 `ExtractCitedChunkIDs` 只识别 `chunk_id:\s*<id>`（`citations.go`），而 `RewriteProvenance` 只处理 provenance tuple / 裸 `chunk_id:` 字段。因此**模型的原始 `[ID:N]` 既无法被解析、也无法被可靠校正**——一旦后端过滤掉无效 chunk，模型给的编号会与最终 reference 顺序错位。
+  - **正确做法**：契约要求 Codex 在其答案中按 `chunk_id: <id>` 形式（或等价的稳定、可解析 id 形式）标注来源；后端收集这些 id（复用 `ExtractCitedChunkIDs`）→ 语料按 KB 作用域校验、web 条目信任模型 → **由后端按校验后的顺序统一生成 `[ID:N]` 标记与 `reference.chunks`**（`agentic_rag.RewriteProvenance`），模型不参与编号。
   - 契约内容需写明：id 的书写形式（逐字复制检索结果里的 chunk_id）、以及“只标注来自检索工具结果的来源”；不得要求模型输出 `[ID:N]` 数字。
   - `reference.chunks[N]` 的下标语义与 mode 5/6/7 一致（前端 `[ID:N]` 解析不变）。
   - Codex 标注的 id 若不在本 turn 台账内，保留文本但不生成引用（与 mode 5“不可解析则不标注”一致）。
@@ -333,25 +333,25 @@ client.StartThread(ctx,
 
 think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenticRag` 一样用 `thinking` 布尔量保证 `<think>` / `</think>` 各发一次，避免前端 `mergeAnswerChunk` 拼接错位（见 `chat_pipeline.go:2813` 注释）。
 
-### 5.4 引用校验（tuple 契约 + 无 chunk 台账）
+### 5.4 引用（tuple 契约 + 原地替换 + 无台账）
 
-**契约（D5）**：Codex 按 thread 的 base instructions，把每条有据可依的行**以 provenance tuple 结尾**（与 plan 引擎交付物同形）：
+**契约（D5）**：Codex 按 thread 的 base instructions，把每条有据可依的行**以 provenance tuple 结尾**，两种形状之一（与 plan 引擎交付物同形）：
 
 ```
 (doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: "<短逐字片段>")
+(source: web, url: <url>, title: <title>, snippet: "<短逐字片段>")
 ```
 
-web 结果用**同一形状**：工具输出对 web 命中打印 `source="web" url="<url>"`，`doc_name`/`doc_id` 就是 title/url，`chunk_id` 是 `web-<sha256(url+content)的前缀>`（`agentic_rag.WebResultID`）——所以模型不需要第二套写法。
-
 **后端（`buildCodexReference`）**：
-- `ExtractCitedChunkIDs` 取全部被引 id（含 `web-*`）。
-- **逐类校验**：语料 id 经 `fetchChunksByIDs(tenantID, datasetIDs, cited)` 做**存在性 + KB 归属**校验；`web-*` id 必须在**本轮 web_search 实际服务过的集合**里（见下）。
-- 通过者编成**一条从 0 开始的统一序列**：**先语料 chunk（按被引顺序），再 web 结果（按被引顺序）**，`reference.chunks[N]` 用同一顺序，因此前端不需要按来源分流；答案里的 tuple 被**替换**成 `[ID:N]`（`ReplaceProvenanceTuples`），**代码段内的 tuple 不动**（客户端不会把 `<code>` 里的标记变成引用），留给 `InsertCitationMarkers` 在行尾补标记（plan 引擎交付物走这条）。未解析的 tuple **原样保留**（不可验证的引用宁可可见，也不指向错误编号）。
-- **没有 chunk 台账**：语料侧仍是纯作用域校验（D12），模型可以引用**该 KB 内**任何真实 chunk（即使本轮没检索到）。
-- **web 侧有「served set」**：开放的 web 没有「作用域」可校验，唯一诚实的依据是「这条结果本轮真的被搜索工具返回过」。桥在每轮按 handle 记录工具实际返回的 web 结果（Kvrocks，`ragflow:codex:webserved:<handle>`，TTL 同 binding；`Unbind`/`RevokeHandle` 清除），turn 末由引擎读取并据此校验 `web-*`。代价：伪造 URL 无法生成引用（这是要点）。
+- `ExtractCitedChunkIDs` 取语料 id，`ExtractCitedWebSources` 取 web 条目（url/title/snippet）。
+- **校验按来源不同，这是刻意的**：语料 id 经 `fetchChunksByIDs(tenantID, datasetIDs, cited)` 做**存在性 + KB 归属**校验；**web 条目完全由模型负责其可信**——本轮不记录任何「搜索服务过什么」，url/title/snippet 直接取自答案。因此**不把 web 结果写进 KV**，也没有 served set。
+- 通过者编成**一条从 0 开始的统一序列**：**先语料 chunk（按被引顺序），再 web 条目（按被引顺序）**，`reference.chunks[N]` 用同一顺序，前端不需要按来源分流。
+- **原地替换**：tuple（或裸 `chunk_id: <id>` 字段）在**原位置**被替换成 `[ID:N]`（`agentic_rag.RewriteProvenance`），整段机器可读字段（含 doc/snippet 列）不再出现在答案里。未解析的 tuple **原样保留**（不可验证的引用宁可可见，也不指向错误编号）；因此该 pass 幂等。
+- 该重写对 **mode 6/7 同样生效**（它们的交付物本来就是 `chunk_id:` / web 形状的 tuple，走同一个 `RewriteProvenance`）；mode 5 写的是 `[ID:n]` handle，不受影响。
+- **没有台账**：语料侧是纯作用域校验（D12），模型可以引用**该 KB 内**任何真实 chunk（即使本轮没检索到）。
 - **展示与历史**：流式下 DB 的 message content 保留**模型原始输出**（下一轮 replay 用），另存一份 `content_display`（= 已流出的 `<think>` 段 + 后端重写后的答案，与前端 `mergeAnswerChunk` 的合并规则一致）；读取接口（`buildSessionPayload` → `messagesForDisplay`）用它呈现，因此**重载页面仍显示 `[ID:N]` 引用**，与 live 一致。
 
-代价（已接受）：模型可以引用**该 KB 内**任何真实 chunk；并且 mode 8 不产出 `ToolCallCounts` / `RetrievedDocIDs` / `ServedDocIDs` / `DeepReadChunks` / `ShallowReadChunks`（benchmark 遥测；Web UI 不消费这些字段）。
+代价（已接受）：模型可以引用**该 KB 内**任何真实 chunk；web 引用的可信完全依赖模型（可能给出不存在的 URL）；并且 mode 8 不产出 `ToolCallCounts` / `RetrievedDocIDs` / `ServedDocIDs` / `DeepReadChunks` / `ShallowReadChunks`（benchmark 遥测；Web UI 不消费这些字段）。
 
 ### 5.5 审批 / 安全（能力隔离）
 
@@ -416,7 +416,7 @@ web 结果用**同一形状**：工具输出对 web 命中打印 `source="web" u
 - 桥：`internal/router/router.go` 注册 `Any /mcp/codex/:token` → `mcp.NewCodexHandler(DefaultCodexTickets())`。**先按 binding 鉴权**：未知 handle → **401**；handle 存在但本轮没有 binding → **403**；都在构建任何 server/工具之前拒绝。
 - 作用域由 binding 决定：工具参数里的 `dataset_ids` 只能收窄到 binding 子集（`resolveDatasetScope` 的“bound 优先、请求须在内”），越界报错；binding `DatasetIDs` 为空则检索类工具返回 `IsError`。
 - **`web_search` 逐轮注入（会话能力）**：`/mcp/codex` 的 handler 在通过鉴权后调用 seam `resolveCodexWebSearch(ctx, scope)`——仅当 `scope.WebSearch` 为 true 且安装了 resolver（`service.InstallCodexWebSearchResolver()`，boot 时挂上）时，按 `scope.ChatID` 从 DB 读 `chat.PromptConfig` 并 `resolveWebSearchProvider` 解析出 provider，构造 `WebSearchFunc` 填进 `scope` 的**非导出**字段（绝不进 KV）。解析成功 → 工具集追加 `web_search`；否则不暴露。`web_search` 不依赖 KB，故不受「无 KB → 检索工具 `IsError`」守卫约束。若 `ChatID` 为空 / 无 provider / 无 resolver，一律静默不注入。
-  - **served set**：该回调被包了一层记录器，把**本轮实际返回的 web 结果**写进 Kvrocks（`ragflow:codex:webserved:<handle>`，TTL 同 binding），供 turn 末校验答案里的 `web-*` 引用（§5.4）。`Unbind` / `RevokeHandle` 一并清除。
+  - **不做记录**：web 引用的可信**完全由模型负责**——本轮不把搜索结果写入 KV（也没有 served set）。答案里的 `(source: web, url: …, title: …, snippet: "…")` 原样作为引用条目（见 §5.4）。
   - **为什么切换能生效（已核对 Codex 源码）**：Codex 把 MCP 工具缓存在连接的 **tool catalog** 里（`codex-mcp/src/connection_manager/tool_catalog.rs`），每轮只走 `refresh_mcp_if_dirty()`——**不 dirty 就不重列**；`thread/resume` 命中「已加载的 thread」（warm）时直接复用该缓存目录（`app-server/.../thread_processor.rs` 的 `RunningThreadResumeResult::Handled`），只有 **冷 resume**（thread 被卸载 / daemon 重启）或 **MCP 配置变化** 才会重列。`config/mcpServer/reload` 只在配置差异时生效，我们的工具集变化对 Codex 不是「配置变了」，故**不可依赖它**。因此**开关 internet 必须让 thread 重建**：`WebSearch` 折进 `ScopeFingerprint`（`codexagent.WebSearchFingerprint`，见 `internal/codexagent/run.go` 的 `RunTurn`）——决策一变 → fingerprint 变 → 复用被拒 → 重建 thread → Codex 重新 `tools/list`，桥按新 binding 返回新工具集（历史由 RAGFlow 重放，D10）。代价：每次切换重建一次 thread。
 - **TTL 与保活**：所有 mode 8 键（handle / session 索引 / binding）TTL = **10 分钟**。保活**不是全局 keeper**，而是 **binder 在每个 turn 内**的 heartbeat：`Bind` 成功时起一个 goroutine，每 1 分钟 `Renew` 一次（延长 handle TTL + 刷新 binding 租约），`Unbind` 时退出。于是 handle/binding 只在 turn 期间被续期——长 turn 不会中途丢锁；崩溃 / 挂死的 turn 不再续期，binding 租约在 ≤10 分钟内到期、锁自动释放；服务停摆后遗留键也自行消失（不挂 24h）。`HandleForSession` 与 `Bind` 另外各自刷新 handle 的 TTL。
 - **删除**：`RevokeHandle`（session 删除）与 `Unbind`（turn 结束）立即删除对应键。**`Resolve` 不校验 handle 有效性，只管读取当前 binding 并刷新其 TTL** —— binding 的生命周期由 `Bind`/`Unbind` 加租约 TTL 兜底决定；handle 在 turn 内不会失效，因为 `Bind` 与 turn 内 heartbeat 都在保活它。session 删除与在途 turn 的竞态由「turn 写映射前校验 handle 仍存活」处理（被删会话的 Put 被跳过）。
@@ -587,7 +587,7 @@ web 结果用**同一形状**：工具输出对 web 命中打印 `source="web" u
 | pretoken 标点正则修复 | ✅ 已通过（单测 + 运行） | `bash build.sh --test ./internal/service/nlp/`；重启后跑一轮 mode-8 | 新单测 `TestPretokenPunctPattern` 全绿；API 日志不再出现 `invalid regular expression` | 2026-10-12 |
 | 非 loopback WS 鉴权（capability-token）与 token 来源 | ✅ 已通过（实测） | `codex app-server --listen ws://0.0.0.0:8791 --ws-auth capability-token --ws-token-file <file>`；对 `/` 发 WS 握手探测 | 0.0.0.0 无鉴权被拒、加 `--ws-auth capability-token` 后可起；无 header / 错 token → **401**，正确 token → **101**；启动日志**不含** token（token 由运维生成，CLI 无生成子命令）；token 文件末尾换行被 trim | 2026-10-12 |
 | MCP `web_search` 按会话设置逐轮注入 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/service/... ./internal/codexagent/... ./internal/agentic_rag/...` | binding 带 `ChatID`+`WebSearch`；桥经 `resolveCodexWebSearch` seam 解析 provider 后追加 `web_search`。单测：未开启（或 resolver 未装/返回 nil）→ 不暴露且 resolver 不被调用；开启 → 暴露，且在**无 KB** 会话下工具可用（不受 KB 守卫）；`WebSearchFingerprint` 改变组合 reuse key。**已核对 Codex 源码**：工具目录按 thread 缓存、warm resume 不重列 → 以 `WebSearch` 折进 `scope_fingerprint` 触发重建来保证切换生效。跨进程/多副本与真机端到端未实测 | 2026-10-12 |
-| mode-8 引用：tuple 契约 + `[ID:N]` 翻译 + web 引用 + 展示副本 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/agentic_rag/... ./internal/service/...` | 契约改为 provenance tuple；`ReplaceProvenanceTuples` 把**代码段之外**的 tuple 替换成 `[ID:N]`（未解析则保留；代码段内保留并交 `InsertCitationMarkers` 在行尾补标记）；`buildCodexReference` 同时校验语料（KB 作用域）与 `web-*`（本轮 served set：Kvrocks `ragflow:codex:webserved:<handle>`，`Unbind`/`RevokeHandle` 清除）；DB 的 message content 保留模型原始输出，另存 `content_display` 供读取呈现，**重载仍显示引用**。单测覆盖：tuple 编号/片段含括号/未解析/代码段/裸字段、served set 记录与清除、展示副本优先。真机端到端未实测 | 2026-10-12 |
+| mode-8 引用：tuple 契约 + 原地 `[ID:N]` + web 条目 + 展示副本 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/agentic_rag/... ./internal/service/...` | 契约为两种 provenance tuple（语料 doc/doc_id/chunk_id；web source/url/title）；`RewriteProvenance` 把 tuple（或裸字段）**原地**替换为 `[ID:N]`，未解析则保留、幂等；mode 6/7 走同一 pass；`buildCodexReference` 校验语料（KB 作用域）、web 由模型负责（**结果不写 KV**）；统一编号（语料先、web 后）；DB 存原始输出 + `content_display`，读取换取使重载仍显示引用。单测覆盖：原地替换/共享 chunk/未解析/裸字段/web tuple/片段含括号/web 提取去重/served set 移除后的记录路径。真机端到端未实测 | 2026-10-12 |
 
 **门禁规则**：只要 11.2 中 M0-b…M0-d 任一项为 `⏳ 未验证` 或 `❌ 未通过`，**M1 及之后一律阻塞**。M0-c（U1(b)）已非架构阻塞：无论 resume 是否重载 MCP，都可分别走「resume 刷新票据」或「重建 thread」，两种路径均在计划内。
 
