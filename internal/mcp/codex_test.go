@@ -27,6 +27,8 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"ragflow/internal/agentic_rag"
 )
 
 // fakeKV is a minimal in-process KV for tests. The whole point of the KV interface is
@@ -336,6 +338,84 @@ func TestCodexToolServerRejectsNoScope(t *testing.T) {
 	}
 	if !strings.Contains(text, "no knowledge base") {
 		t.Fatalf("error text does not explain the missing scope: %q", text)
+	}
+}
+
+// web_search is a per-turn capability: a turn that did not enable it must not advertise
+// the tool, and the resolver must not even be consulted.
+func TestCodexToolServerOmitsWebSearchWithoutOptIn(t *testing.T) {
+	var calls int
+	SetCodexWebSearchResolver(func(context.Context, CodexScope) agentic_rag.WebSearchFunc {
+		calls++
+		return func(context.Context, string) ([]agentic_rag.WebResult, error) {
+			return []agentic_rag.WebResult{{Title: "T", URL: "https://e/x", Content: "C"}}, nil
+		}
+	})
+	t.Cleanup(func() { SetCodexWebSearchResolver(nil) })
+
+	scope := CodexScope{TenantID: "t", ChatID: "c1", DatasetIDs: []string{"kb"}}
+	scope.webSearch = resolveCodexWebSearch(context.Background(), scope)
+	cs := connectSession(t, NewCodexToolServer(scope))
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == agentic_rag.WebSearchToolName {
+			t.Fatal("web_search advertised for a turn that did not enable it")
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("resolver consulted %d times for a turn that did not opt in; want 0", calls)
+	}
+}
+
+// A turn whose conversation enables web search advertises web_search, and the tool is
+// usable even though the conversation binds no knowledge base: web search is a
+// capability of the conversation, not of the corpus, so the KB guard must not apply.
+func TestCodexToolServerAddsWebSearchWhenTurnEnablesIt(t *testing.T) {
+	const query = "public keywords"
+	var gotQuery string
+	SetCodexWebSearchResolver(func(_ context.Context, scope CodexScope) agentic_rag.WebSearchFunc {
+		if scope.ChatID != "c1" {
+			t.Errorf("resolver scope chat id = %q, want c1", scope.ChatID)
+		}
+		return func(_ context.Context, q string) ([]agentic_rag.WebResult, error) {
+			gotQuery = q
+			return []agentic_rag.WebResult{{Title: "Public source", URL: "https://e/x", Content: "Public facts."}}, nil
+		}
+	})
+	t.Cleanup(func() { SetCodexWebSearchResolver(nil) })
+
+	scope := CodexScope{TenantID: "t", UserID: "u", ChatID: "c1", WebSearch: true}
+	scope.webSearch = resolveCodexWebSearch(context.Background(), scope)
+	cs := connectSession(t, NewCodexToolServer(scope))
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	found := false
+	for _, tool := range res.Tools {
+		found = found || tool.Name == agentic_rag.WebSearchToolName
+	}
+	if !found {
+		t.Fatal("web_search not advertised for a turn that enabled it")
+	}
+
+	call, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      agentic_rag.WebSearchToolName,
+		Arguments: map[string]any{"queries": []string{query}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if call.IsError {
+		t.Fatalf("web_search failed with no KB scope: %+v", call)
+	}
+	if gotQuery != query {
+		t.Fatalf("provider query = %q, want %q", gotQuery, query)
 	}
 }
 

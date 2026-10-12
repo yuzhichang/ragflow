@@ -1112,6 +1112,10 @@ func startServer(ctx context.Context, serverName string, arguments *serverArgs) 
 	// Bind the mode 8 MCP handle/binding store to the shared Kvrocks, so authorization
 	// survives across the processes that mint (API) and resolve (/mcp/codex).
 	service.InstallCodexKVStore()
+	// Install the bridge's web-search seam: the /mcp/codex handler rebuilds a
+	// conversation's provider callback on demand (only for turns that enabled web
+	// search), so the credentials never enter the shared KV.
+	service.InstallCodexWebSearchResolver()
 
 	userService := service.NewUserService()
 	documentService := document.NewDocumentService()

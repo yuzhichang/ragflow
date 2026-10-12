@@ -54,6 +54,12 @@ type TurnRequest struct {
 	// DatasetIDs is the conversation's current KB scope; it selects the ticket and
 	// is folded into the scope fingerprint.
 	DatasetIDs []string
+	// WebSearch is this turn's web-search decision (the chat has a provider AND the
+	// request enabled internet). It is part of the thread's reuse key: Codex caches
+	// the MCP tool catalog for a thread's life, so flipping web search must rebuild
+	// the thread — otherwise the bridge's new tool set is never listed (see the mode
+	// 8 plan, §5.7③).
+	WebSearch bool
 
 	// Model / provider: the resolved dialog model (see the plan, D4). Model is the
 	// real model name, not the composite llm_id.
@@ -191,6 +197,10 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	}
 
 	scopeFP := ScopeFingerprint(req.TenantID, req.DatasetIDs)
+	// The web-search capability is decided per turn, but Codex caches an MCP tool
+	// catalog for the life of a thread: a change must rebuild the thread, or the new
+	// tool set is never advertised. Fold the decision into the reuse key.
+	scopeFP = CombineFingerprints(scopeFP, WebSearchFingerprint(req.WebSearch))
 	// The base instructions (citation contract) are baked into the thread at create and
 	// not reloaded on resume, so they are part of the reuse key too. Fold them in as ONE
 	// further hash: two 64-char hex strings joined would exceed the size:64 column.

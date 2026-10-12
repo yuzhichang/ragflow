@@ -62,7 +62,7 @@
 | `list_chunks` | `NewListChunksTool(...)` | 读 chunk（`dao.DB`） |
 | `think` / `todo_write` / `run_javascript` / `check_decomposition` | 无作用域 | 纯计算 |
 
-> 上表是 agent_rag 现有工具全集。**mode 8 的 MCP bridge 只暴露其子集**：`search_chunks`、`think`、`todo_write`、`run_javascript`、`check_decomposition` 均**不暴露**（见 D7/D9）。
+> 上表是 agent_rag 现有工具全集。**mode 8 的 MCP bridge 只暴露其子集**：`search_chunks`、`think`、`todo_write`、`run_javascript`、`check_decomposition` 均**不暴露**（见 D7/D9）；`web_search` 只在会话启用了网络搜索时暴露（逐轮决定，见 D9/§5.7③）。
 
 - 检索实现的核心是 `runLocateSearch`（`internal/agentic_rag/locate_search.go:68`），tenant/dataset 作用域在构造时注入，**运行时从 `ctx` 取 ledger**（`internal/agentic_rag/agent.go` 里 `withServedLedger`）。
 - `tenantID` 必须是 **chat 的 owning tenant**（`chat.TenantID`），不是请求用户 ID；索引名由 tenant 构造，用错会稳定返回空结果。
@@ -119,7 +119,7 @@
 | D6 | **Codex thread 与 RAGFlow chat session 一一对应** | 一个 chat session 一个 thread，持久映射，跨 turn 复用与 resume；见 §5.2。 |
 | D7 | **不向 Codex 暴露 `think` / `todo_write` / `run_javascript` 等玩具工具** | Codex 内置的 plan / reasoning 能力远强于这几个工具，重复暴露只会造成工具选择冲突。 |
 | D8 | **mode 8 不因无 KB 而禁用；无 scope 时 MCP 检索工具返回错误** | Codex 是通用助手，无 KB 也能对话/推理。检索类工具在无 `kb_id` 作用域时返回 `IsError`，交由 Codex 读取错误后应对，绝不用空作用域检索。 |
-| D9 | **不暴露 MCP 工具 `search_chunks`** | 用户决定（2026-10-09）。其余检索工具保留：`search_semantic_chunks` / `search_bm25_chunks` / `grep_chunks` / `list_chunks`。 |
+| D9 | **不暴露 MCP 工具 `search_chunks`；`web_search` 按会话设置逐轮决定** | 用户决定（2026-10-09）。检索工具保留：`search_semantic_chunks` / `search_bm25_chunks` / `grep_chunks` / `list_chunks`。`web_search` 是**会话能力**而非语料工具：binding 携带 `ChatID` + `WebSearch`（= 会话配了 provider 且本次请求开启 internet，即 `shouldUseWebSearch`），桥在处理请求时按 `ChatID` 从 DB 读 `chat.PromptConfig` 解析 provider（见 §5.7③），解析成功才把 `web_search` 加入工具集——凭据只留在 DB，绝不进 KV 里的 binding。不满足时不暴露（与进程内引擎「缺席的能力绝不向模型广告」一致）。 |
 | D10 | **对话历史重放给该 Codex thread** | RAGFlow 保存的会话历史在 thread（首建或重建）时经 `thread/inject_items`（`ThreadInjectItems`，`thread.go:500`）注入 thread 的模型可见历史，使 Codex 具备多轮上下文，不依赖 Codex 侧持久记忆。 |
 | D11 | handle/binding 存 **Kvrocks**（`mcp.KV`），**不是进程内存** | RAGFlow API（mint handle、bind scope）与服务 `/mcp/codex` 的进程可能不同（独立 MCP server，或 API 多副本），进程内 map 会让 resolve 落空。`internal/mcp` 只依赖一个注入的 `KV` 接口；Kvrocks 适配器在 service 层（`codex_kv.go`），boot 时 `SetCodexKV` 安装。键：`ragflow:codex:handle:<token>`、`ragflow:codex:sess:<tenant>\x00<session>`、`ragflow:codex:bind:<token>`。键 TTL 统一 **10 分钟**；保活**不靠全局 keeper**，而是由 **binder 在每个 turn 内**起一个 goroutine（`Bind` 成功时启动、`Unbind` 时退出，每 1 分钟 `Renew` 一次 handle TTL 与 binding 租约）。因此 handle/binding 只在 turn 期间被续期，turn 之间不续期：崩溃的 turn 的 binding 会在 ≤TTL 内到期释放锁，服务停摆后遗留键也会自行消失。 |
 | D12 | **去掉工具台账 / 引用白名单**；引用改由 **KB 作用域校验** | 用户决定（2026-10-12）：bridge 不再逐 chunk 记台账。turn 末把模型写的 `chunk_id` 经 `buildAgenticReferenceWithWhitelist(..., nil)` → `fetchChunksByIDs(tenantID, datasetIDs, cited)` 校验存在性与归属后再生引用。代价：mode 8 不再产出 `tool_call_counts` / `retrieved_docids` / `deep_read_*` / `shallow_read_*`（benchmark 遥测；Web UI 不消费）。 |
@@ -178,7 +178,7 @@ func (s *ChatPipelineService) codexAgent(ctx, userID, chat, messages, stream, kw
 
 现有 `internal/mcp/server.go` 已用 `modelcontextprotocol/go-sdk v1.8.0` 暴露 `ragflow_retrieval` / `ragflow_list_datasets` / `ragflow_list_chats`，并有 `NewHandler`（`internal/mcp/http.go:52`）支持 streamable HTTP。mode 8 需要：
 
-1. 新增一个 **按本轮 binding 作用域的 server 工厂**：`NewCodexToolServer(scope CodexScope) *sdk.Server`，其中 `CodexScope{ TenantID string; DatasetIDs []string; UserID string }`（纯数据，可 JSON 序列化进 KV）。`UserID` 是发起该 turn 的用户，桥在工具调用前注入到 ctx（`agentrunt.WithUserID`），供下游数据集权限校验使用（见 §5.7 第③段）。
+1. 新增一个 **按本轮 binding 作用域的 server 工厂**：`NewCodexToolServer(scope CodexScope) *sdk.Server`，其中 `CodexScope{ TenantID string; DatasetIDs []string; UserID string; ChatID string; WebSearch bool }`（纯数据，可 JSON 序列化进 KV）。`UserID` 是发起该 turn 的用户，桥在工具调用前注入到 ctx（`agentrunt.WithUserID`），供下游数据集权限校验使用（见 §5.7 第③段）。`ChatID` + `WebSearch` 用于 web_search 的逐轮注入：桥按 `ChatID` 从 DB 解析该会话的 provider（**provider 回调本身是进程内的**，作为 `CodexScope` 的非导出字段由 handler 填好，绝不进 KV）。
 2. 注册与 `toolRegistry()`（`config.go:86`）**同名同义**的工具，参数 schema 复用 `internal/agentic_rag` 内对应工具的结构（如 `search_bm25_chunks` / `search_semantic_chunks` 的参数结构），避免两套契约漂移。
 3. 工具实现**直接调用现有的检索实现**（`runLocateSearch` / grep / chunk 读取），作用域从 `scope` 注入，而不是从全局 `runtime.GetRetrievalService()` 里兜底 tenant。暴露的最小切面：
    - `search_semantic_chunks` → `locate_search.go` 的 `locateSearchSpec`（vectorOnly，tenantID=scope.TenantID, boundDatasetIDs=scope.DatasetIDs）。
@@ -186,9 +186,10 @@ func (s *ChatPipelineService) codexAgent(ctx, userID, chat, messages, stream, kw
    - `search_bm25_chunks` → `runtime.GetBm25Service()`。
    - `list_chunks` → `internal/agentic_rag/tool_list_chunks.go` 的读取逻辑。
    - **不暴露**：`search_chunks`（D9）、`think` / `todo_write` / `run_javascript` / `check_decomposition`（D7）。
+   - **条件暴露**：`web_search`——仅当 binding 的 `WebSearch` 为 true 且按 `ChatID` 解析出 provider 时加入（D9/§5.7③）。
 4. 新增路由：`POST /mcp/codex/:token`（同 handler 内区分），走 `StreamableHTTPHandler`，`Stateless: true`。票据校验放在接收中间件里，参照 `internal/mcp/http.go:70` 的 `AddReceivingMiddleware` 模式。
 5. handle 未知 → **401**；handle 存在但本轮无 binding → **403**；都在构建任何 server/工具之前拒绝，绝不落到默认 KB 作用域。
-6. **无 scope 的检索调用返回错误**：当 `Scope.DatasetIDs` 为空（会话未绑定 KB）时，`search_semantic_chunks` / `search_bm25_chunks` / `grep_chunks` / `list_chunks` 一律返回 `IsError: true` 的 MCP 结果（消息说明“本次会话未绑定知识库”），**绝不**以空 `dataset_ids` 去检索。这样无 KB 的 mode 8 仍可正常对话/推理，检索请求则显式失败，Codex 读到错误后自行应对（例如直接回答或告知用户）。
+6. **无 scope 的检索调用返回错误**：当 `Scope.DatasetIDs` 为空（会话未绑定 KB）时，`search_semantic_chunks` / `search_bm25_chunks` / `grep_chunks` / `list_chunks` 一律返回 `IsError: true` 的 MCP 结果（消息说明“本次会话未绑定知识库”），**绝不**以空 `dataset_ids` 去检索。这样无 KB 的 mode 8 仍可正常对话/推理，检索请求则显式失败，Codex 读到错误后自行应对（例如直接回答或告知用户）。该守卫是**逐工具**的（`codexToolSpec.requiresKBs`）：`web_search` 属于会话能力、不依赖 KB，**不受此守卫约束**，无 KB 会话照样能联网检索。
 
 ### 4.5 配置（`internal/server/config/`）
 
@@ -292,7 +293,7 @@ client.StartThread(ctx,
      - **与本轮 handle/binding 的关系**：resume 的 thread 用它 baked-in 的 URL（= 每 session 稳定的同一个 handle），本轮已在该 handle 上 `Bind`，故 Codex 的工具调用被授权 —— 这正是 handle 做成 **per-session 稳定**的原因（第 5 点）。
      - **收尾与失败**：本 turn 跑完 `th.Close()` 释放 SDK 槽位（`WithMaxThreads`），下一轮再 resume（第 11 点）；`ResumeThread` 连接失败 / thread 被共享 Codex 回收 / 服务端重启 → **回退重建**（第 10 点）。
      - **必须在 per-session 锁内**：否则同会话两个 turn 会交错（第 7 点）。
-5. **KB 作用域逐轮绑定（P1#8）**：作用域**不固定于首轮**，且现在由 **per-turn binding** 承载：每轮从当前 dialog/session 配置解析 `DatasetIDs` 与授权，runner 在会话锁内 `Bind(handle, CodexScope{…})`，turn 末 `Unbind`（D2/§5.7③）。**实测确认 `thread/resume` 的 config overlay 不会重载 `mcp_servers`（D3）**，但该限制现已无害（URL 里的 handle 稳定且无权限）。当前实现仍把 KB 集合折进 `scope_fingerprint`，故 KB 变化（增删/改绑、无 KB→有 KB）仍会**重建 thread**；既然授权已 per-turn，去掉该维度是可选后续。绝不能用「resume 时刷新 MCP URL」来改作用域。
+5. **KB 作用域逐轮绑定（P1#8）**：作用域**不固定于首轮**，且现在由 **per-turn binding** 承载：每轮从当前 dialog/session 配置解析 `DatasetIDs` 与授权，runner 在会话锁内 `Bind(handle, CodexScope{…})`，turn 末 `Unbind`（D2/§5.7③）。**实测确认 `thread/resume` 的 config overlay 不会重载 `mcp_servers`（D3）**，但该限制现已无害（URL 里的 handle 稳定且无权限）。当前实现仍把 KB 集合折进 `scope_fingerprint`，故 KB 变化（增删/改绑、无 KB→有 KB）仍会**重建 thread**；既然授权已 per-turn，去掉该维度是可选后续。绝不能用「resume 时刷新 MCP URL」来改作用域。**`WebSearch`（会话是否联网检索）同样折进 `scope_fingerprint`，且这一维不可去掉**：Codex 按 thread 缓存 MCP 工具目录，只有重建 thread 才能让 `web_search` 的出现/消失真正生效（见 §5.7③）。
 6. **历史一致性（P1#6）**：Codex thread 的历史会与 RAGFlow 漂移——`DeleteSessionMessage` 删除消息（`chat_session.go:523`）、同一 session 内切换 reasoning level、其他模式写入的新回合，都不会进入已有 thread。用 `history_fingerprint`（如可见消息 id 序列的哈希）逐轮校验；不一致则**重建 thread 并重放**（若 SDK/服务端支持，也可用 `Revert` + `ThreadInjectItems` 精准同步）。**不能只在 `ResumeThread` 失败时才重放。**
 7. **并发安全（P1#3）**：互斥由 **binding 本身**提供，不是任何进程内锁。`Bind` 是对 `ragflow:codex:bind:<handle>` 的一次 KV **原子 `SetNX`**：抢到 = 得到本轮锁；已有 binding（另一个 turn 在跑）= 返回 `ErrCodexTurnBusy`，引擎回一条 `session <id> is busy with another turn` 的终局错误。锁在 turn 全程持有（`Bind` → resume-or-start → run → 收尾 → `Unbind`），因此**一个 handle 在任何时刻至多一个 binding**，且互斥**跨进程 / 多副本**成立（KV 原子性），无需 sticky 路由。
    - **为什么这样已经足够**（对照原来的进程内锁）：两个并发 turn 若都 `SetNX`，只有一个成功；失败的那个根本不进 thread 阶段，所以既不会覆盖对方的 scope，也不会在对方 `Unbind` 时误删 binding。锁的生命周期与 binding 完全一致，天然覆盖「Bind → run → Unbind」。
@@ -399,10 +400,12 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 - RAGFlow 取 **per-session handle**：`HandleForSession(tenantID, sessionID)`——32 字节随机 → base64url，按 `(tenant, session)` 幂等铸造，**本身不携带任何权限**。
 - URL 写进 thread 配置：`mcp_servers.ragflow.url = <MCPPublicBase>/mcp/codex/<handle>`；Codex 之后只按该 URL 回调。
-- **授权是本轮 turn 的 binding，且它就是同会话的 turn 锁**：runner 在开跑前 `Bind(handle, CodexScope{TenantID, DatasetIDs, UserID})` —— 一次 KV **原子 `SetNX`**。已有 binding（另一个 turn 在跑）→ `ErrCodexTurnBusy`，引擎回 `session <id> is busy with another turn`；抢占成功才继续。turn 结束 `Unbind`。因为 handle 每 session 稳定，这条 URL 在 resume 与 rebuild 下都一样，引擎无需知道 runner 选了哪条路。
+- **授权是本轮 turn 的 binding，且它就是同会话的 turn 锁**：runner 在开跑前 `Bind(handle, CodexScope{TenantID, DatasetIDs, UserID, ChatID, WebSearch})` —— 一次 KV **原子 `SetNX`**。已有 binding（另一个 turn 在跑）→ `ErrCodexTurnBusy`，引擎回 `session <id> is busy with another turn`；抢占成功才继续。turn 结束 `Unbind`。因为 handle 每 session 稳定，这条 URL 在 resume 与 rebuild 下都一样，引擎无需知道 runner 选了哪条路。
 - handle 与 binding 都存 **Kvrocks**（D11）：mint/bind 的 API 进程与服务 `/mcp/codex` 的进程可能不是同一个，KV 原子性使 binding 锁**跨进程 / 多副本**成立。
 - 桥：`internal/router/router.go` 注册 `Any /mcp/codex/:token` → `mcp.NewCodexHandler(DefaultCodexTickets())`。**先按 binding 鉴权**：未知 handle → **401**；handle 存在但本轮没有 binding → **403**；都在构建任何 server/工具之前拒绝。
 - 作用域由 binding 决定：工具参数里的 `dataset_ids` 只能收窄到 binding 子集（`resolveDatasetScope` 的“bound 优先、请求须在内”），越界报错；binding `DatasetIDs` 为空则检索类工具返回 `IsError`。
+- **`web_search` 逐轮注入（会话能力）**：`/mcp/codex` 的 handler 在通过鉴权后调用 seam `resolveCodexWebSearch(ctx, scope)`——仅当 `scope.WebSearch` 为 true 且安装了 resolver（`service.InstallCodexWebSearchResolver()`，boot 时挂上）时，按 `scope.ChatID` 从 DB 读 `chat.PromptConfig` 并 `resolveWebSearchProvider` 解析出 provider，构造 `WebSearchFunc` 填进 `scope` 的**非导出**字段（绝不进 KV）。解析成功 → 工具集追加 `web_search`；否则不暴露。`web_search` 不依赖 KB，故不受「无 KB → 检索工具 `IsError`」守卫约束。若 `ChatID` 为空 / 无 provider / 无 resolver，一律静默不注入。
+  - **为什么切换能生效（已核对 Codex 源码）**：Codex 把 MCP 工具缓存在连接的 **tool catalog** 里（`codex-mcp/src/connection_manager/tool_catalog.rs`），每轮只走 `refresh_mcp_if_dirty()`——**不 dirty 就不重列**；`thread/resume` 命中「已加载的 thread」（warm）时直接复用该缓存目录（`app-server/.../thread_processor.rs` 的 `RunningThreadResumeResult::Handled`），只有 **冷 resume**（thread 被卸载 / daemon 重启）或 **MCP 配置变化** 才会重列。`config/mcpServer/reload` 只在配置差异时生效，我们的工具集变化对 Codex 不是「配置变了」，故**不可依赖它**。因此**开关 internet 必须让 thread 重建**：`WebSearch` 折进 `ScopeFingerprint`（`codexagent.WebSearchFingerprint`，见 `internal/codexagent/run.go` 的 `RunTurn`）——决策一变 → fingerprint 变 → 复用被拒 → 重建 thread → Codex 重新 `tools/list`，桥按新 binding 返回新工具集（历史由 RAGFlow 重放，D10）。代价：每次切换重建一次 thread。
 - **TTL 与保活**：所有 mode 8 键（handle / session 索引 / binding）TTL = **10 分钟**。保活**不是全局 keeper**，而是 **binder 在每个 turn 内**的 heartbeat：`Bind` 成功时起一个 goroutine，每 1 分钟 `Renew` 一次（延长 handle TTL + 刷新 binding 租约），`Unbind` 时退出。于是 handle/binding 只在 turn 期间被续期——长 turn 不会中途丢锁；崩溃 / 挂死的 turn 不再续期，binding 租约在 ≤10 分钟内到期、锁自动释放；服务停摆后遗留键也自行消失（不挂 24h）。`HandleForSession` 与 `Bind` 另外各自刷新 handle 的 TTL。
 - **删除**：`RevokeHandle`（session 删除）与 `Unbind`（turn 结束）立即删除对应键。**`Resolve` 不校验 handle 有效性，只管读取当前 binding 并刷新其 TTL** —— binding 的生命周期由 `Bind`/`Unbind` 加租约 TTL 兜底决定；handle 在 turn 内不会失效，因为 `Bind` 与 turn 内 heartbeat 都在保活它。session 删除与在途 turn 的竞态由「turn 写映射前校验 handle 仍存活」处理（被删会话的 Put 被跳过）。
 - **下游权限校验以 binding 属主身份执行**：`NLPRetrievalAdapter.Search` 对每个数据集做 `OperationUse` 权限校验，调用者身份取自 agent canvas state；而 MCP 请求是普通 HTTP、没有 canvas state，故 binding 携带 `UserID`（= 发起该 mode 8 turn 的用户），桥在工具调用前 `agentrunt.WithUserID(ctx, scope.UserID)` 注入、`Search` 优先读它。否则校验会以**空用户**执行并返回 `permission.ErrUnauthenticated`（归一化消息即 `Authentication required`）——只有经过该适配器的语义检索（`search_semantic_chunks`）会中招，词法工具（`grep_chunks` / `search_bm25_chunks` / `list_chunks`）不经此校验。
@@ -473,7 +476,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 - **D7 工具集**：不暴露 `think` / `todo_write` / `run_javascript` 等玩具工具。
 - **D6 映射**：Codex thread 与 RAGFlow session 一一对应；thread 只承载模型状态，权威数据每轮现算、漂移即重建。
 - **D8 无 KB 也可用**：mode 8 不受 `hasKBs` 约束，无 KB 仍访问 Codex；MCP 检索类工具在无 `kb_id` 作用域时返回错误，而非空作用域检索。
-- **D9 不暴露 `search_chunks`**：MCP 工具集为 `search_semantic_chunks` / `search_bm25_chunks` / `grep_chunks` / `list_chunks`。
+- **D9 不暴露 `search_chunks`**：MCP 检索工具集为 `search_semantic_chunks` / `search_bm25_chunks` / `grep_chunks` / `list_chunks`；`web_search` 仅在会话启用网络搜索时逐轮注入（binding 带 `ChatID`+`WebSearch`，桥按 `ChatID` 从 DB 解析 provider，凭据不入 KV）。
 - **D10 对话历史重放**：thread（首建/重建/一次性）时经 `ThreadInjectItems` 把历史注入 thread。
 - **D11 无 session id 退化**：`openai_chat.go` / `bot_completion.go` 无 session id → 每次调用新建一次性 thread（重放请求携带的历史）。
 
@@ -571,6 +574,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 | Responses `base_url` 归一化 + turn 错误明细 | ✅ 已通过（实测） | 同上 mode-8 调用 | MiniMax `https://api.minimaxi.com` 归一化为 `/v1` 后调通 `/v1/responses`；失败 turn 终局带 `turn.error` 明文（修复前为空 `(code=""):`） | 2026-10-12 |
 | pretoken 标点正则修复 | ✅ 已通过（单测 + 运行） | `bash build.sh --test ./internal/service/nlp/`；重启后跑一轮 mode-8 | 新单测 `TestPretokenPunctPattern` 全绿；API 日志不再出现 `invalid regular expression` | 2026-10-12 |
 | 非 loopback WS 鉴权（capability-token）与 token 来源 | ✅ 已通过（实测） | `codex app-server --listen ws://0.0.0.0:8791 --ws-auth capability-token --ws-token-file <file>`；对 `/` 发 WS 握手探测 | 0.0.0.0 无鉴权被拒、加 `--ws-auth capability-token` 后可起；无 header / 错 token → **401**，正确 token → **101**；启动日志**不含** token（token 由运维生成，CLI 无生成子命令）；token 文件末尾换行被 trim | 2026-10-12 |
+| MCP `web_search` 按会话设置逐轮注入 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/service/... ./internal/codexagent/... ./internal/agentic_rag/...` | binding 带 `ChatID`+`WebSearch`；桥经 `resolveCodexWebSearch` seam 解析 provider 后追加 `web_search`。单测：未开启（或 resolver 未装/返回 nil）→ 不暴露且 resolver 不被调用；开启 → 暴露，且在**无 KB** 会话下工具可用（不受 KB 守卫）；`WebSearchFingerprint` 改变组合 reuse key。**已核对 Codex 源码**：工具目录按 thread 缓存、warm resume 不重列 → 以 `WebSearch` 折进 `scope_fingerprint` 触发重建来保证切换生效。跨进程/多副本与真机端到端未实测 | 2026-10-12 |
 
 **门禁规则**：只要 11.2 中 M0-b…M0-d 任一项为 `⏳ 未验证` 或 `❌ 未通过`，**M1 及之后一律阻塞**。M0-c（U1(b)）已非架构阻塞：无论 resume 是否重载 MCP，都可分别走「resume 刷新票据」或「重建 thread」，两种路径均在计划内。
 

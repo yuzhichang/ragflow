@@ -106,6 +106,17 @@ func HistoryFingerprint(messages []map[string]interface{}) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// WebSearchFingerprint is the scope-key component for a turn's web-search decision.
+// Codex caches an MCP tool catalog for the life of a thread, so the decision is part of
+// the thread's identity: turning the conversation's web search on or off must rebuild
+// the thread for the bridge's new tool set to be advertised (see the mode 8 plan, §5.7③).
+func WebSearchFingerprint(on bool) string {
+	if on {
+		return "web_search=on"
+	}
+	return "web_search=off"
+}
+
 // CombineFingerprints folds several fingerprints into one 64-char hash, so a fingerprint
 // that composes other fingerprints still fits a size:64 column.
 func CombineFingerprints(parts ...string) string {

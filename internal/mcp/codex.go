@@ -46,6 +46,19 @@ type CodexScope struct {
 	// their context so the dataset permission check authorizes the same caller who
 	// opened the turn (an MCP request has no canvas state to read it from).
 	UserID string `json:"user_id"`
+	// ChatID is the conversation this turn belongs to. The bridge resolves the
+	// conversation's web-search provider from it at request time, so the provider's
+	// credentials stay in the database instead of in this binding — which is
+	// serialized into the shared KV (see D11).
+	ChatID string `json:"chat_id"`
+	// WebSearch is this turn's web-search decision: the conversation has a provider
+	// AND the request enabled internet (see shouldUseWebSearch). The bridge advertises
+	// web_search only when it is set AND a provider actually resolves.
+	WebSearch bool `json:"web_search"`
+	// webSearch is the resolved callback for THIS process, filled in by the HTTP
+	// handler after the binding is read. Unexported — and a function — so it is never
+	// part of the KV-serialized binding.
+	webSearch agentic_rag.WebSearchFunc
 }
 
 // KV is the minimal shared store mode 8 authorization needs. It MUST be backed by a
@@ -321,16 +334,71 @@ func DefaultCodexTickets() *CodexTickets {
 	return defaultCodexTickets
 }
 
-// codexToolSpecs are the agent_rag retrieval tools the Codex bridge exposes. The names
-// and schemas come from the tools themselves (see addCodexTool), so the two never drift.
-// search_chunks is intentionally NOT here (see the mode 8 plan, D9).
-func codexToolSpecs(scope CodexScope) []einotool.BaseTool {
-	return []einotool.BaseTool{
-		agentic_rag.NewSearchSemanticChunksTool(scope.TenantID, scope.DatasetIDs),
-		agentic_rag.NewSearchBm25ChunksTool(scope.TenantID, scope.DatasetIDs),
-		agentic_rag.NewGrepChunksTool(scope.TenantID, scope.DatasetIDs),
-		agentic_rag.NewListChunksTool(scope.TenantID, scope.DatasetIDs),
+// WebSearchResolver resolves the conversation's web-search callback for a bound turn.
+// It is a seam: the bridge must not import the service layer (the service layer imports
+// it), so the API process installs a resolver at boot. A nil resolver, a nil return, or
+// scope.WebSearch == false all mean "this turn gets no web_search tool".
+//
+// The callback (and the provider credentials behind it) is never persisted: the binding
+// carries only the conversation id, and the resolver rebuilds the callback from it.
+type WebSearchResolver func(ctx context.Context, scope CodexScope) agentic_rag.WebSearchFunc
+
+var (
+	codexWebSearchMu sync.RWMutex
+	codexWebSearch   WebSearchResolver
+)
+
+// SetCodexWebSearchResolver installs the process-wide resolver. Call it once at boot.
+func SetCodexWebSearchResolver(r WebSearchResolver) {
+	codexWebSearchMu.Lock()
+	codexWebSearch = r
+	codexWebSearchMu.Unlock()
+}
+
+// resolveCodexWebSearch resolves this turn's web-search callback, or nil when the turn
+// did not opt in or no resolver/provider is available.
+func resolveCodexWebSearch(ctx context.Context, scope CodexScope) agentic_rag.WebSearchFunc {
+	if !scope.WebSearch {
+		return nil
 	}
+	codexWebSearchMu.RLock()
+	r := codexWebSearch
+	codexWebSearchMu.RUnlock()
+	if r == nil {
+		return nil
+	}
+	return r(ctx, scope)
+}
+
+// codexToolSpec is one tool the bridge exposes, plus how the MCP layer must police it.
+type codexToolSpec struct {
+	tool einotool.BaseTool
+	// requiresKBs gates the call on the turn's knowledge-base scope. The retrieval
+	// tools need it — an empty scope must never degrade into an unrestricted search.
+	// web_search is a capability of the conversation, not of the corpus, so it does not.
+	requiresKBs bool
+}
+
+// codexToolSpecs are the tools the Codex bridge exposes for one turn's binding. The
+// names and schemas come from the tools themselves (see addCodexTool), so the two never
+// drift. search_chunks is intentionally NOT here (see the mode 8 plan, D9); web_search
+// is present only when the conversation enables it (scope.webSearch).
+func codexToolSpecs(scope CodexScope) []codexToolSpec {
+	specs := []codexToolSpec{
+		{tool: agentic_rag.NewSearchSemanticChunksTool(scope.TenantID, scope.DatasetIDs), requiresKBs: true},
+		{tool: agentic_rag.NewSearchBm25ChunksTool(scope.TenantID, scope.DatasetIDs), requiresKBs: true},
+		{tool: agentic_rag.NewGrepChunksTool(scope.TenantID, scope.DatasetIDs), requiresKBs: true},
+		{tool: agentic_rag.NewListChunksTool(scope.TenantID, scope.DatasetIDs), requiresKBs: true},
+	}
+	// Web search is a capability of the CONVERSATION: it is advertised only when this
+	// turn's chat enables it and its provider resolves (the handler filled
+	// scope.webSearch from the binding's conversation). Same rule the in-process
+	// engines apply — an absent capability is never advertised, so the model cannot
+	// call a tool that cannot answer.
+	if scope.webSearch != nil {
+		specs = append(specs, codexToolSpec{tool: agentic_rag.NewWebSearchTool(scope.webSearch)})
+	}
+	return specs
 }
 
 // NewCodexToolServer builds an MCP server whose tools are scoped to one turn's binding.
@@ -340,8 +408,8 @@ func NewCodexToolServer(scope CodexScope) *sdk.Server {
 	server := sdk.NewServer(&sdk.Implementation{Name: "ragflow-codex-mcp", Version: "1.0.0"}, &sdk.ServerOptions{
 		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
 	})
-	for _, t := range codexToolSpecs(scope) {
-		addCodexTool(server, scope, t)
+	for _, spec := range codexToolSpecs(scope) {
+		addCodexTool(server, scope, spec)
 	}
 	return server
 }
@@ -350,12 +418,12 @@ func NewCodexToolServer(scope CodexScope) *sdk.Server {
 // description and JSON schema and forwarding calls to its InvokableRun. The MCP layer
 // adds exactly two things the tool does not know about: the no-scope guard, and the
 // MCP result envelope.
-func addCodexTool(server *sdk.Server, scope CodexScope, t einotool.BaseTool) {
-	invokable, ok := t.(einotool.InvokableTool)
+func addCodexTool(server *sdk.Server, scope CodexScope, spec codexToolSpec) {
+	invokable, ok := spec.tool.(einotool.InvokableTool)
 	if !ok {
 		panic("mcp: codex tool is not invokable")
 	}
-	info, err := t.Info(context.Background())
+	info, err := spec.tool.Info(context.Background())
 	if err != nil {
 		panic(fmt.Sprintf("mcp: codex tool Info: %v", err))
 	}
@@ -366,7 +434,7 @@ func addCodexTool(server *sdk.Server, scope CodexScope, t einotool.BaseTool) {
 	}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		// The conversation binds no knowledge base: fail the retrieval call rather
 		// than search an empty/default scope. Codex reads the error and carries on.
-		if len(scope.DatasetIDs) == 0 {
+		if spec.requiresKBs && len(scope.DatasetIDs) == 0 {
 			return codexToolError(info.Name + " is unavailable: this conversation has no knowledge base bound"), nil
 		}
 		// Carry the binding's owner so retrieval's dataset permission check passes:
@@ -438,6 +506,11 @@ func NewCodexHandler(tickets *CodexTickets) http.Handler {
 			http.Error(w, "no active turn for this handle", http.StatusForbidden)
 			return
 		}
+		// Resolve the conversation's web-search callback for this request (nil when the
+		// turn did not opt in, or no provider resolves). It stays process-local: the
+		// binding names the conversation, and the provider's credentials never leave
+		// the database.
+		scope.webSearch = resolveCodexWebSearch(r.Context(), scope)
 		streamable.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), codexScopeKey{}, scope)))
 	}
 	mux.HandleFunc("POST /mcp/codex/{token}", serve)

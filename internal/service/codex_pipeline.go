@@ -27,6 +27,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"ragflow/internal/agentic_rag"
 	"ragflow/internal/codexagent"
 	"ragflow/internal/common"
 	"ragflow/internal/dao"
@@ -196,6 +197,31 @@ func getCodexRunner() (*codexagent.Runner, error) {
 	return codexRunner, nil
 }
 
+// InstallCodexWebSearchResolver wires the MCP bridge's web-search seam. The bridge must
+// not import this layer, so the API process installs a resolver that reads the turn's
+// conversation and builds its provider callback on demand. Call once at boot.
+//
+// The callback is rebuilt per request from the DB and never persisted, so a turn bound
+// on one replica still resolves its provider when the MCP request lands on another — and
+// the provider's credentials never enter the shared KV.
+func InstallCodexWebSearchResolver() {
+	svc := NewChatPipelineService()
+	mcp.SetCodexWebSearchResolver(func(ctx context.Context, scope mcp.CodexScope) agentic_rag.WebSearchFunc {
+		if scope.ChatID == "" || dao.DB == nil {
+			return nil
+		}
+		chat, err := dao.NewChatDAO().GetByID(ctx, dao.DB, scope.ChatID)
+		if err != nil || chat == nil {
+			common.WarnCtx(ctx, "codex: cannot resolve chat for web search",
+				zap.String("chat_id", scope.ChatID), zap.Error(err))
+			return nil
+		}
+		// nil when the conversation has no web-search provider: the bridge then
+		// simply does not advertise the tool.
+		return svc.webSearchFunc(chat.PromptConfig)
+	})
+}
+
 // codexResponsesCapable reports whether the dialog's model provider speaks the
 // Responses wire API Codex requires. A provider outside the configured allowlist makes
 // mode 8 fall back to the regular pipeline (see the plan, decision U2).
@@ -345,14 +371,25 @@ func (s *ChatPipelineService) codexAgent(
 		}
 
 		req := codexagent.TurnRequest{
-			TenantID:     chat.TenantID,
-			SessionID:    sessionID,
-			DatasetIDs:   datasetIDs,
-			Model:        target.ModelName,
-			ProviderID:   target.Driver.Name(),
-			MCPURL:       mcpURL,
-			Ticket:       handle,
-			Binding:      mcp.CodexScope{TenantID: chat.TenantID, DatasetIDs: datasetIDs, UserID: userID},
+			TenantID:   chat.TenantID,
+			SessionID:  sessionID,
+			DatasetIDs: datasetIDs,
+			WebSearch:  useWebSearch,
+			Model:      target.ModelName,
+			ProviderID: target.Driver.Name(),
+			MCPURL:     mcpURL,
+			Ticket:     handle,
+			// The binding carries the conversation id and this turn's web-search
+			// decision; the bridge resolves the provider from them at request time,
+			// so the provider's credentials stay in the DB and never reach the
+			// KV-serialized binding (see D11).
+			Binding: mcp.CodexScope{
+				TenantID:   chat.TenantID,
+				DatasetIDs: datasetIDs,
+				UserID:     userID,
+				ChatID:     chat.ID,
+				WebSearch:  useWebSearch,
+			},
 			WorkDir:      cfg.WorkDir,
 			Instructions: codexCitationContract(quote),
 			TurnTimeout:  cfg.TurnTimeout,

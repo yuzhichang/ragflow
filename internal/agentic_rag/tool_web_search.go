@@ -38,6 +38,11 @@ import (
 // includes it whenever the caller supplies a provider.
 const webSearchToolName = "web_search"
 
+// WebSearchToolName is the name the model-facing web search tool reports. Exported so
+// callers that must recognize the tool — the mode 8 MCP bridge's tool-set assertions —
+// do not hardcode the literal.
+const WebSearchToolName = webSearchToolName
+
 const webSearchToolDescription = `Web search tool: queries the public internet through the conversation's configured search provider and returns the top snippets with their URLs.
 
 ## When to use it

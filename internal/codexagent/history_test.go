@@ -71,6 +71,22 @@ func TestScopeFingerprint(t *testing.T) {
 	}
 }
 
+// The web-search decision is part of the thread's reuse key because Codex caches the MCP
+// tool catalog for a thread's life: a toggle that did not rebuild the thread would never
+// change the advertised tool set (see the mode 8 plan, §5.7③).
+func TestWebSearchFingerprint(t *testing.T) {
+	if WebSearchFingerprint(true) == WebSearchFingerprint(false) {
+		t.Fatal("web-search on and off must fingerprint differently")
+	}
+	if WebSearchFingerprint(true) != WebSearchFingerprint(true) {
+		t.Fatal("web-search fingerprint must be stable")
+	}
+	base := ScopeFingerprint("t1", []string{"kb1"})
+	if CombineFingerprints(base, WebSearchFingerprint(false)) == CombineFingerprints(base, WebSearchFingerprint(true)) {
+		t.Fatal("flipping web search must change the composed reuse key")
+	}
+}
+
 func TestHistoryFingerprintDetectsDrift(t *testing.T) {
 	base := []map[string]interface{}{
 		{"role": "user", "content": "q1"},
