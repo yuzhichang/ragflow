@@ -201,6 +201,11 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// catalog for the life of a thread: a change must rebuild the thread, or the new
 	// tool set is never advertised. Fold the decision into the reuse key.
 	scopeFP = CombineFingerprints(scopeFP, WebSearchFingerprint(req.WebSearch))
+	// The hosted (server-side) tool policy is baked into the thread at create as well, and
+	// thread/resume does NOT reload it (measured: a resumed thread kept the provider's
+	// web_search tool). Fold the policy marker in so threads built under an older policy
+	// rebuild once, instead of keeping a server-side tool we have since disabled.
+	scopeFP = CombineFingerprints(scopeFP, HostedToolsFingerprint())
 	// The base instructions (citation contract) are baked into the thread at create and
 	// not reloaded on resume, so they are part of the reuse key too. Fold them in as ONE
 	// further hash: two 64-char hex strings joined would exceed the size:64 column.

@@ -187,3 +187,106 @@ func TestWebSearchOverrideRemovesHostedTool(t *testing.T) {
 			strings.TrimSpace(body))
 	}
 }
+
+// TestResumeDoesNotReloadHostedToolPolicy pins the reason the hosted-tools policy is part
+// of the thread reuse key: thread/resume does NOT reload it. A thread created without the
+// override keeps the provider's `web_search` tool even when resumed WITH
+// `web_search = "disabled"`, so RAGFlow must REBUILD such a thread rather than resume it
+// (RunTurn folds codexagent.HostedToolsFingerprint into the scope fingerprint for that).
+// Same mock technique as above: no provider is contacted.
+//
+//	RAGFLOW_CODEX_IT=1 go test -tags integration -run TestResumeDoesNotReloadHostedToolPolicy ./internal/codexagent/
+func TestResumeDoesNotReloadHostedToolPolicy(t *testing.T) {
+	if os.Getenv("RAGFLOW_CODEX_IT") != "1" {
+		t.Skip("set RAGFLOW_CODEX_IT=1 to run against the local codex app-server")
+	}
+	bin, err := codexgo.FindBinary()
+	if err != nil {
+		t.Skipf("codex binary not found: %v", err)
+	}
+
+	var (
+		mu     sync.Mutex
+		bodies []string
+	)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if b, rerr := io.ReadAll(io.LimitReader(r.Body, 1<<20)); rerr == nil {
+			mu.Lock()
+			bodies = append(bodies, string(b))
+			mu.Unlock()
+		}
+		http.Error(w, `{"error":{"message":"mock provider"}}`, http.StatusInternalServerError)
+	}))
+	defer mock.Close()
+
+	client, err := codexgo.New(codexgo.WithStdioProcess(bin, "app-server"))
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	base := []codexgo.ThreadOption{
+		codexgo.WithThreadModel("dummy-model"),
+		codexgo.WithThreadModelProvider("dummy"),
+		codexgo.WithThreadConfigOverride("model_providers.dummy", map[string]interface{}{
+			"name": "dummy", "base_url": mock.URL + "/v1", "wire_api": "responses",
+			"request_max_retries": 0, "stream_max_retries": 0,
+		}),
+		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
+		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalUntrusted()),
+	}
+	lastHasWebSearch := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) == 0 {
+			t.Fatal("no model request reached the mock")
+		}
+		var req struct {
+			Tools []map[string]interface{} `json:"tools"`
+		}
+		if err := json.Unmarshal([]byte(bodies[len(bodies)-1]), &req); err != nil {
+			t.Fatalf("model request is not JSON: %v", err)
+		}
+		for _, tool := range req.Tools {
+			if tool["type"] == "web_search" {
+				return true
+			}
+		}
+		return false
+	}
+	run := func(th *codexgo.SessionThread) {
+		t.Helper()
+		ch, rerr := th.RunStreamed(ctx, "hello")
+		if rerr == nil {
+			for range ch { // drain; the turn fails at the mock
+			}
+		}
+	}
+
+	// A thread created WITHOUT the override carries the hosted tool.
+	th, err := client.StartThread(ctx, base...)
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	defer th.Close()
+	run(th)
+	if !lastHasWebSearch() {
+		t.Skip("provider capability did not advertise web_search; cannot assert resume behaviour")
+	}
+
+	// Resuming that thread WITH the override must NOT remove it — this is the measured
+	// Codex behaviour the rebuild-on-policy-change exists to work around. If this ever
+	// starts failing (i.e. resume DOES reload), the fingerprint component can be dropped.
+	th2, err := client.ResumeThread(ctx, th.ID(), append(base,
+		codexgo.WithThreadConfigOverride("web_search", "disabled"))...)
+	if err != nil {
+		t.Fatalf("ResumeThread: %v", err)
+	}
+	defer th2.Close()
+	run(th2)
+	if !lastHasWebSearch() {
+		t.Skip("resume now reloads the hosted-tool policy; the reuse-key component is no longer required")
+	}
+}

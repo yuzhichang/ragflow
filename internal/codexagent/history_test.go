@@ -87,6 +87,28 @@ func TestWebSearchFingerprint(t *testing.T) {
 	}
 }
 
+// The hosted-tools policy is baked into a thread at create and resume does NOT reload it
+// (measured), so the policy marker must participate in the reuse key: a version bump has
+// to force existing threads to rebuild rather than keep a server-side tool we disabled.
+func TestHostedToolsFingerprintChangesReuseKey(t *testing.T) {
+	if HostedToolsFingerprint() == "" {
+		t.Fatal("hosted-tools policy marker must not be empty")
+	}
+	if HostedToolsFingerprint() != HostedToolsFingerprint() {
+		t.Fatal("hosted-tools marker must be stable")
+	}
+	base := ScopeFingerprint("t1", []string{"kb1"})
+	withPolicy := CombineFingerprints(base, HostedToolsFingerprint())
+	// The pre-policy key (what a stored row from before this change holds) must differ,
+	// or those threads would resume with the hosted tool still enabled.
+	if withPolicy == CombineFingerprints(base, "hosted_tools=none-v0") {
+		t.Fatal("a policy version bump must change the composed reuse key")
+	}
+	if withPolicy == CombineFingerprints(base, WebSearchFingerprint(false)) {
+		t.Fatal("the policy marker must contribute to the key, not be dropped")
+	}
+}
+
 func TestHistoryFingerprintDetectsDrift(t *testing.T) {
 	base := []map[string]interface{}{
 		{"role": "user", "content": "q1"},

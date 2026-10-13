@@ -117,6 +117,20 @@ func WebSearchFingerprint(on bool) string {
 	return "web_search=off"
 }
 
+// HostedToolsFingerprint is the scope-key component for the set of provider-hosted
+// (server-side) tools mode 8 leaves enabled. Codex bakes the tool list into a thread at
+// create, and thread/resume does NOT reload it — measured against a mock provider, where
+// a RESUMED thread kept the provider's `web_search` tool despite an override that
+// disables it on a fresh thread. So a policy change must rebuild existing threads;
+// folding this constant into the reuse key does that exactly once per change, and a
+// thread created afterwards carries no hosted tool at all (they are all disabled; see
+// Runner.threadOptions). Bump the suffix whenever the policy changes.
+const hostedToolsPolicy = "hosted_tools=none-v1"
+
+// HostedToolsFingerprint returns the current hosted-tools policy marker (see
+// hostedToolsPolicy).
+func HostedToolsFingerprint() string { return hostedToolsPolicy }
+
 // CombineFingerprints folds several fingerprints into one 64-char hash, so a fingerprint
 // that composes other fingerprints still fits a size:64 column.
 func CombineFingerprints(parts ...string) string {
