@@ -138,6 +138,37 @@ const (
 	ToolStatusFailed    = "failed"
 )
 
+// toolTally counts a turn's MCP tool calls by name, and how many of them failed. It mirrors
+// the in-process engines' ToolCallCounts / ToolCallErrors so a mode-8 benchmark row is
+// directly comparable with theirs.
+type toolTally struct {
+	counts map[string]int
+	errors map[string]int
+}
+
+// call records one tool invocation.
+func (t *toolTally) call(tool string) {
+	if tool == "" {
+		return
+	}
+	if t.counts == nil {
+		t.counts = map[string]int{}
+	}
+	t.counts[tool]++
+}
+
+// outcome records how one invocation ended. Only a failure is interesting: a call that
+// completed is already counted.
+func (t *toolTally) outcome(rt RoundTrip) {
+	if rt.Tool == "" || rt.Status != ToolStatusFailed {
+		return
+	}
+	if t.errors == nil {
+		t.errors = map[string]int{}
+	}
+	t.errors[rt.Tool]++
+}
+
 // TurnOutcome reports the terminal state of one turn.
 type TurnOutcome struct {
 	ThreadID  string
@@ -147,6 +178,11 @@ type TurnOutcome struct {
 	// thread/tokenUsage/updated once per model call, so Usage sums those calls — the same
 	// shape the in-process engines feed their benchmarks.
 	Usage *TurnUsage
+	// ToolCallCounts tallies the turn's MCP tool calls by tool name (e.g.
+	// {"search_bm25_chunks": 16, "list_chunks": 12}); ToolCallErrors counts how many of
+	// them failed. Same shape as the in-process engines' fields.
+	ToolCallCounts map[string]int
+	ToolCallErrors map[string]int
 	// Rebuilt is true when the turn ran on a freshly created thread (first turn, or
 	// a rebuild after scope/history drift).
 	Rebuilt bool
@@ -490,6 +526,9 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 	// MCP tool call item ids already reported as a call, so a completed item does not
 	// narrate the same call twice when item/started did arrive.
 	toolCallsSeen := map[string]bool{}
+	// Per-tool tallies, so a mode-8 turn reports tool_call_counts / tool_call_errors in
+	// the same shape the in-process engines do (a benchmark reads them either way).
+	var tally toolTally
 
 	for {
 		select {
@@ -516,6 +555,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				out.Content = content.String()
 				out.Reasoning = reasoning.String()
 				out.Usage = usageOrNil(usage)
+				out.ToolCallCounts, out.ToolCallErrors = tally.counts, tally.errors
 				return out, nil
 			}
 			switch e := ev.Raw.(type) {
@@ -527,6 +567,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				if e.Item != nil && e.Item.Kind == codexgo.ItemKindMCPToolCall {
 					if rt, ok := mcpToolRoundTrip(*e.Item); ok {
 						toolCallsSeen[e.Item.ID] = true
+						tally.call(rt.Tool)
 						if req.OnTool != nil {
 							req.OnTool(rt)
 						}
@@ -555,10 +596,12 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 								call := rt
 								call.Status = ToolStatusRunning
 								call.DurationMS = 0
+								tally.call(rt.Tool)
 								if req.OnTool != nil {
 									req.OnTool(call)
 								}
 							}
+							tally.outcome(rt)
 							if req.OnTool != nil {
 								req.OnTool(rt)
 							}
@@ -634,6 +677,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				}
 				out.Reasoning = reasoning.String()
 				out.Usage = usageOrNil(usage)
+				out.ToolCallCounts, out.ToolCallErrors = tally.counts, tally.errors
 				return out, nil
 			}
 		}
@@ -660,8 +704,10 @@ func mcpToolRoundTrip(item codexgo.Item) (RoundTrip, bool) {
 	if err := item.Decode(&payload); err != nil || payload.Tool == "" {
 		return RoundTrip{}, false
 	}
+	// The v2 enum is camelCase ("inProgress"/"completed"/"failed"); normalize the
+	// in-flight value to our constant so callers can branch on it.
 	status := payload.Status
-	if status == "" {
+	if status == "" || status == "inProgress" {
 		status = ToolStatusRunning
 	}
 	return RoundTrip{

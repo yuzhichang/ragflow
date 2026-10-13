@@ -495,6 +495,8 @@ func (s *ChatPipelineService) codexAgent(
 			Reference:      reference,
 			Final:          true,
 			Usage:          usage,
+			ToolCallCounts: outcome.ToolCallCounts,
+			ToolCallErrors: outcome.ToolCallErrors,
 			ElapsedSeconds: time.Since(started).Seconds(),
 		}
 	}()

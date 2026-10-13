@@ -151,3 +151,43 @@ func TestCompactArgs(t *testing.T) {
 		t.Fatalf("long args not truncated: len=%d tail=%q", len(got), got[len(got)-8:])
 	}
 }
+
+// toolTally is what makes a mode-8 turn report tool_call_counts / tool_call_errors in the
+// same shape as the in-process engines: a benchmark reads them without caring which engine
+// produced the row. A call is counted once (the item/started half, or the completed half
+// when the provider sends no started); an outcome only records failures.
+func TestToolTally(t *testing.T) {
+	var tt toolTally
+	tt.call("search_bm25_chunks")
+	tt.call("search_bm25_chunks")
+	tt.call("list_chunks")
+	tt.call("") // no tool name: not a call
+	tt.outcome(RoundTrip{Tool: "search_bm25_chunks", Status: ToolStatusCompleted})
+	tt.outcome(RoundTrip{Tool: "list_chunks", Status: ToolStatusFailed})
+
+	if got := tt.counts["search_bm25_chunks"]; got != 2 {
+		t.Errorf("search_bm25_chunks = %d, want 2", got)
+	}
+	if got := tt.counts["list_chunks"]; got != 1 {
+		t.Errorf("list_chunks = %d, want 1", got)
+	}
+	if len(tt.counts) != 2 {
+		t.Errorf("counts = %v, want two tools", tt.counts)
+	}
+	if got := tt.errors["list_chunks"]; got != 1 {
+		t.Errorf("errors[list_chunks] = %d, want 1", got)
+	}
+	if len(tt.errors) != 1 {
+		t.Errorf("a completed call must not be an error: %v", tt.errors)
+	}
+}
+
+// The v2 status is camelCase ("inProgress"), while the narration branches on our own
+// constant: without normalization a call would be narrated as a RESULT.
+func TestMcpToolRoundTripNormalizesInProgress(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"tool": "grep_chunks", "status": "inProgress"})
+	rt, ok := mcpToolRoundTrip(codexgo.Item{ID: "c", Kind: codexgo.ItemKindMCPToolCall, Payload: raw})
+	if !ok || rt.Status != ToolStatusRunning {
+		t.Fatalf("inProgress must normalize to running: %+v ok=%v", rt, ok)
+	}
+}

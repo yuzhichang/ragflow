@@ -317,12 +317,12 @@ client.StartThread(ctx,
 | `ItemAgentMessageDeltaEvent{Text}` | `AsyncChatResult{Answer: text, Final:false}` |
 | `ItemReasoningTextDeltaEvent{Text}` / `ItemReasoningSummaryTextDeltaEvent{Text}` | `AsyncChatResult{Reasoning: text}`，配合 `StartToThink/EndToThink` 标记（同 `chat_pipeline.go:2813` 的 think 边界逻辑） |
 | `ItemCompletedEvent(kind=reasoning)` | **无 delta 时的思考兜底**（见下） |
-| `ItemStartedEvent(kind=mcpToolCall)` / `ItemCompletedEvent(kind=mcpToolCall)` | **把检索步骤（tool + 参数）写进思考流**（见下） |
+| `ItemStartedEvent(kind=mcpToolCall)` / `ItemCompletedEvent(kind=mcpToolCall)` | **把检索步骤（tool + 参数）写进思考流**，并按工具名计数（见下） |
 | `ThreadTokenUsageUpdatedEvent{TokenUsage}` | **本轮 token 用量**（见下） |
 | `ItemCommandExecutionOutputDeltaEvent` | 忽略或仅 debug 日志（mode 8 不面向工具执行回显） |
 | `TurnCompletedEvent{TurnID, Status}` | 收尾：写最终结果 |
 | `ErrorEvent` | 转 `**ERROR**: ...` 最终结果 |
-| `McpToolCallProgressEvent` / `ItemStartedEvent(kind=mcpToolCall)` | 累积工具调用计数与命中文档台账（§5.4） |
+| `McpToolCallProgressEvent` | 暂不消费（只带进度文本；工具名/参数在 `mcpToolCall` item 上） |
 | `sdk/reconnect*` / `sdk/sessionBackfilled` | **必须处理，不能忽略**（见下） |
 
 **断线与 backfill（P1#5）**：SDK 明确「断线期间的通知不会重放」，`RunStreamed` 只转发匹配当前 turn 的事件、且**不转发 `sdk/sessionBackfilled`**（`thread.go:243-292` 的 `eventMatchesTurn` 过滤）。因此若 turn 在断线期间完成，仅靠 `RunStreamed` 会**收不到终局、丢文本、甚至挂到超时**。处理方式：
@@ -339,6 +339,8 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 **思考过程为空的原因与兜底（实测）**：Codex 只在**服务商真的流式吐** `response.reasoning_text.delta` / `response.reasoning_summary_text.delta` 时，才发上面那两个 delta 通知（`codex-api/src/sse/responses.rs:377,396`）。而 MiniMax 这类**非 OpenAI 的 Responses 后端**把整段 reasoning 作为**一个完成项**下发（rollout 里是 `reasoning` item + `item_completed`，`summary` 为空、无任何 delta）——此时 runner 只认 delta，思考面板就永远是空的。修法（**两种都支持**）：`ItemCompletedEvent` 里，若该 item 是 reasoning 且**它的 id 从未产生过 delta**（用 `reasoningDeltaItems` 记录 delta 的 item id 去重），就取该 item 的文本（payload 的 `content`，空则 `summary`）走同一个 `OnReasoning`。这样流式与非流式 provider 都能出思考，且不重复。
 
 **检索步骤（tool + 参数）写进思考流（已实现）**：mode 8 没有客户端工具循环可回报，因此 runner 直接读 Codex 的 `mcpToolCall` item —— `item/started` 给出 `server`/`tool`/`arguments`，`item/completed` 给出 `status`/`durationMs`（若某 provider 不发 started，则由 completed 那次一并报出调用，用 `toolCallsSeen` 去重）。服务层把每一步以 `[MCP] <tool> <紧凑 JSON 参数>` 与 `[MCP] <tool> returned in <ms>ms` 写进**思考流**（与进程内引擎 `StepReporter` 的文本投影同形），并同时带上结构化 `think_event`（`kind=tool_call|tool_result`，含 `tool`/`args`/`status`/`duration_ms`）。**为什么写进思考流而不只发 think_event**：前端当前只渲染 `answer` 里的 `<think>` 文本，**完全不消费 `think_event`**——只发结构化事件，用户是看不到的。
+
+**工具调用计数（对齐 mode 5/6/7 的 benchmark）**：同一个 `RoundTrip` 流顺带做**按工具名计数**（`toolTally`：`item/started` 记一次调用；若 provider 不发 started 则由 completed 那次记，不重不漏；`status=failed` 另记 `ToolCallErrors`），最终落到 `AsyncChatResult.ToolCallCounts` / `ToolCallErrors`。因此 mode-8 的一行 benchmark 与 mode 5 的 `{"tool_call_counts":{"grep_chunks":8,"list_chunks":12,…}}` **同形可直接对比**。注意 v2 的 status 是 camelCase（`inProgress`），需归一化为内部的 `running`——否则「调用」会被当成「结果」叙述。
 
 **Token 用量（per-turn，已实现）**：SDK 明确 `ThreadTokenUsageUpdatedEvent`（app-server 的 `thread/tokenUsage/updated`）**是唯一携带 token 用量的通道**；每个**模型调用**发一次，`TokenUsage{last, total, modelContextWindow}` 中 `last` 是**该次调用**的用量、`total` 是 thread 累计（见 `Last`/`Total` 语义：`core/src/session/mod.rs:4968-5035`）。因此 runner **累加每次的 `Last`**（`inputTokens`/`outputTokens`/`totalTokens`）并**计数**，得到本轮消耗；累加 `Total` 会跨轮重复计数，不可用。结果经 `TurnOutcome.Usage` → `AsyncChatResult.Usage`（`service.TurnUsage`：`prompt_tokens`/`completion_tokens`/`total_tokens`/`llm_calls`）出现在终局 SSE 帧的 `usage` 字段——**与 mode 5/6/7 的形状一致**，benchmark 可直接对比。未收到任何用量通知时 `Usage` 为 `nil`（而非全 0 块）。
   - ⚠️ **流的序列化器是白名单结构**：`sseMarshalChunk`（`chat_session.go`）手写 `sseAnswerChunk` 结构体**逐字段**拷贝，producer 设了而它没拷的字段会在**流式**路径被静默丢掉（非流式路径直接返回 map，所以不受影响）。这正是「token 用量只在非流式 benchmark 里看得到、UI（流式）看不到」的原因——也是 mode 5/6/7 共有的老问题。已补齐：`usage` / `elapsed_seconds` / `rounds` / `tool_call_counts` / `tool_call_errors` / `tool_error_samples` / `retrieved_docids` / `served_docids` / `gate_audit` / `deep_read_chunks` / `shallow_read_chunks` / `deep_read_chunk_ids` / `shallow_read_chunk_ids`。
@@ -622,6 +624,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 | 每轮 token 用量（对齐 mode 5 形状，真机实测） | ✅ 已通过（真机） | `POST /api/v1/chat/completions`（`reasoning:8`，stream 与非 stream 各一轮） | 真机实测：非 stream `usage={"prompt_tokens":81962,"completion_tokens":1173,"total_tokens":83135,"llm_calls":5}`；stream 终局帧 `usage={"prompt_tokens":208018,"completion_tokens":2743,"total_tokens":210761,"llm_calls":8}` + `elapsed_seconds=129.5`。单测 `TestUsageOrNil`、`TestSSEMarshalChunkCarriesTurnAccounting` | 2026-10-13 |
 | 检索步骤（tool + 参数）写进思考流（真机实测） | ✅ 已通过（真机） | 同上（stream） | 真机 MiniMax 单轮 **36 行 `[MCP]` 叙述**，形如 `[MCP] search_bm25_chunks {"queries":[...],"top_n":10}` 与 `[MCP] grep_chunks returned in 5908ms`——工具名、参数、耗时、成败全部可见，且与思考文本同流。单测 `TestMcpToolRoundTrip` / `TestCompactArgs` | 2026-10-13 |
+| 工具调用计数 `tool_call_counts`（对齐 mode 5） | ✅ 已通过（真机） | 同上（stream） | 真机单轮终局帧：`tool_call_counts={"grep_chunks":1,"search_bm25_chunks":1}`，与 mode 5 的 `{"search_bm25_chunks":16,"list_chunks":12,…}` 同形；`tool_call_errors` 仅在 `status=failed` 时出现。单测 `TestToolTally`、`TestMcpToolRoundTripNormalizesInProgress`（v2 的 `inProgress` 归一为 `running`） | 2026-10-13 |
 | 流式序列化器补齐 turn 会计字段 | ✅ 已通过（单测 + 真机） | `bash build.sh --test ./internal/service/`（`TestSSEMarshalChunkCarriesTurnAccounting`）+ 上述真机 | `sseMarshalChunk` 是白名单结构，此前**静默丢弃** `usage`/`elapsed_seconds`/`tool_call_counts`/`retrieved_docids` 等（mode 5/6/7 同样受累）；补齐后真机 stream 终局帧已带 `usage` 与 `elapsed_seconds` | 2026-10-13 |
 
 **门禁规则**：只要 11.2 中 M0-b…M0-d 任一项为 `⏳ 未验证` 或 `❌ 未通过`，**M1 及之后一律阻塞**。M0-c（U1(b)）已非架构阻塞：无论 resume 是否重载 MCP，都可分别走「resume 刷新票据」或「重建 thread」，两种路径均在计划内。
