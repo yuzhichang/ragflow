@@ -391,7 +391,7 @@ func (s *ChatPipelineService) codexAgent(
 				WebSearch:  useWebSearch,
 			},
 			WorkDir:      cfg.WorkDir,
-			Instructions: codexCitationContract(quote),
+			Instructions: codexCitationContract(quote, useWebSearch),
 			TurnTimeout:  cfg.TurnTimeout,
 			Messages:     messages,
 			OnContent:    emitContent,
@@ -459,23 +459,41 @@ func (s *ChatPipelineService) codexAgent(
 	return out, nil
 }
 
-// codexCitationContract is the citation instruction folded into the thread's base
-// instructions (see the plan, D5/§4.7). It asks Codex to END each sourced line with that
-// passage's provenance as a TUPLE — the shape the plan-engine deliverables use — so the
-// backend, not the model, assigns [ID:N] and strips the field from the visible answer. A
-// web passage gets the FOS web tuple (url/title), and the model is responsible for its
-// trustworthiness: nothing in the turn records what a search served.
-func codexCitationContract(quote bool) string {
-	if !quote {
-		return "Answer the user. You have retrieval tools; use them when the knowledge base is relevant."
+// codexCitationContract is the thread's base instructions (see the plan, D5/§4.7). Besides
+// the provenance format — the model ENDS each sourced line with that passage's tuple, and
+// the backend (not the model) assigns [ID:N] — it states the agent's ACTUAL capabilities,
+// because Codex hands the model an environment (a shell, a working directory) that mode 8
+// has deliberately closed off: its built-in web search is disabled (see §5.5) and the
+// sandbox plus the approval layer refuse command execution. Left unsaid, the model reads
+// the advertised shell as usable, burns the turn trying `curl`, and re-tries after each
+// refusal instead of reading the corpus it already retrieved. So the instruction names the
+// real toolset and forbids the rest.
+//
+// The web passage form is only described when this conversation actually enables web
+// search — otherwise naming it invites exactly the search the chat turned off.
+func codexCitationContract(quote, webSearch bool) string {
+	var b strings.Builder
+	b.WriteString("Answer the user in prose. ")
+	if webSearch {
+		b.WriteString("Your tools are the knowledge-base retrieval tools and the web search tool, all provided over MCP; call them when relevant. ")
+	} else {
+		b.WriteString("Your ONLY tools are the knowledge-base retrieval tools provided over MCP. " +
+			"This environment has no shell and no internet access: never call exec_command/shell, " +
+			"never fetch a URL (curl or otherwise), and never look for a web-search tool — such attempts are " +
+			"always refused and only waste the turn. Answer from the retrieved passages, and if they do not " +
+			"cover the question, say so plainly. ")
 	}
-	return "Answer the user in prose. You have retrieval tools (the knowledge base, and web search when enabled); " +
-		"call them when they are relevant. Every line that states a fact backed by a retrieved passage must END with " +
-		"that passage's provenance, in exactly one of these two forms:\n" +
-		"(doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: \"<short verbatim excerpt>\")\n" +
-		"(source: web, url: <url>, title: <title>, snippet: \"<short verbatim excerpt>\")\n" +
-		"Copy every value verbatim from that passage's tool output; never invent ids, urls or titles. " +
-		"Do not write [ID:N] markers - the system assigns them."
+	if !quote {
+		return b.String()
+	}
+	b.WriteString("Every line that states a fact backed by a retrieved passage must END with that passage's provenance, in exactly this form:\n" +
+		"(doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: \"<short verbatim excerpt>\")\n")
+	if webSearch {
+		b.WriteString("A web passage uses the same shape with (source: web, url: <url>, title: <title>, snippet: \"<short verbatim excerpt>\").\n")
+	}
+	b.WriteString("Copy every value verbatim from that passage's tool output; never invent ids, urls or titles. " +
+		"Do not write [ID:N] markers - the system assigns them.")
+	return b.String()
 }
 
 // chatKBIDs extracts the dialog's knowledge-base ids as strings.
