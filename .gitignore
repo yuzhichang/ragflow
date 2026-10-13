@@ -282,3 +282,7 @@ internal/deepdoc/native/testdata
 # codex app-server binary + archive (fetched by docker/codex/download_deps.py; never committed)
 docker/codex/codex-app-server
 docker/codex/*.tar.gz
+
+# local benchmark run artifacts (mode-8 config + results; never committed)
+outputs/
+tools/benchmark/qa_benchmark_conf_mode8_10.json
