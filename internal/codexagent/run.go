@@ -759,18 +759,22 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 					usage.TotalTokens += int(e.TokenUsage.Last.TotalTokens)
 				}
 			case codexgo.ErrorEvent:
-				msg := e.Message
-				if msg == "" && len(e.Data) > 0 {
-					msg = string(e.Data)
+				if e.WillRetry {
+					// The server retries this one in place and the turn keeps running
+					// (upstream: "if true, this will not interrupt a turn"). It is a
+					// notification, not a terminal state — treating it as terminal used
+					// to abort turns that were about to resume.
+					continue
 				}
-				if e.Code != "" || msg != "" {
-					return nil, fmt.Errorf("codexagent: turn error (code=%q): %s", e.Code, msg)
+				// The detail is NESTED under `error` (TurnError); reading the flat
+				// message field reported "no detail" for every real error.
+				msg := e.Detail()
+				if code := e.ErrorCode(); code != "" || msg != "" {
+					return nil, fmt.Errorf("codexagent: turn error (code=%q): %s", code, msg)
 				}
-				// The app-server can emit a detail-less error notification just
-				// before a failed turn/completed, whose turn.error carries the real
-				// cause (e.g. the upstream provider's HTTP status). Keep the bare
-				// notification and keep reading so that richer detail wins —
-				// returning here would surface an empty message and hide the cause.
+				// A non-retryable error with no message at all: keep the bare
+				// notification and keep reading so that a failed turn/completed's own
+				// turn.error can supply the richer cause (it wins in turnErrorDetail).
 				if streamErr == nil {
 					streamErr = errors.New("codexagent: the Codex server reported an error with no detail")
 				}
