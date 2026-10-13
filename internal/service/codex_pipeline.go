@@ -470,12 +470,20 @@ func (s *ChatPipelineService) codexAgent(
 // real toolset and forbids the rest.
 //
 // The web passage form is only described when this conversation actually enables web
-// search — otherwise naming it invites exactly the search the chat turned off.
+// search — otherwise naming it invites exactly the search the chat turned off. When it IS
+// enabled the instruction differs in two ways beyond the tuple: it names the MCP web tool
+// (the only sanctioned door to the web) and tells the model to prefer the knowledge base,
+// while STILL forbidding the shell — the shell is closed in both cases, so a model that
+// reaches for `curl` must learn that the web tool is the way.
 func codexCitationContract(quote, webSearch bool) string {
 	var b strings.Builder
 	b.WriteString("Answer the user in prose. ")
 	if webSearch {
-		b.WriteString("Your tools are the knowledge-base retrieval tools and the web search tool, all provided over MCP; call them when relevant. ")
+		b.WriteString("Your tools are provided over MCP: the knowledge-base retrieval tools and a web search tool (" +
+			agentic_rag.WebSearchToolName + "). Search the knowledge base first; use the web search tool when the " +
+			"question needs current or outside information the knowledge base does not cover. ")
+		b.WriteString("There is no shell in this environment: never call exec_command/shell and never fetch a URL " +
+			"directly (curl or otherwise) — all web access goes through that tool, and direct attempts are refused. ")
 	} else {
 		b.WriteString("Your ONLY tools are the knowledge-base retrieval tools provided over MCP. " +
 			"This environment has no shell and no internet access: never call exec_command/shell, " +

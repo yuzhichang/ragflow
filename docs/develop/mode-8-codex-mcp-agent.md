@@ -342,7 +342,11 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 (source: web, url: <url>, title: <title>, snippet: "<短逐字片段>")
 ```
 
-⚠️ **`source: web` 这一形只在会话启用联网时才写进契约**（`codexCitationContract(quote, webSearch)`）。Codex 默认会给模型一个 `<environment_context>`（含 `<shell>bash</shell>` 与工作目录），模型会据此以为 shell 可用、去试 `curl` 联网；每次被审批层拒绝后还可能再试，白耗 turn 而不去读已经检索到的语料。因此关闭联网时，契约明确写上**能力真相**：「你的工具只有 MCP 检索工具；本环境无 shell、无互联网，不要调用 `exec_command`/shell、不要 fetch URL、不要找联网工具——这类尝试一律被拒」。这条不改变任何安全边界（审批层/沙箱照旧兜底），只让模型不再做无用功。
+⚠️ **契约按「本会话是否启用联网」给两套文案**（`codexCitationContract(quote, webSearch)`），因为两种情况下模型可用的门不同，而 **shell 在两种情况下都是关的**：
+
+- **未启用联网**：Codex 仍会给模型一个 `<environment_context>`（含 `<shell>bash</shell>` 与工作目录），模型据此以为 shell 可用、去试 `curl`；每次被审批层拒绝后还会再试，白耗 turn 而不去读已检索到的语料。故契约写明能力真相：「你的工具只有 MCP 检索工具；本环境**无 shell、无互联网**，不要调用 `exec_command`/shell、不要 fetch URL、不要找联网工具——这类尝试一律被拒」，并且**完全不提** web 工具与 `source: web` 形（提了等于邀请那次被关掉的搜索）。
+- **已启用联网**：文案有两处不同。(1) **点名 MCP web 工具**（`agentic_rag.WebSearchToolName`，即 `web_search`）——它是唯一的联网出口，并说明「先查知识库，知识库覆盖不到才用 web 工具」；(2) 加上 `source: web` 的出处形。但**仍然禁止 shell**：「本环境无 shell，不要 `exec_command`/shell、不要直接 fetch URL（curl 等）——所有联网都经该工具，直接尝试会被拒」。这一条很关键：shell 并未因开启联网而放开，若不写明，模型会在"用户开了联网"的暗示下去试 `curl` 而非调用 web 工具。
+- 两者都**不改变任何安全边界**（审批层/沙箱照旧兜底），只让模型把 turn 花在正确的工具上。
 
 **后端（`buildCodexReference`）**：
 - `ExtractCitedChunkIDs` 取语料 id，`ExtractCitedWebSources` 取 web 条目（url/title/snippet）。
@@ -600,7 +604,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 | MCP `web_search` 按会话设置逐轮注入 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/service/... ./internal/codexagent/... ./internal/agentic_rag/...` | binding 带 `ChatID`+`WebSearch`；桥经 `resolveCodexWebSearch` seam 解析 provider 后追加 `web_search`。单测：未开启（或 resolver 未装/返回 nil）→ 不暴露且 resolver 不被调用；开启 → 暴露，且在**无 KB** 会话下工具可用（不受 KB 守卫）；`WebSearchFingerprint` 改变组合 reuse key。**已核对 Codex 源码**：工具目录按 thread 缓存、warm resume 不重列 → 以 `WebSearch` 折进 `scope_fingerprint` 触发重建来保证切换生效。跨进程/多副本与真机端到端未实测 | 2026-10-12 |
 | mode-8 引用：tuple 契约 + 原地 `[ID:N]` + web 条目 + 展示副本 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/agentic_rag/... ./internal/service/...` | 契约为两种 provenance tuple（语料 doc/doc_id/chunk_id；web source/url/title）；`RewriteProvenance` 把 tuple（或裸字段）**原地**替换为 `[ID:N]`，未解析则保留、幂等；mode 6/7 走同一 pass；`buildCodexReference` 校验语料（KB 作用域）、web 由模型负责（**结果不写 KV**）；统一编号（语料先、web 后）；DB 存原始输出 + `content_display`，读取换取使重载仍显示引用。单测覆盖：原地替换/共享 chunk/未解析/裸字段/web tuple/片段含括号/web 提取去重/served set 移除后的记录路径。真机端到端未实测 | 2026-10-12 |
 | 关闭 Codex 服务端（hosted）`web_search`（计费工具） | ✅ 已通过（集成级） | `RAGFLOW_CODEX_IT=1 go test -tags integration -run 'TestWebSearchOverride\|TestResumeDoesNotReloadHostedToolPolicy' ./internal/codexagent/` | (a) app-server **接受** `web_search="disabled"`、**拒绝**越界枚举（`TestWebSearchOverrideIsHonored`）——证明该键被校验；(b) 本地 mock provider 抓**真实出站请求**：带 override 时 `tools` 无 `{"type":"web_search"}`，**对照**（无 override）有（`TestWebSearchOverrideRemovesHostedTool`）；(c) **resume 不重载该策略**（`TestResumeDoesNotReloadHostedToolPolicy`）→ 策略折进 `HostedToolsFingerprint` 迫使旧 thread 重建；单测 `TestHostedToolsFingerprintChangesReuseKey` 锁住复用键参与。真机（MiniMax）端到端未实测 | 2026-10-13 |
-| 契约声明能力真相（无 shell / 无网络） | ✅ 已通过（单测级） | `bash build.sh --test ./internal/service/`（`TestCodexCitationContractStatesCapabilities`） | 关闭联网时契约含「no shell and no internet access」且**不出现** web 工具/`source: web`；启用时反之；`quote=false` 仍保留能力声明、只去掉出处格式。改动经 `InstructionsFingerprint` 折进复用键 → 旧 thread 重建一次。**真机是否因此不再重试 `curl` 未实测** | 2026-10-13 |
+| 契约声明能力真相（无 shell；联网两种文案） | ✅ 已通过（单测级） | `bash build.sh --test ./internal/service/`（`TestCodexCitationContractStatesCapabilities`） | **未启用联网**：含「no shell and no internet access」，且**不出现** web 工具/`source: web`。**已启用联网**：**点名** `agentic_rag.WebSearchToolName`（`web_search`）、给出 `source: web` 形、说明「先 KB 后 web」，并且**仍禁止 shell/`curl`**（shell 不因开联网而放开）、**不说**无互联网。`quote=false` 两种情形都保留能力声明、只去掉出处格式。改动经 `InstructionsFingerprint` 折进复用键 → 旧 thread 重建一次。**真机是否因此不再重试 `curl` 未实测** | 2026-10-13 |
 
 **门禁规则**：只要 11.2 中 M0-b…M0-d 任一项为 `⏳ 未验证` 或 `❌ 未通过`，**M1 及之后一律阻塞**。M0-c（U1(b)）已非架构阻塞：无论 resume 是否重载 MCP，都可分别走「resume 刷新票据」或「重建 thread」，两种路径均在计划内。
 

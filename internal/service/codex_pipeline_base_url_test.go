@@ -19,6 +19,8 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"ragflow/internal/agentic_rag"
 )
 
 // TestNormalizeResponsesBaseURL pins that a version-less provider base gains "/v1" for the
@@ -67,6 +69,14 @@ func TestCodexCitationContractStatesCapabilities(t *testing.T) {
 	on := codexCitationContract(true, true)
 	if !strings.Contains(on, "web search tool") || !strings.Contains(on, "source: web") {
 		t.Errorf("web-search-on contract omits the web tool/tuple:\n%s", on)
+	}
+	// The shell is closed whether or not the conversation has web search, so the web-on
+	// text must still forbid it and point at the MCP tool instead.
+	if !strings.Contains(on, "no shell") || !strings.Contains(on, "exec_command") || !strings.Contains(on, "curl") {
+		t.Errorf("web-search-on contract does not forbid the shell:\n%s", on)
+	}
+	if !strings.Contains(on, agentic_rag.WebSearchToolName) {
+		t.Errorf("web-search-on contract does not name the MCP web tool:\n%s", on)
 	}
 	if strings.Contains(on, "no shell and no internet access") {
 		t.Errorf("web-search-on contract claims there is no internet:\n%s", on)
