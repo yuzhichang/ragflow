@@ -342,6 +342,18 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		codexgo.WithThreadConfigOverride("mcp_servers.ragflow", map[string]interface{}{
 			"url": req.MCPURL,
 		}),
+		// Turn off Codex's own provider-hosted (server-side) tools. For a custom
+		// Responses provider the only hosted tool Codex emits is the built-in
+		// `web_search`: the PROVIDER runs it and bills it (e.g. MiniMax's tools
+		// pricing), and it is advertised to the model regardless of the conversation's
+		// settings, so a chat with web search off would still reach the web. We never
+		// want that — retrieval and any web search must go through this process, where
+		// the conversation's scope and enablement are enforced. `web_search` is a
+		// top-level config key (WebSearchMode; "disabled" removes the tool entirely);
+		// image generation, the other hosted tool, is never emitted for a custom
+		// provider (it requires OpenAI-issued auth), so this single switch closes every
+		// server-side tool Codex could expose here.
+		codexgo.WithThreadConfigOverride("web_search", "disabled"),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
 		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalUntrusted()),
