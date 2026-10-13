@@ -1808,3 +1808,54 @@ func TestMessagesForDisplayPrefersPresentationCopy(t *testing.T) {
 		t.Fatalf("a message without a copy must be unchanged: %v", got[0]["content"])
 	}
 }
+
+// TestSSEMarshalChunkCarriesTurnAccounting pins that the STREAM serializer copies the
+// turn's accounting. It builds a fixed struct, so a field the producer sets and this
+// forgets never reaches the live client — token usage reached a non-streamed benchmark
+// while the UI (which streams) never saw it.
+func TestSSEMarshalChunkCarriesTurnAccounting(t *testing.T) {
+	ans := map[string]interface{}{
+		"answer":           "hi",
+		"final":            true,
+		"usage":            &TurnUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, LLMCalls: 3},
+		"elapsed_seconds":  float64(4.5),
+		"tool_call_counts": map[string]int{"search_bm25_chunks": 2},
+		"retrieved_docids": []string{"d1"},
+		"deep_read_chunks": 7,
+	}
+	var wrapper struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(sseMarshalChunk(ans, "chat-1")), &wrapper); err != nil {
+		t.Fatalf("chunk is not JSON: %v", err)
+	}
+	d := wrapper.Data
+	if d["usage"] == nil {
+		t.Error("stream chunk lost usage")
+	}
+	if got, _ := d["elapsed_seconds"].(float64); got != 4.5 {
+		t.Errorf("elapsed_seconds = %v, want 4.5", d["elapsed_seconds"])
+	}
+	if d["tool_call_counts"] == nil || d["retrieved_docids"] == nil {
+		t.Errorf("stream chunk lost retrieval accounting: %v", d)
+	}
+	if got, _ := d["deep_read_chunks"].(float64); got != 7 {
+		t.Errorf("deep_read_chunks = %v, want 7", d["deep_read_chunks"])
+	}
+	if got, _ := d["final"].(bool); !got {
+		t.Error("final flag lost")
+	}
+
+	// A plain delta must not grow an empty accounting block.
+	var plain struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(sseMarshalChunk(map[string]interface{}{"answer": "x"}, "")), &plain); err != nil {
+		t.Fatalf("chunk is not JSON: %v", err)
+	}
+	for _, k := range []string{"usage", "elapsed_seconds", "tool_call_counts", "rounds"} {
+		if _, present := plain.Data[k]; present {
+			t.Errorf("a plain delta grew %q: %v", k, plain.Data)
+		}
+	}
+}

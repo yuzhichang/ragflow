@@ -17,7 +17,9 @@
 package codexagent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -87,9 +89,13 @@ type TurnRequest struct {
 	// Messages is the full history with the current user message LAST.
 	Messages []map[string]interface{}
 
-	// OnContent receives answer deltas; OnReasoning receives reasoning deltas.
+	// OnContent receives answer deltas; OnReasoning receives reasoning deltas. OnTool
+	// receives each MCP tool call the turn makes (call and outcome), so the caller can
+	// narrate the retrieval steps into the thinking stream — mode 8 has no client-side
+	// tool loop to report from otherwise.
 	OnContent   func(string)
 	OnReasoning func(string)
+	OnTool      func(RoundTrip)
 	// HandleAlive reports whether a stored handle is still live. When it returns false a
 	// reuse is refused and the thread is rebuilt, so a thread whose MCP URL carries a
 	// dead handle (a restart lost it, or it expired between turns) is never resumed. nil
@@ -110,6 +116,27 @@ type TurnBinder interface {
 	// Unbind releases the binding and stops its keep-alive.
 	Unbind(ctx context.Context, handle string)
 }
+
+// RoundTrip is one observed MCP tool call: the call itself (with its arguments) and its
+// outcome. Mode 8 has no client-side tool loop to report from, so these are read off the
+// thread items the Codex server emits; the caller narrates them into the thinking stream.
+type RoundTrip struct {
+	// Tool is the MCP tool name as the model called it (e.g. "search_bm25_chunks").
+	Tool string
+	// Args is the call's arguments, compacted for display (may be truncated).
+	Args string
+	// Status is "running", "completed" or "failed" — the v2 McpToolCallStatus.
+	Status string
+	// DurationMS is the server-reported call duration (0 while running / unknown).
+	DurationMS int64
+}
+
+// RoundTrip statuses (the v2 McpToolCallStatus values).
+const (
+	ToolStatusRunning   = "running"
+	ToolStatusCompleted = "completed"
+	ToolStatusFailed    = "failed"
+)
 
 // TurnOutcome reports the terminal state of one turn.
 type TurnOutcome struct {
@@ -460,6 +487,9 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 	// providers that do stream, where the finished item repeats what the deltas already
 	// carried.
 	reasoningDeltaItems := map[string]bool{}
+	// MCP tool call item ids already reported as a call, so a completed item does not
+	// narrate the same call twice when item/started did arrive.
+	toolCallsSeen := map[string]bool{}
 
 	for {
 		select {
@@ -491,6 +521,17 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 			switch e := ev.Raw.(type) {
 			case codexgo.TurnStartedEvent:
 			case codexgo.ItemStartedEvent:
+				// The call half of an MCP tool round trip: server + tool + arguments.
+				// Some providers jump straight to item/completed, so the completed half
+				// emits the call too when this one never arrived (see toolCallsSeen).
+				if e.Item != nil && e.Item.Kind == codexgo.ItemKindMCPToolCall {
+					if rt, ok := mcpToolRoundTrip(*e.Item); ok {
+						toolCallsSeen[e.Item.ID] = true
+						if req.OnTool != nil {
+							req.OnTool(rt)
+						}
+					}
+				}
 			case codexgo.ItemCompletedEvent:
 				if e.Item != nil {
 					items = append(items, *e.Item)
@@ -501,6 +542,25 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 							reasoning.WriteString(text)
 							if req.OnReasoning != nil {
 								req.OnReasoning(text)
+							}
+						}
+					}
+					// The outcome half of an MCP tool round trip.
+					if e.Item.Kind == codexgo.ItemKindMCPToolCall {
+						if rt, ok := mcpToolRoundTrip(*e.Item); ok {
+							if !toolCallsSeen[e.Item.ID] {
+								// No item/started was delivered: report the call here so
+								// the caller still sees the tool and its arguments.
+								toolCallsSeen[e.Item.ID] = true
+								call := rt
+								call.Status = ToolStatusRunning
+								call.DurationMS = 0
+								if req.OnTool != nil {
+									req.OnTool(call)
+								}
+							}
+							if req.OnTool != nil {
+								req.OnTool(rt)
 							}
 						}
 					}
@@ -585,6 +645,52 @@ func turnStatus(e codexgo.TurnCompletedEvent) codexgo.TurnStatus {
 		return e.Turn.Status
 	}
 	return e.Status
+}
+
+// mcpToolRoundTrip reads a v2 mcpToolCall item — {server, tool, status, arguments,
+// durationMs} — into a RoundTrip. An item that names no tool yields false, so a malformed
+// payload produces no narration rather than an empty step.
+func mcpToolRoundTrip(item codexgo.Item) (RoundTrip, bool) {
+	var payload struct {
+		Tool       string          `json:"tool"`
+		Status     string          `json:"status"`
+		Arguments  json.RawMessage `json:"arguments"`
+		DurationMS int64           `json:"durationMs"`
+	}
+	if err := item.Decode(&payload); err != nil || payload.Tool == "" {
+		return RoundTrip{}, false
+	}
+	status := payload.Status
+	if status == "" {
+		status = ToolStatusRunning
+	}
+	return RoundTrip{
+		Tool:       payload.Tool,
+		Args:       compactArgs(payload.Arguments),
+		Status:     status,
+		DurationMS: payload.DurationMS,
+	}, true
+}
+
+// compactArgs renders a call's arguments on one line and caps the length: the thinking
+// stream is read by a human following along, and a search call can carry a long query list.
+func compactArgs(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return ""
+	}
+	s := buf.String()
+	if s == "null" {
+		return ""
+	}
+	const max = 300
+	if len(s) > max {
+		s = s[:max] + "..."
+	}
+	return s
 }
 
 // usageOrNil reports the turn's usage, or nil when the server reported none — so a caller

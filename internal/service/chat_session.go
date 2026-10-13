@@ -2102,6 +2102,23 @@ type sseAnswerChunk struct {
 	StartToThink bool                   `json:"start_to_think,omitempty"`
 	EndToThink   bool                   `json:"end_to_think,omitempty"`
 	ThinkEvent   interface{}            `json:"think_event,omitempty"`
+	// Turn accounting. The final DeltaResult carries these, but this struct is
+	// hand-written: a field the producer sets and this does not copy is silently dropped
+	// from the STREAM, even though the non-stream path returns the map untouched. That
+	// is why token usage reached a non-streamed benchmark and not the live UI.
+	Usage               interface{}    `json:"usage,omitempty"`
+	ElapsedSeconds      float64        `json:"elapsed_seconds,omitempty"`
+	Rounds              interface{}    `json:"rounds,omitempty"`
+	ToolCallCounts      map[string]int `json:"tool_call_counts,omitempty"`
+	ToolCallErrors      map[string]int `json:"tool_call_errors,omitempty"`
+	ToolErrorSamples    interface{}    `json:"tool_error_samples,omitempty"`
+	RetrievedDocIDs     []string       `json:"retrieved_docids,omitempty"`
+	ServedDocIDs        []string       `json:"served_docids,omitempty"`
+	GateAudit           interface{}    `json:"gate_audit,omitempty"`
+	DeepReadChunks      int            `json:"deep_read_chunks,omitempty"`
+	ShallowReadChunks   int            `json:"shallow_read_chunks,omitempty"`
+	DeepReadChunkIDs    []string       `json:"deep_read_chunk_ids,omitempty"`
+	ShallowReadChunkIDs []string       `json:"shallow_read_chunk_ids,omitempty"`
 }
 
 // sseWrapper wraps the SSE response with deterministic field order matching Python:
@@ -2225,7 +2242,26 @@ func sseMarshalChunk(ans map[string]interface{}, chatID string) string {
 		StartToThink: startToThink,
 		EndToThink:   endToThink,
 		ThinkEvent:   ans["think_event"],
+		Usage:        ans["usage"],
 	}
+	if v, ok := ans["elapsed_seconds"].(float64); ok {
+		chunk.ElapsedSeconds = v
+	}
+	chunk.Rounds = ans["rounds"]
+	chunk.ToolCallCounts, _ = ans["tool_call_counts"].(map[string]int)
+	chunk.ToolCallErrors, _ = ans["tool_call_errors"].(map[string]int)
+	chunk.ToolErrorSamples = ans["tool_error_samples"]
+	chunk.RetrievedDocIDs, _ = ans["retrieved_docids"].([]string)
+	chunk.ServedDocIDs, _ = ans["served_docids"].([]string)
+	chunk.GateAudit = ans["gate_audit"]
+	if v, ok := ans["deep_read_chunks"].(int); ok {
+		chunk.DeepReadChunks = v
+	}
+	if v, ok := ans["shallow_read_chunks"].(int); ok {
+		chunk.ShallowReadChunks = v
+	}
+	chunk.DeepReadChunkIDs, _ = ans["deep_read_chunk_ids"].([]string)
+	chunk.ShallowReadChunkIDs, _ = ans["shallow_read_chunk_ids"].([]string)
 	wrapper := sseWrapper{Code: 0, Message: "", Data: chunk}
 	return marshalJSONWithSpaces(wrapper)
 }

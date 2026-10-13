@@ -19,6 +19,7 @@ package codexagent
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	codexgo "github.com/zealbase/codex-app-server-go"
@@ -90,5 +91,63 @@ func TestUsageOrNil(t *testing.T) {
 	got := usageOrNil(TurnUsage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7, LLMCalls: 1})
 	if got == nil || got.TotalTokens != 7 || got.LLMCalls != 1 {
 		t.Fatalf("usageOrNil dropped a reported usage: %+v", got)
+	}
+}
+
+// mcpToolRoundTrip reads the call half of an MCP tool call, which is what makes a
+// retrieval step visible: without the tool name and its arguments the thinking stream
+// cannot say what the model reached for.
+func TestMcpToolRoundTrip(t *testing.T) {
+	item := func(payload map[string]any) codexgo.Item {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return codexgo.Item{ID: "c1", Kind: codexgo.ItemKindMCPToolCall, Payload: raw}
+	}
+
+	got, ok := mcpToolRoundTrip(item(map[string]any{
+		"server":     "ragflow",
+		"tool":       "search_bm25_chunks",
+		"status":     "completed",
+		"arguments":  map[string]any{"queries": []string{"曹操 生卒年", "孙权 生卒年"}},
+		"durationMs": 340,
+	}))
+	if !ok {
+		t.Fatal("a well-formed mcpToolCall must parse")
+	}
+	if got.Tool != "search_bm25_chunks" || got.Status != ToolStatusCompleted || got.DurationMS != 340 {
+		t.Fatalf("round trip = %+v", got)
+	}
+	if got.Args != `{"queries":["曹操 生卒年","孙权 生卒年"]}` {
+		t.Fatalf("args must be compact JSON: %q", got.Args)
+	}
+
+	// No status yet (the item/started half) reads as running, not as an empty status.
+	if running, ok := mcpToolRoundTrip(item(map[string]any{"tool": "grep_chunks"})); !ok || running.Status != ToolStatusRunning {
+		t.Fatalf("missing status must default to running: %+v ok=%v", running, ok)
+	}
+	// An item with no tool name is not a tool call.
+	if _, ok := mcpToolRoundTrip(item(map[string]any{"server": "ragflow"})); ok {
+		t.Fatal("an item without a tool name must not parse as a tool call")
+	}
+}
+
+// compactArgs keeps the thinking line on one line and bounded, so a long query list
+// cannot flood the panel.
+func TestCompactArgs(t *testing.T) {
+	if got := compactArgs(json.RawMessage(`{"a": 1,  "b":"x"}`)); got != `{"a":1,"b":"x"}` {
+		t.Fatalf("compactArgs = %q", got)
+	}
+	if got := compactArgs(nil); got != "" {
+		t.Fatalf("nil args = %q, want empty", got)
+	}
+	if got := compactArgs(json.RawMessage(`null`)); got != "" {
+		t.Fatalf("null args = %q, want empty", got)
+	}
+	long := json.RawMessage(`{"q":"` + strings.Repeat("x", 400) + `"}`)
+	if got := compactArgs(long); len(got) > 303 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("long args not truncated: len=%d tail=%q", len(got), got[len(got)-8:])
 	}
 }

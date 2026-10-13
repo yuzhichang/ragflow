@@ -369,6 +369,34 @@ func (s *ChatPipelineService) codexAgent(
 			contentDelta.WriteString(text)
 			out <- AsyncChatResult{Final: false, Answer: text}
 		}
+		// A retrieval step rides the thinking stream: mode 8 has no client-side tool loop,
+		// so without this a user watching the run sees reasoning but never which tool the
+		// model reached for or with what arguments. The in-process engines narrate steps
+		// into their thinking text for the same reason; the structured ThinkEvent travels
+		// alongside for a client that renders steps rather than paragraphs.
+		emitTool := func(rt codexagent.RoundTrip) {
+			line := toolNarration(rt)
+			if line == "" {
+				return
+			}
+			if !thinking {
+				out <- AsyncChatResult{Final: false, StartToThink: true}
+				thinking = true
+			}
+			out <- AsyncChatResult{
+				Final:     false,
+				Reasoning: line,
+				ThinkEvent: &ThinkEvent{
+					Kind:       toolThinkKind(rt.Status),
+					Stage:      "MCP",
+					Tool:       rt.Tool,
+					Args:       rt.Args,
+					Status:     rt.Status,
+					DurationMS: rt.DurationMS,
+					Summary:    line,
+				},
+			}
+		}
 
 		req := codexagent.TurnRequest{
 			TenantID:   chat.TenantID,
@@ -396,6 +424,7 @@ func (s *ChatPipelineService) codexAgent(
 			Messages:     messages,
 			OnContent:    emitContent,
 			OnReasoning:  emitReasoning,
+			OnTool:       emitTool,
 			// A thread is only resumed when its stored handle is still alive; otherwise
 			// its baked-in MCP URL would 401 (a restart lost the handle) and the
 			// retrieval path would silently break.
@@ -515,6 +544,36 @@ func codexCitationContract(quote bool) string {
 }
 
 // chatKBIDs extracts the dialog's knowledge-base ids as strings.
+// toolNarration is the thinking-stream line for one MCP tool step. It follows the
+// in-process engines' "[stage] sentence" shape (see runtime.ThinkKindStage) so the think
+// panel reads the same across modes — and, unlike a step event, it shows in the UI today:
+// the panel renders the thinking text, not the structured think_event.
+func toolNarration(rt codexagent.RoundTrip) string {
+	if rt.Tool == "" {
+		return ""
+	}
+	switch rt.Status {
+	case codexagent.ToolStatusCompleted:
+		return fmt.Sprintf("[MCP] %s returned in %dms", rt.Tool, rt.DurationMS)
+	case codexagent.ToolStatusFailed:
+		return fmt.Sprintf("[MCP] %s failed in %dms", rt.Tool, rt.DurationMS)
+	default:
+		if rt.Args == "" {
+			return fmt.Sprintf("[MCP] %s", rt.Tool)
+		}
+		return fmt.Sprintf("[MCP] %s %s", rt.Tool, rt.Args)
+	}
+}
+
+// toolThinkKind maps a round trip's status onto the shared ThinkEvent kinds
+// (runtime.ThinkKindToolCall / ThinkKindToolResult).
+func toolThinkKind(status string) string {
+	if status == codexagent.ToolStatusRunning {
+		return "tool_call"
+	}
+	return "tool_result"
+}
+
 func chatKBIDs(chat *entity.Chat) []string {
 	ids := make([]string, 0, len(chat.KBIDs))
 	for _, raw := range chat.KBIDs {
