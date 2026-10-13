@@ -36,6 +36,7 @@ import (
 	"ragflow/internal/agent/runtime"
 	"ragflow/internal/common"
 	"ragflow/internal/entity/models"
+	"ragflow/internal/retrievalaccount"
 )
 
 // Input carries everything Run needs to spin up a one-shot ReAct conversation
@@ -812,31 +813,6 @@ func sortedIDSet(ids map[string]struct{}) []string {
 // tool.InvokableTool (which itself embeds tool.BaseTool), promoting Info, then
 // overrides InvokableRun to time the call.
 
-// fullContentDocTools are the retrieval tools whose output carries COMPLETE
-// chunk content. Only these feed the retrieval ledger: the locate-only tools
-// (search_bm25_chunks, grep_chunks) surface a <match_snippet> window for
-// relevance triage, not the document itself — a doc seen only through them was
-// located, not retrieved.
-var fullContentDocTools = map[string]struct{}{
-	"search_chunks":          {},
-	"search_semantic_chunks": {},
-	"list_chunks":            {},
-}
-
-// deepReadChunkTools render FULL chunk content — their <chunk> elements are
-// counted as deep reads. shallowReadChunkTools render only a
-// <match_snippet> window per chunk — counted as shallow reads.
-var deepReadChunkTools = map[string]struct{}{
-	"search_chunks":          {},
-	"search_semantic_chunks": {},
-	"list_chunks":            {},
-}
-
-var shallowReadChunkTools = map[string]struct{}{
-	"grep_chunks":        {},
-	"search_bm25_chunks": {},
-}
-
 // searchActionTools are the corpus tools whose invocations are recorded in
 // the run's searchLedger: every retrieval action with query-bearing
 // arguments. list_chunks is a read of already-known identifiers (it lands in
@@ -845,18 +821,6 @@ var searchActionTools = map[string]struct{}{
 	"grep_chunks":            {},
 	"search_bm25_chunks":     {},
 	"search_semantic_chunks": {},
-}
-
-// chunkElementRe counts the <chunk ...> elements a tool rendered. The
-// <chunks ...> wrapper does NOT match: after "<chunk" comes "s", not a space
-// or a tag close.
-var chunkElementRe = regexp.MustCompile(`<chunk[ >]`)
-
-// countChunkElements returns the number of <chunk ...> elements in a rendered
-// tool payload — one element per chunk put in front of the model, whether it
-// carries full content or a snippet.
-func countChunkElements(out string) int {
-	return len(chunkElementRe.FindAllStringIndex(out, -1))
 }
 
 // The ledger is fed by regex over the rendered output rather than by each tool
@@ -883,59 +847,6 @@ type instrumentedTool struct {
 	unread *servedUnreadWatch
 }
 
-// toolOutputDocNameRe pulls the document names out of the XML every retrieval
-// tool renders. The opaque doc_id (32-hex) is deliberately NOT recorded: the
-// benchmark corpora key their evidence and expected documents on file stems.
-var toolOutputDocNameRe = regexp.MustCompile(`doc_name="([^"]+)"`)
-
-// docNameStem normalizes a rendered doc_name to the file stem a benchmark
-// corpus keys its evidence on: the base name with the ".md" extension
-// stripped ("75314.md" -> "75314").
-func docNameStem(name string) string {
-	if i := strings.LastIndexByte(name, '/'); i >= 0 {
-		name = name[i+1:]
-	}
-	return strings.TrimSuffix(name, ".md")
-}
-
-// recordedDocIDs returns the document stems mentioned in a tool's output,
-// deduplicated. Both "75314.md" and "75314" normalize to "75314".
-func recordedDocIDs(out string) []string {
-	if out == "" {
-		return nil
-	}
-	ids := make([]string, 0, 8)
-	for _, match := range toolOutputDocNameRe.FindAllStringSubmatch(out, -1) {
-		if stem := docNameStem(match[1]); stem != "" {
-			ids = append(ids, stem)
-		}
-	}
-	return ids
-}
-
-// chunkIDRe pulls the chunk identifiers out of the XML every retrieval tool
-// renders. Each `<chunk ...>` element carries exactly one `chunk_id` and the
-// `<chunks ...>` wrapper carries none, so matching the attribute is equivalent
-// to walking the elements countChunkElements counts — one wrapper covers the
-// whole toolset, no element parsing, no per-tool implementation touched.
-var chunkIDRe = regexp.MustCompile(`chunk_id="([^"]+)"`)
-
-// recordedChunkIDs returns the chunk identifiers a tool's output put in front
-// of the model, in the tool's own order. Duplicates are left in — the ledger
-// collapses them, so raw matches pass through as-is.
-func recordedChunkIDs(out string) []string {
-	if out == "" {
-		return nil
-	}
-	ids := make([]string, 0, 8)
-	for _, match := range chunkIDRe.FindAllStringSubmatch(out, -1) {
-		if id := strings.TrimSpace(match[1]); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
 func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
 	start := time.Now()
 	out, err := t.InvokableTool.InvokableRun(ctx, args, opts...)
@@ -954,25 +865,21 @@ func (t *instrumentedTool) InvokableRun(ctx context.Context, args string, opts .
 		if _, isSearch := searchActionTools[name]; isSearch && t.searches != nil {
 			t.searches.Add(name, args)
 		}
-		if _, full := fullContentDocTools[name]; full {
-			t.docs.Add(recordedDocIDs(out)...)
+		// Retrieval accounting, one implementation for every engine: see
+		// retrievalaccount.AccountToolOutput. The ledger split (retrieved vs served, deep
+		// vs shallow) and the regexes over the rendered output live in that leaf package,
+		// so the mode-8 runner — which only has the MCP result text — classifies
+		// identically. It is a leaf because this package pulls in dao, which imports
+		// codexagent, so codexagent cannot import this one back.
+		acc := retrievalaccount.AccountToolOutput(name, out)
+		t.docs.Add(acc.RetrievedDocs...)
+		if acc.DeepChunks > 0 {
+			t.chunks.AddDeep(acc.DeepChunks)
+			t.chunks.AddDeepIDs(acc.DeepChunkIDs...)
 		}
-		// Chunk-read accounting: one <chunk> element per chunk the tool put
-		// in front of the model, split by read depth (full content vs
-		// snippet window). Only the four corpus retrieval tools render
-		// <chunk> elements; web_search renders url/title instead. The ids of
-		// those chunks ride along with the counts: the count says how much
-		// was read, the ids say WHICH — and only the ids can answer whether a
-		// passage the run needed was ever in front of the model.
-		if n := countChunkElements(out); n > 0 {
-			ids := recordedChunkIDs(out)
-			if _, deep := deepReadChunkTools[name]; deep {
-				t.chunks.AddDeep(n)
-				t.chunks.AddDeepIDs(ids...)
-			} else if _, shallow := shallowReadChunkTools[name]; shallow {
-				t.chunks.AddShallow(n)
-				t.chunks.AddShallowIDs(ids...)
-			}
+		if acc.ShallowChunks > 0 {
+			t.chunks.AddShallow(acc.ShallowChunks)
+			t.chunks.AddShallowIDs(acc.ShallowChunkIDs...)
 		}
 	}
 	fields := []zap.Field{

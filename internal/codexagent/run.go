@@ -23,10 +23,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	codexgo "github.com/zealbase/codex-app-server-go"
+
+	"ragflow/internal/retrievalaccount"
 )
 
 // ThreadRecord is the persisted mapping from a RAGFlow session to a Codex thread.
@@ -169,6 +172,105 @@ func (t *toolTally) outcome(rt RoundTrip) {
 	t.errors[rt.Tool]++
 }
 
+// retrievalAccounting accumulates a turn's retrieval accounting from the MCP tool
+// results, through the same classifier the in-process engines feed
+// (retrievalaccount.AccountToolOutput) — one implementation of the rules, so a mode-8 row is
+// comparable with a mode-5 row rather than merely similar.
+type retrievalAccounting struct {
+	retrieved  map[string]struct{}
+	served     map[string]int
+	deep       int
+	shallow    int
+	deepIDs    map[string]struct{}
+	shallowIDs map[string]struct{}
+}
+
+func (a *retrievalAccounting) add(acc retrievalaccount.ToolAccounting) {
+	for _, d := range acc.RetrievedDocs {
+		if d == "" {
+			continue
+		}
+		if a.retrieved == nil {
+			a.retrieved = map[string]struct{}{}
+		}
+		a.retrieved[d] = struct{}{}
+	}
+	// One increment per document per CALL, not per occurrence: the rendered output
+	// repeats a document once per chunk, and the weight is meant to say how often the
+	// retrieval insisted on the document, not how many chunks it had. (Mode 5 weights by
+	// distinct QUERY; a caller that only sees the rendered output cannot attribute hits
+	// to individual queries, so a call is the unit.)
+	servedThisCall := map[string]struct{}{}
+	for _, d := range acc.ServedDocs {
+		if d != "" {
+			servedThisCall[d] = struct{}{}
+		}
+	}
+	if len(servedThisCall) > 0 && a.served == nil {
+		a.served = map[string]int{}
+	}
+	for d := range servedThisCall {
+		a.served[d]++
+	}
+	a.deep += acc.DeepChunks
+	a.shallow += acc.ShallowChunks
+	a.addIDs(&a.deepIDs, acc.DeepChunkIDs)
+	a.addIDs(&a.shallowIDs, acc.ShallowChunkIDs)
+}
+
+func (a *retrievalAccounting) addIDs(set *map[string]struct{}, ids []string) {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if *set == nil {
+			*set = map[string]struct{}{}
+		}
+		(*set)[id] = struct{}{}
+	}
+}
+
+// apply writes the accumulated accounting onto the outcome, in the same shape (and with
+// the same ordering rules) the in-process engines ship: ids sorted, served documents
+// ranked most-served first.
+func (a *retrievalAccounting) apply(out *TurnOutcome) {
+	out.RetrievedDocIDs = sortedSet(a.retrieved)
+	out.ServedDocIDs = rankedByCount(a.served)
+	out.DeepReadChunks = a.deep
+	out.ShallowReadChunks = a.shallow
+	out.DeepReadChunkIDs = sortedSet(a.deepIDs)
+	out.ShallowReadChunkIDs = sortedSet(a.shallowIDs)
+}
+
+func sortedSet(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func rankedByCount(counts map[string]int) []string {
+	if len(counts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(counts))
+	for id := range counts {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if counts[out[i]] != counts[out[j]] {
+			return counts[out[i]] > counts[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
 // TurnOutcome reports the terminal state of one turn.
 type TurnOutcome struct {
 	ThreadID  string
@@ -183,6 +285,17 @@ type TurnOutcome struct {
 	// them failed. Same shape as the in-process engines' fields.
 	ToolCallCounts map[string]int
 	ToolCallErrors map[string]int
+	// Retrieval accounting, read off the MCP tool results (see retrievalAccounting) and
+	// reported in the in-process engines' shape: RetrievedDocIDs are the documents a
+	// full-content tool opened; ServedDocIDs are the documents any corpus tool put in
+	// front of the model, ranked most-served first; the read counts split by depth, with
+	// the ids behind them.
+	RetrievedDocIDs     []string
+	ServedDocIDs        []string
+	DeepReadChunks      int
+	ShallowReadChunks   int
+	DeepReadChunkIDs    []string
+	ShallowReadChunkIDs []string
 	// Rebuilt is true when the turn ran on a freshly created thread (first turn, or
 	// a rebuild after scope/history drift).
 	Rebuilt bool
@@ -529,6 +642,8 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 	// Per-tool tallies, so a mode-8 turn reports tool_call_counts / tool_call_errors in
 	// the same shape the in-process engines do (a benchmark reads them either way).
 	var tally toolTally
+	// Retrieval accounting, from the same tool results the narration reads.
+	var retrieval retrievalAccounting
 
 	for {
 		select {
@@ -556,6 +671,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				out.Reasoning = reasoning.String()
 				out.Usage = usageOrNil(usage)
 				out.ToolCallCounts, out.ToolCallErrors = tally.counts, tally.errors
+				retrieval.apply(out)
 				return out, nil
 			}
 			switch e := ev.Raw.(type) {
@@ -602,6 +718,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 								}
 							}
 							tally.outcome(rt)
+							retrieval.add(retrievalaccount.AccountToolOutput(rt.Tool, mcpToolOutput(*e.Item)))
 							if req.OnTool != nil {
 								req.OnTool(rt)
 							}
@@ -678,6 +795,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				out.Reasoning = reasoning.String()
 				out.Usage = usageOrNil(usage)
 				out.ToolCallCounts, out.ToolCallErrors = tally.counts, tally.errors
+				retrieval.apply(out)
 				return out, nil
 			}
 		}
@@ -716,6 +834,30 @@ func mcpToolRoundTrip(item codexgo.Item) (RoundTrip, bool) {
 		Status:     status,
 		DurationMS: payload.DurationMS,
 	}, true
+}
+
+// mcpToolOutput returns the text of an MCP tool call's result — what the bridge returned
+// to Codex, which is the same rendered text the in-process engines classify. A result with
+// no text content (an error, or a non-text block) yields "".
+func mcpToolOutput(item codexgo.Item) string {
+	var payload struct {
+		Result *struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := item.Decode(&payload); err != nil || payload.Result == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range payload.Result.Content {
+		if c.Type == "text" {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }
 
 // compactArgs renders a call's arguments on one line and caps the length: the thinking

@@ -491,13 +491,19 @@ func (s *ChatPipelineService) codexAgent(
 			}
 		}
 		out <- AsyncChatResult{
-			Answer:         final,
-			Reference:      reference,
-			Final:          true,
-			Usage:          usage,
-			ToolCallCounts: outcome.ToolCallCounts,
-			ToolCallErrors: outcome.ToolCallErrors,
-			ElapsedSeconds: time.Since(started).Seconds(),
+			Answer:              final,
+			Reference:           reference,
+			Final:               true,
+			Usage:               usage,
+			ToolCallCounts:      outcome.ToolCallCounts,
+			ToolCallErrors:      outcome.ToolCallErrors,
+			RetrievedDocIDs:     outcome.RetrievedDocIDs,
+			ServedDocIDs:        outcome.ServedDocIDs,
+			DeepReadChunks:      outcome.DeepReadChunks,
+			ShallowReadChunks:   outcome.ShallowReadChunks,
+			DeepReadChunkIDs:    outcome.DeepReadChunkIDs,
+			ShallowReadChunkIDs: outcome.ShallowReadChunkIDs,
+			ElapsedSeconds:      time.Since(started).Seconds(),
 		}
 	}()
 	return out, nil

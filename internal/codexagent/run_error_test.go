@@ -19,10 +19,13 @@ package codexagent
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	codexgo "github.com/zealbase/codex-app-server-go"
+
+	"ragflow/internal/retrievalaccount"
 )
 
 // TestTurnErrorDetailPrefersTurnError pins that a failed turn surfaces the turn's own
@@ -189,5 +192,47 @@ func TestMcpToolRoundTripNormalizesInProgress(t *testing.T) {
 	rt, ok := mcpToolRoundTrip(codexgo.Item{ID: "c", Kind: codexgo.ItemKindMCPToolCall, Payload: raw})
 	if !ok || rt.Status != ToolStatusRunning {
 		t.Fatalf("inProgress must normalize to running: %+v ok=%v", rt, ok)
+	}
+}
+
+// retrievalAccounting turns the MCP tool results into the same accounting the in-process
+// engines ship: documents retrieved vs served, and chunk reads split by depth. The weight
+// of a served document is one per CALL (the rendered output repeats a document once per
+// chunk, and mode 5's own weight is distinct queries — a caller that only sees the output
+// cannot attribute hits to a query, so the call is the unit).
+func TestRetrievalAccounting(t *testing.T) {
+	var ra retrievalAccounting
+	ra.add(retrievalaccount.AccountToolOutput("search_bm25_chunks",
+		`<search_results count="2" query="q">`+
+			`<chunk rank="1" chunk_id="c1" doc_id="d1" doc_name="5412.md"><match_snippet>s</match_snippet></chunk>`+
+			`<chunk rank="2" chunk_id="c2" doc_id="d2" doc_name="5412.md"><match_snippet>t</match_snippet></chunk>`+
+			`</search_results>`))
+	ra.add(retrievalaccount.AccountToolOutput("list_chunks",
+		`<chunks doc_id="d1" fetched="1"><chunk chunk_id="c9" doc_id="d1" doc_name="77.md"><content>x</content></chunk></chunks>`))
+	// web_search renders url/title: it must never inflate corpus recall.
+	ra.add(retrievalaccount.AccountToolOutput("web_search",
+		`<web_results><result url="https://e/x" title="X">s</result></web_results>`))
+
+	var out TurnOutcome
+	ra.apply(&out)
+
+	// A locator's doc was SERVED but not RETRIEVED (it was never opened); list_chunks'
+	// doc was both.
+	if got := out.ServedDocIDs; !reflect.DeepEqual(got, []string{"5412", "77"}) {
+		t.Fatalf("ServedDocIDs = %v", got)
+	}
+	if got := out.RetrievedDocIDs; !reflect.DeepEqual(got, []string{"77"}) {
+		t.Fatalf("RetrievedDocIDs = %v (only the full-content tool opened a document)", got)
+	}
+	// One document served twice inside one call still weighs one call.
+	if out.ServedDocIDs[0] != "5412" {
+		t.Fatalf("the most-served document must rank first: %v", out.ServedDocIDs)
+	}
+	if out.ShallowReadChunks != 2 || out.DeepReadChunks != 1 {
+		t.Fatalf("reads = deep %d shallow %d, want 1/2", out.DeepReadChunks, out.ShallowReadChunks)
+	}
+	if !reflect.DeepEqual(out.ShallowReadChunkIDs, []string{"c1", "c2"}) ||
+		!reflect.DeepEqual(out.DeepReadChunkIDs, []string{"c9"}) {
+		t.Fatalf("ids = deep %v shallow %v", out.DeepReadChunkIDs, out.ShallowReadChunkIDs)
 	}
 }

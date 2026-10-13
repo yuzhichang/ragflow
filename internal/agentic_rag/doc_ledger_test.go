@@ -19,6 +19,7 @@ package agentic_rag
 import (
 	"context"
 	"errors"
+	"ragflow/internal/retrievalaccount"
 	"reflect"
 	"sync"
 	"testing"
@@ -72,28 +73,28 @@ func TestRecordedDocIDs(t *testing.T) {
 	// Only the doc_name leg is recorded, normalized to the file stem the
 	// benchmark corpora key their evidence on; the opaque 32-hex doc_id is
 	// deliberately dropped.
-	got := recordedDocIDs(locate)
+	got := retrievalaccount.RecordedDocIDs(locate)
 	want := []string{"5412"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("recordedDocIDs(locate) = %v, want %v", got, want)
+		t.Fatalf("retrievalaccount.RecordedDocIDs(locate) = %v, want %v", got, want)
 	}
-	got = recordedDocIDs(deepRead)
+	got = retrievalaccount.RecordedDocIDs(deepRead)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("recordedDocIDs(deepRead) = %v, want %v", got, want)
+		t.Fatalf("retrievalaccount.RecordedDocIDs(deepRead) = %v, want %v", got, want)
 	}
 	// A bare stem and its .md twin normalize to the same value.
 	stemTwins := `<chunks doc_id="d1" fetched="2" selected="2">
 <chunk chunk_id="c1" doc_id="d1" doc_name="5412.md"><content>a</content></chunk>
 <chunk chunk_id="c2" doc_id="d1" doc_name="5412"><content>b</content></chunk>
 </chunks>`
-	if got = recordedDocIDs(stemTwins); !reflect.DeepEqual(got, []string{"5412", "5412"}) {
-		t.Fatalf("recordedDocIDs(stemTwins) = %v, want [5412 5412] (ledger dedups)", got)
+	if got = retrievalaccount.RecordedDocIDs(stemTwins); !reflect.DeepEqual(got, []string{"5412", "5412"}) {
+		t.Fatalf("retrievalaccount.RecordedDocIDs(stemTwins) = %v, want [5412 5412] (ledger dedups)", got)
 	}
-	if got := recordedDocIDs(web); len(got) != 0 {
-		t.Fatalf("recordedDocIDs(web) = %v, want none", got)
+	if got := retrievalaccount.RecordedDocIDs(web); len(got) != 0 {
+		t.Fatalf("retrievalaccount.RecordedDocIDs(web) = %v, want none", got)
 	}
-	if got := recordedDocIDs(""); len(got) != 0 {
-		t.Fatalf("recordedDocIDs(empty) = %v, want none", got)
+	if got := retrievalaccount.RecordedDocIDs(""); len(got) != 0 {
+		t.Fatalf("retrievalaccount.RecordedDocIDs(empty) = %v, want none", got)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"ragflow/internal/retrievalaccount"
 	"regexp"
 	"strings"
 	"time"
@@ -849,7 +850,7 @@ func runIterativeTools(
 				}
 			}
 		}
-		for _, d := range recordedDocIDs(out) {
+		for _, d := range retrievalaccount.RecordedDocIDs(out) {
 			docs[d] = struct{}{}
 		}
 		fmt.Fprintf(&b, "<tool_result tool=%q>\n%s\n</tool_result>\n", name, out)

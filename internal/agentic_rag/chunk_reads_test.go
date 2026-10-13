@@ -1,6 +1,7 @@
 package agentic_rag
 
 import (
+	"ragflow/internal/retrievalaccount"
 	"reflect"
 	"testing"
 )
@@ -18,8 +19,8 @@ func TestCountChunkElements(t *testing.T) {
 		`no chunks here, just <other tag="x"> text`: 0,
 	}
 	for out, want := range cases {
-		if got := countChunkElements(out); got != want {
-			t.Fatalf("countChunkElements(%q) = %d, want %d", out, got, want)
+		if got := retrievalaccount.CountChunkElements(out); got != want {
+			t.Fatalf("retrievalaccount.CountChunkElements(%q) = %d, want %d", out, got, want)
 		}
 	}
 }
@@ -60,13 +61,13 @@ func TestRecordedChunkIDs(t *testing.T) {
 		`<chunk chunk_id="  " doc_id="d1">blank id is dropped</chunk>`: nil,
 	}
 	for out, want := range cases {
-		got := recordedChunkIDs(out)
+		got := retrievalaccount.RecordedChunkIDs(out)
 		if len(got) != len(want) {
-			t.Fatalf("recordedChunkIDs(%q) = %v, want %v", out, got, want)
+			t.Fatalf("retrievalaccount.RecordedChunkIDs(%q) = %v, want %v", out, got, want)
 		}
 		for i := range want {
 			if got[i] != want[i] {
-				t.Fatalf("recordedChunkIDs(%q) = %v, want %v", out, got, want)
+				t.Fatalf("retrievalaccount.RecordedChunkIDs(%q) = %v, want %v", out, got, want)
 			}
 		}
 	}

@@ -18,6 +18,7 @@ package agentic_rag
 
 import (
 	"context"
+	"ragflow/internal/retrievalaccount"
 	"strings"
 	"unicode/utf8"
 
@@ -86,7 +87,7 @@ func logServedChunks(ctx context.Context, tool, query string, hits []snippetHit)
 	// never deep-read.
 	if l := servedLedgerFrom(ctx); l != nil {
 		for _, hit := range hits {
-			l.Add(query, docNameStem(hit.chunk.DocumentName))
+			l.Add(query, retrievalaccount.DocNameStem(hit.chunk.DocumentName))
 		}
 	}
 	if len(hits) == 0 {

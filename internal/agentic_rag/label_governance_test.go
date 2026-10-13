@@ -1,12 +1,13 @@
 package agentic_rag
 
 import (
+	"ragflow/internal/retrievalaccount"
 	"strings"
 	"testing"
 )
 
 func TestCountChunkElementsStillWorks(t *testing.T) {
-	if n := countChunkElements("<chunks><chunk a=\"1\">x</chunk></chunks>"); n != 1 {
+	if n := retrievalaccount.CountChunkElements("<chunks><chunk a=\"1\">x</chunk></chunks>"); n != 1 {
 		t.Fatalf("count = %d, want 1", n)
 	}
 }
