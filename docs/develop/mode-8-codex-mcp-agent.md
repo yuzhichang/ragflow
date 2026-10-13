@@ -360,7 +360,11 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 - **只读 sandbox**：建 thread 时 `WithThreadSandbox(codexgo.SandboxReadOnly)`（或称 `read-only`）。禁止写文件、改变工作目录。
 - **工作目录隔离**：`WithThreadCWD` 指向一个空的、无敏感的目录（不暴露 RAGFlow 代码/配置/密钥）。
 - **审批策略**：用 `untrusted` 档，并安装 `codexagent.Dispatcher()`（`internal/codexagent/approval.go`）：**accept `mcp_tool_call` elicitation**（检索工具必需——否则连同工具一起被拒，见 §12 实测），**decline** 命令执行/文件变更/权限/其它 elicitation。注意：这只能拦「需要审批的动作」，**不能替代 sandbox**。
-- **禁用/收敛内置工具**：通过 thread config override 关闭 Codex 的内置命令/文件工具（若 Codex 支持）；只保留 MCP 检索 + 推理。
+- **内置命令执行工具（`shell` / `exec_command`）：保留，但被两道关挡住——不通过 config 禁用**。曾考虑用 `features.shell_tool=false` 把执行工具整个摘掉，但**判定为过度**：堵网络不需要牺牲工具，且下面两道独立的关已经堵死。
+  1. **审批关**：`Dispatcher()` 只 accept `mcp_tool_call`；命令执行（`Exec`）与文件变更（`File`）两个 handler 都未配置，SDK 的既定行为是**一律 decline**（`interaction.go`：`Exec`/`File` 为 nil 时该类请求被拒）。**实测观测**：某 session 的 rollout 里模型尝试 `exec_command: curl https://en.wikipedia.org/…`，得到的输出是 `exec_command failed: … Rejected("rejected by user")` —— 命令**没有执行**，自然也没有网络访问。
+  2. **沙箱关**：只读 sandbox 对应 `PermissionProfile::read_only()`，其 `NetworkSandboxPolicy` 为 **`Restricted`**（`protocol/src/permissions.rs`，默认即 Restricted）；Linux 上由 seccomp 拒绝 socket 系统调用（`linux-sandbox/src/seccomp.rs:114`）并由 bubblewrap 隔离网络命名空间（`bwrap.rs` 的 `BwrapNetworkMode::Isolated`）兜底。即便某条命令被判为「无需审批」而真的跑起来，网络仍出不去。
+  - 不变量：**绝不 accept 命令执行/文件变更/权限类审批**（否则第一道关失效）。第二道关是纵深防御，不依赖它单独成立。
+  - 副作用（已接受）：模型仍可能**尝试**执行命令，因而在 UI/rollout 里看到被拒的 `curl` 之类调用——这是"尝试被拦"，不是"访问成功"。
 - **关闭所有「服务端工具」（hosted tools）——已实现**：建 thread 时下发 `WithThreadConfigOverride("web_search", "disabled")`（`internal/codexagent/run.go` 的 `threadOptions`）。
   - **「服务端工具」是什么**：Responses API 里有一类工具**不由 Codex 本地执行**，而是把 `{"type": …}` 声明发给**模型服务商**、由服务商在其服务端运行并把结果回灌给模型——本地上看不到任何调用，也**无法用 sandbox/审批拦**。对自定义 Responses provider，Codex 只会发出其中一个：内置 `web_search`（`core/src/tools/hosted_spec.rs` 的 `create_web_search_tool`，随 `web_search_mode` 决定 `external_web_access`/`indexed_web_access`）。另一个 hosted 工具（image generation）要求 OpenAI 官方鉴权，自定义 provider 下**从不发出**（`spec_plan.rs:800-829` 的 `image_generation_available`）。
   - **为什么要关（收费）**：这些工具由**服务商计费**，例如 MiniMax 的 tools 定价（<https://platform.minimax.cn/docs/pricing/overview#tools/tools>）。而且它与会话设置无关——Codex 默认打开（`WebSearchMode` 默认 `Cached`；provider capability `web_search` 默认 `true`，且 provider 侧**没有** `web_search=false` 的覆盖项）。不关的话，一个「没开联网」的会话也会悄悄联网并产生费用，且检索数据绕过了 RAGFlow 的作用域与引用链路。关掉后，模式 8 的联网**只能**走 RAGFlow 自己的 `web_search`（MCP 工具，仅在会话启用时注入，见 §4.4/D9），与本地引擎的语义一致。
