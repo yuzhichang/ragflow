@@ -391,7 +391,7 @@ func (s *ChatPipelineService) codexAgent(
 				WebSearch:  useWebSearch,
 			},
 			WorkDir:      cfg.WorkDir,
-			Instructions: codexCitationContract(quote, useWebSearch),
+			Instructions: codexCitationContract(quote),
 			TurnTimeout:  cfg.TurnTimeout,
 			Messages:     messages,
 			OnContent:    emitContent,
@@ -461,44 +461,41 @@ func (s *ChatPipelineService) codexAgent(
 
 // codexCitationContract is the thread's base instructions (see the plan, D5/§4.7). Besides
 // the provenance format — the model ENDS each sourced line with that passage's tuple, and
-// the backend (not the model) assigns [ID:N] — it states the agent's ACTUAL capabilities,
-// because Codex hands the model an environment (a shell, a working directory) that mode 8
-// has deliberately closed off: its built-in web search is disabled (see §5.5) and the
-// sandbox plus the approval layer refuse command execution. Left unsaid, the model reads
-// the advertised shell as usable, burns the turn trying `curl`, and re-tries after each
-// refusal instead of reading the corpus it already retrieved. So the instruction names the
-// real toolset and forbids the rest.
+// the backend (not the model) assigns [ID:N] — it states two things the model would
+// otherwise get wrong.
 //
-// The web passage form is only described when this conversation actually enables web
-// search — otherwise naming it invites exactly the search the chat turned off. When it IS
-// enabled the instruction differs in two ways beyond the tuple: it names the MCP web tool
-// (the only sanctioned door to the web) and tells the model to prefer the knowledge base,
-// while STILL forbidding the shell — the shell is closed in both cases, so a model that
-// reaches for `curl` must learn that the web tool is the way.
-func codexCitationContract(quote, webSearch bool) string {
+// It is DELIBERATELY generic about web search. The base instructions are baked into a
+// thread at create and thread/resume does not reload them, while web search is a per-turn
+// decision; encoding the decision here would make the prompt and the tool list two copies
+// of one fact that must be kept in agreement. Instead the MCP tool list is the single
+// source of truth — the bridge advertises its web search tool only when the conversation
+// enables it — and the prompt points at that list ("use only the tools you are given").
+// The prompt therefore never goes stale: it is the same whether web search is on or off.
+//
+// The second constant is the shell. Codex hands the model an environment (a shell, a
+// working directory) that mode 8 has deliberately closed off: the approval layer refuses
+// command execution and the read-only sandbox restricts the network (see §5.5). Left
+// unsaid, the model reads the advertised shell as usable, burns the turn trying `curl`,
+// and re-tries after each refusal instead of reading the passages it retrieved. So the
+// prompt says plainly that the shell is not a path to the web.
+func codexCitationContract(quote bool) string {
 	var b strings.Builder
-	b.WriteString("Answer the user in prose. ")
-	if webSearch {
-		b.WriteString("Your tools are provided over MCP: the knowledge-base retrieval tools and a web search tool (" +
-			agentic_rag.WebSearchToolName + "). Search the knowledge base first; use the web search tool when the " +
-			"question needs current or outside information the knowledge base does not cover. ")
-		b.WriteString("There is no shell in this environment: never call exec_command/shell and never fetch a URL " +
-			"directly (curl or otherwise) — all web access goes through that tool, and direct attempts are refused. ")
-	} else {
-		b.WriteString("Your ONLY tools are the knowledge-base retrieval tools provided over MCP. " +
-			"This environment has no shell and no internet access: never call exec_command/shell, " +
-			"never fetch a URL (curl or otherwise), and never look for a web-search tool — such attempts are " +
-			"always refused and only waste the turn. Answer from the retrieved passages, and if they do not " +
-			"cover the question, say so plainly. ")
-	}
+	b.WriteString("Answer the user in prose. Your tools are the MCP tools provided for this conversation: " +
+		"the knowledge-base retrieval tools, and — when this conversation enables web search — a web search tool. " +
+		"The tool list you are given is authoritative: use exactly the tools it contains, and never assume a " +
+		"capability it does not list. ")
+	b.WriteString("This environment has no shell and no internet access: never call exec_command/shell, and never " +
+		"fetch a URL directly (curl or otherwise) — the shell is not a way to reach the web, such attempts are " +
+		"refused, and they only waste the turn. If the web search tool is available and the knowledge base does " +
+		"not cover the question, use that tool instead; otherwise answer from the retrieved passages and say " +
+		"plainly what they do not cover. ")
 	if !quote {
 		return b.String()
 	}
 	b.WriteString("Every line that states a fact backed by a retrieved passage must END with that passage's provenance, in exactly this form:\n" +
-		"(doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: \"<short verbatim excerpt>\")\n")
-	if webSearch {
-		b.WriteString("A web passage uses the same shape with (source: web, url: <url>, title: <title>, snippet: \"<short verbatim excerpt>\").\n")
-	}
+		"(doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: \"<short verbatim excerpt>\")\n" +
+		"A passage returned by the web search tool uses this form instead:\n" +
+		"(source: web, url: <url>, title: <title>, snippet: \"<short verbatim excerpt>\")\n")
 	b.WriteString("Copy every value verbatim from that passage's tool output; never invent ids, urls or titles. " +
 		"Do not write [ID:N] markers - the system assigns them.")
 	return b.String()

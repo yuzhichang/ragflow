@@ -342,11 +342,14 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 (source: web, url: <url>, title: <title>, snippet: "<短逐字片段>")
 ```
 
-⚠️ **契约按「本会话是否启用联网」给两套文案**（`codexCitationContract(quote, webSearch)`），因为两种情况下模型可用的门不同，而 **shell 在两种情况下都是关的**：
+⚠️ **契约对「本会话是否启用联网」保持 generic**（`codexCitationContract(quote)`，**不接收** webSearch）。原因：
 
-- **未启用联网**：Codex 仍会给模型一个 `<environment_context>`（含 `<shell>bash</shell>` 与工作目录），模型据此以为 shell 可用、去试 `curl`；每次被审批层拒绝后还会再试，白耗 turn 而不去读已检索到的语料。故契约写明能力真相：「你的工具只有 MCP 检索工具；本环境**无 shell、无互联网**，不要调用 `exec_command`/shell、不要 fetch URL、不要找联网工具——这类尝试一律被拒」，并且**完全不提** web 工具与 `source: web` 形（提了等于邀请那次被关掉的搜索）。
-- **已启用联网**：文案有两处不同。(1) **点名 MCP web 工具**（`agentic_rag.WebSearchToolName`，即 `web_search`）——它是唯一的联网出口，并说明「先查知识库，知识库覆盖不到才用 web 工具」；(2) 加上 `source: web` 的出处形。但**仍然禁止 shell**：「本环境无 shell，不要 `exec_command`/shell、不要直接 fetch URL（curl 等）——所有联网都经该工具，直接尝试会被拒」。这一条很关键：shell 并未因开启联网而放开，若不写明，模型会在"用户开了联网"的暗示下去试 `curl` 而非调用 web 工具。
-- 两者都**不改变任何安全边界**（审批层/沙箱照旧兜底），只让模型把 turn 花在正确的工具上。
+- **提示词与工具列表必须是同一事实的单一来源**。base instructions 在建 thread 时写入、**thread/resume 不会重载**；而 web_search 是**逐轮**决定。若把该决定编进提示词，就会出现「提示词说 A、工具列表是 B」的两份状态，二者必须永远一致才安全——一旦某条路径（resume、指纹未命中、重建失败）只更新其一，模型就会被告知一个不存在的工具，或被告知没有它实际拥有的工具。
+- **因此能力声明交给 MCP 工具列表**：桥只在会话启用时才广告 `web_search`，契约则写明「**你的工具是本次会话提供的 MCP 工具；工具列表本身是权威——只用列表里真实存在的工具，不要假设未列出的能力**」。于是提示词在开关两种情况下**逐字相同**，永远不会过期。
+- **另一条恒定项：禁止用 shell 联网**。Codex 会给模型一个 `<environment_context>`（含 `<shell>bash</shell>` 与工作目录），模型据此以为 shell 可用、去试 `curl`；每次被审批层拒绝后还会再试，白耗 turn 而不去读已检索到的语料。故契约明确写：「本环境**无 shell、无互联网**；不要调用 `exec_command`/shell、不要直接 fetch URL（curl 等）——shell **不是**访问网络的途径，这类尝试一律被拒；若工具列表里有 web search 工具且知识库覆盖不到，就用它」。（shell 在**开关两种情况下都是关的**，这条与联网开关无关。）
+- `source: web` 出处形**无条件写进**契约，但措辞是**条件式**的（「若该段落由 web search 工具返回，则用 …」）——与「只用列表里的工具」一致，不会主动勾引没有联网的会话去搜索。
+- 以上都**不改变安全边界**（审批层/沙箱照旧兜底），只让模型把 turn 花在正确的工具上。
+- 附注：联网开关**仍**折进 `ScopeFingerprint`（`WebSearchFingerprint`）——不是因为提示词，而是因为 Codex 按 thread 缓存 MCP 工具目录，warm resume 不重列，**必须重建 thread** 工具列表才会更新（见 §5.7③）。
 
 **后端（`buildCodexReference`）**：
 - `ExtractCitedChunkIDs` 取语料 id，`ExtractCitedWebSources` 取 web 条目（url/title/snippet）。
@@ -604,7 +607,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 | MCP `web_search` 按会话设置逐轮注入 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/service/... ./internal/codexagent/... ./internal/agentic_rag/...` | binding 带 `ChatID`+`WebSearch`；桥经 `resolveCodexWebSearch` seam 解析 provider 后追加 `web_search`。单测：未开启（或 resolver 未装/返回 nil）→ 不暴露且 resolver 不被调用；开启 → 暴露，且在**无 KB** 会话下工具可用（不受 KB 守卫）；`WebSearchFingerprint` 改变组合 reuse key。**已核对 Codex 源码**：工具目录按 thread 缓存、warm resume 不重列 → 以 `WebSearch` 折进 `scope_fingerprint` 触发重建来保证切换生效。跨进程/多副本与真机端到端未实测 | 2026-10-12 |
 | mode-8 引用：tuple 契约 + 原地 `[ID:N]` + web 条目 + 展示副本 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/agentic_rag/... ./internal/service/...` | 契约为两种 provenance tuple（语料 doc/doc_id/chunk_id；web source/url/title）；`RewriteProvenance` 把 tuple（或裸字段）**原地**替换为 `[ID:N]`，未解析则保留、幂等；mode 6/7 走同一 pass；`buildCodexReference` 校验语料（KB 作用域）、web 由模型负责（**结果不写 KV**）；统一编号（语料先、web 后）；DB 存原始输出 + `content_display`，读取换取使重载仍显示引用。单测覆盖：原地替换/共享 chunk/未解析/裸字段/web tuple/片段含括号/web 提取去重/served set 移除后的记录路径。真机端到端未实测 | 2026-10-12 |
 | 关闭 Codex 服务端（hosted）`web_search`（计费工具） | ✅ 已通过（集成级） | `RAGFLOW_CODEX_IT=1 go test -tags integration -run 'TestWebSearchOverride\|TestResumeDoesNotReloadHostedToolPolicy' ./internal/codexagent/` | (a) app-server **接受** `web_search="disabled"`、**拒绝**越界枚举（`TestWebSearchOverrideIsHonored`）——证明该键被校验；(b) 本地 mock provider 抓**真实出站请求**：带 override 时 `tools` 无 `{"type":"web_search"}`，**对照**（无 override）有（`TestWebSearchOverrideRemovesHostedTool`）；(c) **resume 不重载该策略**（`TestResumeDoesNotReloadHostedToolPolicy`）→ 策略折进 `HostedToolsFingerprint` 迫使旧 thread 重建；单测 `TestHostedToolsFingerprintChangesReuseKey` 锁住复用键参与。真机（MiniMax）端到端未实测 | 2026-10-13 |
-| 契约声明能力真相（无 shell；联网两种文案） | ✅ 已通过（单测级） | `bash build.sh --test ./internal/service/`（`TestCodexCitationContractStatesCapabilities`） | **未启用联网**：含「no shell and no internet access」，且**不出现** web 工具/`source: web`。**已启用联网**：**点名** `agentic_rag.WebSearchToolName`（`web_search`）、给出 `source: web` 形、说明「先 KB 后 web」，并且**仍禁止 shell/`curl`**（shell 不因开联网而放开）、**不说**无互联网。`quote=false` 两种情形都保留能力声明、只去掉出处格式。改动经 `InstructionsFingerprint` 折进复用键 → 旧 thread 重建一次。**真机是否因此不再重试 `curl` 未实测** | 2026-10-13 |
+| 契约 generic（能力交给 MCP 工具列表）+ 禁 shell 联网 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/service/`（`TestCodexCitationContractIsGenericAndForbidsTheShell`） | 契约**不接收** webSearch，联网开关下**逐字相同**；含「tool list … authoritative / use exactly the tools it contains」（能力以工具列表为准，不自称有无 web）；含「no shell and no internet access」+「exec_command」「curl」「not a way to reach the web」（明确禁止用 shell 联网）；`source: web` 形**无条件**但以「returned by the web search tool」条件化；`quote=false` 仍保留能力声明、只去掉出处格式。联网开关仍折进 `ScopeFingerprint`（工具目录需重建），与提示词无关。**真机未实测** | 2026-10-13 |
 
 **门禁规则**：只要 11.2 中 M0-b…M0-d 任一项为 `⏳ 未验证` 或 `❌ 未通过`，**M1 及之后一律阻塞**。M0-c（U1(b)）已非架构阻塞：无论 resume 是否重载 MCP，都可分别走「resume 刷新票据」或「重建 thread」，两种路径均在计划内。
 

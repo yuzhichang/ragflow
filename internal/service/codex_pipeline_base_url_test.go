@@ -19,8 +19,6 @@ package service
 import (
 	"strings"
 	"testing"
-
-	"ragflow/internal/agentic_rag"
 )
 
 // TestNormalizeResponsesBaseURL pins that a version-less provider base gains "/v1" for the
@@ -48,44 +46,51 @@ func TestNormalizeResponsesBaseURL(t *testing.T) {
 	}
 }
 
-// TestCodexCitationContractStatesCapabilities pins the base instructions' capability
-// statement: with web search off the model must be told it has no shell and no internet
-// (it otherwise tries `curl` and re-tries after each refusal, instead of reading the
-// corpus), and the web-passage form must not be described — naming it invites the very
-// search the conversation turned off. With web search on, the web tool and its tuple are
-// described instead of the prohibition.
-func TestCodexCitationContractStatesCapabilities(t *testing.T) {
-	off := codexCitationContract(true, false)
-	if !strings.Contains(off, "no shell and no internet access") {
-		t.Errorf("web-search-off contract does not state the capability gap:\n%s", off)
+// TestCodexCitationContractIsGenericAndForbidsTheShell pins the two properties the base
+// instructions must have now that web search is a PER-TURN decision while the instructions
+// are baked into a thread at create (and not reloaded by resume):
+//
+//   - they are generic about the toolset — the MCP tool list is the single source of truth
+//     for whether web search exists, so the prompt must not claim either way, and must stay
+//     identical across a web-search toggle (otherwise prompt and tool list are two copies
+//     of one fact that can disagree);
+//   - they forbid the shell as a path to the web, so the model — which sees an advertised
+//     shell in its environment — does not burn the turn on `curl`.
+func TestCodexCitationContractIsGenericAndForbidsTheShell(t *testing.T) {
+	quoted := codexCitationContract(true)
+
+	// Capability comes from the tool list, not the prompt: conditional everywhere.
+	if !strings.Contains(quoted, "authoritative") || !strings.Contains(quoted, "tool list") {
+		t.Errorf("contract does not defer capability to the MCP tool list:\n%s", quoted)
 	}
-	if strings.Contains(off, "web search tool") || strings.Contains(off, "source: web") {
-		t.Errorf("web-search-off contract still advertises web search:\n%s", off)
+	if !strings.Contains(quoted, "no shell and no internet access") {
+		t.Errorf("contract does not state the shell/network gap:\n%s", quoted)
 	}
-	if !strings.Contains(off, "(doc: <doc_name>") {
-		t.Errorf("web-search-off contract lost the corpus provenance form:\n%s", off)
+	for _, must := range []string{"exec_command", "curl", "not a way to reach the web"} {
+		if !strings.Contains(quoted, must) {
+			t.Errorf("contract does not forbid the shell clearly (%q missing):\n%s", must, quoted)
+		}
+	}
+	// It must not assert web search either way — that is the tool list's job.
+	if strings.Contains(quoted, "You have") {
+		t.Errorf("contract asserts capabilities rather than deferring to the tool list:\n%s", quoted)
+	}
+	if !strings.Contains(quoted, "when this conversation enables web search") {
+		t.Errorf("contract does not present web search conditionally:\n%s", quoted)
 	}
 
-	on := codexCitationContract(true, true)
-	if !strings.Contains(on, "web search tool") || !strings.Contains(on, "source: web") {
-		t.Errorf("web-search-on contract omits the web tool/tuple:\n%s", on)
+	// Both provenance forms are described, the web one conditionally on the tool.
+	if !strings.Contains(quoted, "(doc: <doc_name>") || !strings.Contains(quoted, "(source: web") {
+		t.Errorf("contract omits a provenance form:\n%s", quoted)
 	}
-	// The shell is closed whether or not the conversation has web search, so the web-on
-	// text must still forbid it and point at the MCP tool instead.
-	if !strings.Contains(on, "no shell") || !strings.Contains(on, "exec_command") || !strings.Contains(on, "curl") {
-		t.Errorf("web-search-on contract does not forbid the shell:\n%s", on)
-	}
-	if !strings.Contains(on, agentic_rag.WebSearchToolName) {
-		t.Errorf("web-search-on contract does not name the MCP web tool:\n%s", on)
-	}
-	if strings.Contains(on, "no shell and no internet access") {
-		t.Errorf("web-search-on contract claims there is no internet:\n%s", on)
+	if !strings.Contains(quoted, "returned by the web search tool") {
+		t.Errorf("the web form is not tied to the web tool:\n%s", quoted)
 	}
 
-	// Quote off still states the capabilities; it only drops the provenance format.
-	plain := codexCitationContract(false, false)
-	if !strings.Contains(plain, "no shell and no internet access") {
-		t.Errorf("quote-off contract does not state the capability gap:\n%s", plain)
+	// Quote off still states capabilities and forbids the shell; it only drops the format.
+	plain := codexCitationContract(false)
+	if !strings.Contains(plain, "no shell and no internet access") || !strings.Contains(plain, "curl") {
+		t.Errorf("quote-off contract dropped the capability statement:\n%s", plain)
 	}
 	if strings.Contains(plain, "(doc: <doc_name>") {
 		t.Errorf("quote-off contract should not prescribe a provenance format:\n%s", plain)
