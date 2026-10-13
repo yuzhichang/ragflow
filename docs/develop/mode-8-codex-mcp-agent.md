@@ -316,6 +316,8 @@ client.StartThread(ctx,
 |---|---|
 | `ItemAgentMessageDeltaEvent{Text}` | `AsyncChatResult{Answer: text, Final:false}` |
 | `ItemReasoningTextDeltaEvent{Text}` / `ItemReasoningSummaryTextDeltaEvent{Text}` | `AsyncChatResult{Reasoning: text}`，配合 `StartToThink/EndToThink` 标记（同 `chat_pipeline.go:2813` 的 think 边界逻辑） |
+| `ItemCompletedEvent(kind=reasoning)` | **无 delta 时的思考兜底**（见下） |
+| `ThreadTokenUsageUpdatedEvent{TokenUsage}` | **本轮 token 用量**（见下） |
 | `ItemCommandExecutionOutputDeltaEvent` | 忽略或仅 debug 日志（mode 8 不面向工具执行回显） |
 | `TurnCompletedEvent{TurnID, Status}` | 收尾：写最终结果 |
 | `ErrorEvent` | 转 `**ERROR**: ...` 最终结果 |
@@ -332,6 +334,10 @@ client.StartThread(ctx,
 > **实测修正（codex 0.162.0）**：SDK 的 backfill 依赖 `thread/turns/list`，而本机 codex **不支持**该 RPC（`list_turns is not supported yet`），故 `sdk/sessionBackfilled` 实际不携带可合并的 turns —— **上述归并逻辑在本版本不可达**。据此实现**已移除** backfill 订阅/缓存（避免死代码与每 thread 的 map 泄漏），仅保留必需的兜底：**流式通道在未到终局前关闭 → 判该 turn 失败**（绝不把半截答案当终局）。若未来 codex 支持 `thread/turns/list`，再按本节恢复归并。
 
 think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenticRag` 一样用 `thinking` 布尔量保证 `<think>` / `</think>` 各发一次，避免前端 `mergeAnswerChunk` 拼接错位（见 `chat_pipeline.go:2813` 注释）。
+
+**思考过程为空的原因与兜底（实测）**：Codex 只在**服务商真的流式吐** `response.reasoning_text.delta` / `response.reasoning_summary_text.delta` 时，才发上面那两个 delta 通知（`codex-api/src/sse/responses.rs:377,396`）。而 MiniMax 这类**非 OpenAI 的 Responses 后端**把整段 reasoning 作为**一个完成项**下发（rollout 里是 `reasoning` item + `item_completed`，`summary` 为空、无任何 delta）——此时 runner 只认 delta，思考面板就永远是空的。修法（**两种都支持**）：`ItemCompletedEvent` 里，若该 item 是 reasoning 且**它的 id 从未产生过 delta**（用 `reasoningDeltaItems` 记录 delta 的 item id 去重），就取该 item 的文本（payload 的 `content`，空则 `summary`）走同一个 `OnReasoning`。这样流式与非流式 provider 都能出思考，且不重复。
+
+**Token 用量（per-turn，已实现）**：SDK 明确 `ThreadTokenUsageUpdatedEvent`（app-server 的 `thread/tokenUsage/updated`）**是唯一携带 token 用量的通道**；每个**模型调用**发一次，`TokenUsage{last, total, modelContextWindow}` 中 `last` 是**该次调用**的用量、`total` 是 thread 累计（见 `Last`/`Total` 语义：`core/src/session/mod.rs:4968-5035`）。因此 runner **累加每次的 `Last`**（`inputTokens`/`outputTokens`/`totalTokens`）并**计数**，得到本轮消耗；累加 `Total` 会跨轮重复计数，不可用。结果经 `TurnOutcome.Usage` → `AsyncChatResult.Usage`（`service.TurnUsage`：`prompt_tokens`/`completion_tokens`/`total_tokens`/`llm_calls`）出现在终局 SSE 帧的 `usage` 字段——**与 mode 5/6/7 的形状一致**，benchmark 可直接对比。未收到任何用量通知时 `Usage` 为 `nil`（而非全 0 块）。
 
 ### 5.4 引用（tuple 契约 + 原地替换 + 无台账）
 
@@ -608,6 +614,8 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 | mode-8 引用：tuple 契约 + 原地 `[ID:N]` + web 条目 + 展示副本 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/mcp/... ./internal/agentic_rag/... ./internal/service/...` | 契约为两种 provenance tuple（语料 doc/doc_id/chunk_id；web source/url/title）；`RewriteProvenance` 把 tuple（或裸字段）**原地**替换为 `[ID:N]`，未解析则保留、幂等；mode 6/7 走同一 pass；`buildCodexReference` 校验语料（KB 作用域）、web 由模型负责（**结果不写 KV**）；统一编号（语料先、web 后）；DB 存原始输出 + `content_display`，读取换取使重载仍显示引用。单测覆盖：原地替换/共享 chunk/未解析/裸字段/web tuple/片段含括号/web 提取去重/served set 移除后的记录路径。真机端到端未实测 | 2026-10-12 |
 | 关闭 Codex 服务端（hosted）`web_search`（计费工具） | ✅ 已通过（集成级） | `RAGFLOW_CODEX_IT=1 go test -tags integration -run 'TestWebSearchOverride\|TestResumeDoesNotReloadHostedToolPolicy' ./internal/codexagent/` | (a) app-server **接受** `web_search="disabled"`、**拒绝**越界枚举（`TestWebSearchOverrideIsHonored`）——证明该键被校验；(b) 本地 mock provider 抓**真实出站请求**：带 override 时 `tools` 无 `{"type":"web_search"}`，**对照**（无 override）有（`TestWebSearchOverrideRemovesHostedTool`）；(c) **resume 不重载该策略**（`TestResumeDoesNotReloadHostedToolPolicy`）→ 策略折进 `HostedToolsFingerprint` 迫使旧 thread 重建；单测 `TestHostedToolsFingerprintChangesReuseKey` 锁住复用键参与。真机（MiniMax）端到端未实测 | 2026-10-13 |
 | 契约 generic（能力交给 MCP 工具列表）+ 禁 shell 联网 | ✅ 已通过（单测级） | `bash build.sh --test ./internal/service/`（`TestCodexCitationContractIsGenericAndForbidsTheShell`） | 契约**不接收** webSearch，联网开关下**逐字相同**；含「tool list … authoritative / use exactly the tools it contains」（能力以工具列表为准，不自称有无 web）；含「no shell and no internet access」+「exec_command」「curl」「not a way to reach the web」（明确禁止用 shell 联网）；`source: web` 形**无条件**但以「returned by the web search tool」条件化；`quote=false` 仍保留能力声明、只去掉出处格式。联网开关仍折进 `ScopeFingerprint`（工具目录需重建），与提示词无关。**真机未实测** | 2026-10-13 |
+| 思考过程兜底（无 reasoning delta 的 provider） | ✅ 已通过（单测级） | `bash build.sh --test ./internal/codexagent/`（`TestReasoningItemText`） | 仅当某 reasoning item 的 id **未产生过 delta** 时，才用该完成项的文本（`content` 优先、`summary` 兜底）走 `OnReasoning`——流式 provider 不重复、非流式 provider 不再空白。**真机（MiniMax 是否不流式 reasoning）未实测**，这是据 rollout 推断的兜底 | 2026-10-13 |
+| 每轮 token 用量（对齐 mode 5 形状） | ✅ 已通过（单测级） | `bash build.sh --test ./internal/codexagent/ ./internal/service/`（`TestUsageOrNil`） | runner 消费 `ThreadTokenUsageUpdatedEvent`，**累加每次的 `Last`**（=本轮）并计数调用数（`ThreadTokenUsage.Last.Total` 为 thread 累计，**不可累加**）→ `TurnOutcome.Usage` → `AsyncChatResult.Usage`（`prompt_tokens`/`completion_tokens`/`total_tokens`/`llm_calls`），随终局 SSE 帧的 `usage` 字段下发；无通知时为 `nil` 而非全 0。**真机 token 数值未实测**（未跑真实 turn） | 2026-10-13 |
 
 **门禁规则**：只要 11.2 中 M0-b…M0-d 任一项为 `⏳ 未验证` 或 `❌ 未通过`，**M1 及之后一律阻塞**。M0-c（U1(b)）已非架构阻塞：无论 resume 是否重载 MCP，都可分别走「resume 刷新票据」或「重建 thread」，两种路径均在计划内。
 

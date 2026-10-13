@@ -116,9 +116,24 @@ type TurnOutcome struct {
 	ThreadID  string
 	Content   string
 	Reasoning string
+	// Usage is this turn's token accounting, when the server reported it. Codex emits
+	// thread/tokenUsage/updated once per model call, so Usage sums those calls — the same
+	// shape the in-process engines feed their benchmarks.
+	Usage *TurnUsage
 	// Rebuilt is true when the turn ran on a freshly created thread (first turn, or
 	// a rebuild after scope/history drift).
 	Rebuilt bool
+}
+
+// TurnUsage is one turn's token cost. Field names match service.TurnUsage so a caller maps
+// it straight across (and a benchmark can compare mode 8 with modes 5/6/7).
+type TurnUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	// LLMCalls counts the model calls the turn made — the number of usage notifications,
+	// since Codex reports one per upstream Responses completion.
+	LLMCalls int `json:"llm_calls"`
 }
 
 // Runner executes mode 8 turns against a shared Codex client.
@@ -436,6 +451,15 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 	completed := false
 	// A detail-less error notification captured before the terminal turn.
 	var streamErr error
+	// The server reports usage once per model call; sum the per-call figures.
+	var usage TurnUsage
+	// Reasoning item ids that streamed deltas. A provider that does NOT stream reasoning
+	// (measured against a non-OpenAI Responses backend) delivers one finished `reasoning`
+	// item and no delta notifications at all — the think panel would then stay empty. The
+	// id set lets a completed item be used as a fallback without double-counting the
+	// providers that do stream, where the finished item repeats what the deltas already
+	// carried.
+	reasoningDeltaItems := map[string]bool{}
 
 	for {
 		select {
@@ -461,6 +485,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				}
 				out.Content = content.String()
 				out.Reasoning = reasoning.String()
+				out.Usage = usageOrNil(usage)
 				return out, nil
 			}
 			switch e := ev.Raw.(type) {
@@ -469,6 +494,16 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 			case codexgo.ItemCompletedEvent:
 				if e.Item != nil {
 					items = append(items, *e.Item)
+					// Fallback for providers that deliver reasoning as a finished item:
+					// only when this item never streamed deltas (see reasoningDeltaItems).
+					if e.Item.Kind == codexgo.ItemKindReasoning && !reasoningDeltaItems[e.Item.ID] {
+						if text := reasoningItemText(*e.Item); text != "" {
+							reasoning.WriteString(text)
+							if req.OnReasoning != nil {
+								req.OnReasoning(text)
+							}
+						}
+					}
 				}
 			case codexgo.ItemAgentMessageDeltaEvent:
 				if e.Text != "" {
@@ -479,6 +514,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				}
 			case codexgo.ItemReasoningTextDeltaEvent:
 				if e.Text != "" {
+					reasoningDeltaItems[e.ItemID] = true
 					reasoning.WriteString(e.Text)
 					if req.OnReasoning != nil {
 						req.OnReasoning(e.Text)
@@ -486,10 +522,21 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				}
 			case codexgo.ItemReasoningSummaryTextDeltaEvent:
 				if e.Text != "" {
+					reasoningDeltaItems[e.ItemID] = true
 					reasoning.WriteString(e.Text)
 					if req.OnReasoning != nil {
 						req.OnReasoning(e.Text)
 					}
+				}
+			case codexgo.ThreadTokenUsageUpdatedEvent:
+				// One notification per model call. `Last` is that call's usage, so the
+				// running sum is the turn's cost; `Total` is thread-cumulative and would
+				// over-count across turns of the same thread.
+				if e.TokenUsage != nil {
+					usage.LLMCalls++
+					usage.PromptTokens += int(e.TokenUsage.Last.InputTokens)
+					usage.CompletionTokens += int(e.TokenUsage.Last.OutputTokens)
+					usage.TotalTokens += int(e.TokenUsage.Last.TotalTokens)
 				}
 			case codexgo.ErrorEvent:
 				msg := e.Message
@@ -526,6 +573,7 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 					out.Content = content.String()
 				}
 				out.Reasoning = reasoning.String()
+				out.Usage = usageOrNil(usage)
 				return out, nil
 			}
 		}
@@ -537,6 +585,34 @@ func turnStatus(e codexgo.TurnCompletedEvent) codexgo.TurnStatus {
 		return e.Turn.Status
 	}
 	return e.Status
+}
+
+// usageOrNil reports the turn's usage, or nil when the server reported none — so a caller
+// can distinguish "no accounting" from "zero tokens".
+func usageOrNil(u TurnUsage) *TurnUsage {
+	if u.LLMCalls == 0 {
+		return nil
+	}
+	return &u
+}
+
+// reasoningItemText extracts a finished reasoning item's text (see the completed-item
+// fallback in consume). The v2 reasoning item carries `summary` — a model-written summary,
+// often empty for the non-OpenAI providers that trigger this path — and `content`, the raw
+// reasoning those providers send. Prefer content; fall back to summary.
+func reasoningItemText(item codexgo.Item) string {
+	var payload struct {
+		Summary []string `json:"summary"`
+		Content []string `json:"content"`
+	}
+	if err := item.Decode(&payload); err != nil {
+		return ""
+	}
+	parts := payload.Content
+	if len(parts) == 0 {
+		parts = payload.Summary
+	}
+	return strings.Join(parts, "")
 }
 
 // turnErrorDetail returns the most specific failure text available: the turn's own

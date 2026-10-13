@@ -449,10 +449,23 @@ func (s *ChatPipelineService) codexAgent(
 			// model names but never retrieved still resolves if it is in scope (D12).
 			reference, final = s.buildCodexReference(ctx, chat.TenantID, datasetIDs, final)
 		}
+		// Codex reports one token-usage notification per model call; the runner sums them
+		// into the same shape the in-process engines produce, so a mode-8 benchmark row
+		// carries prompt/completion/total/llm_calls exactly like mode 5's.
+		var usage *TurnUsage
+		if outcome.Usage != nil {
+			usage = &TurnUsage{
+				PromptTokens:     outcome.Usage.PromptTokens,
+				CompletionTokens: outcome.Usage.CompletionTokens,
+				TotalTokens:      outcome.Usage.TotalTokens,
+				LLMCalls:         outcome.Usage.LLMCalls,
+			}
+		}
 		out <- AsyncChatResult{
 			Answer:         final,
 			Reference:      reference,
 			Final:          true,
+			Usage:          usage,
 			ElapsedSeconds: time.Since(started).Seconds(),
 		}
 	}()

@@ -52,3 +52,43 @@ func TestTurnErrorDetailPlaceholder(t *testing.T) {
 		t.Fatalf("placeholder: got %q, want %q", got, "no error detail")
 	}
 }
+
+// reasoningItemText backs the completed-item fallback: a provider that does not stream
+// reasoning deltas sends one finished reasoning item instead. Its raw reasoning rides
+// `content`; `summary` is the model-written summary and is often empty for those
+// providers, so content wins and summary is the fallback.
+func TestReasoningItemText(t *testing.T) {
+	item := func(payload map[string]any) codexgo.Item {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		return codexgo.Item{ID: "r1", Kind: codexgo.ItemKindReasoning, Payload: raw}
+	}
+
+	if got := reasoningItemText(item(map[string]any{
+		"summary": []string{"a summary"},
+		"content": []string{"raw ", "reasoning"},
+	})); got != "raw reasoning" {
+		t.Fatalf("content must win: got %q", got)
+	}
+	if got := reasoningItemText(item(map[string]any{"summary": []string{"only summary"}})); got != "only summary" {
+		t.Fatalf("summary must be the fallback: got %q", got)
+	}
+	if got := reasoningItemText(codexgo.Item{Kind: codexgo.ItemKindReasoning}); got != "" {
+		t.Fatalf("an empty payload must yield no text: got %q", got)
+	}
+}
+
+// usageOrNil distinguishes "the server reported no usage" from "a turn that cost zero
+// tokens": a caller must not publish an all-zero usage block in the former case.
+func TestUsageOrNil(t *testing.T) {
+	if usageOrNil(TurnUsage{}) != nil {
+		t.Fatal("no model calls must yield nil usage, not a zero block")
+	}
+	got := usageOrNil(TurnUsage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7, LLMCalls: 1})
+	if got == nil || got.TotalTokens != 7 || got.LLMCalls != 1 {
+		t.Fatalf("usageOrNil dropped a reported usage: %+v", got)
+	}
+}
