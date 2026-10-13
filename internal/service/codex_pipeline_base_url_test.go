@@ -17,6 +17,7 @@
 package service
 
 import (
+	"ragflow/internal/codexagent"
 	"strings"
 	"testing"
 )
@@ -94,5 +95,46 @@ func TestCodexCitationContractIsGenericAndForbidsTheShell(t *testing.T) {
 	}
 	if strings.Contains(plain, "(doc: <doc_name>") {
 		t.Errorf("quote-off contract should not prescribe a provenance format:\n%s", plain)
+	}
+}
+
+// narrationChunk frames a tool line so it never runs into the reasoning text around it:
+// exactly one newline on each side. A stream that is mid-line gets a leading newline; a
+// fresh line (or a fresh think block) does not, or the panel would open with a blank line.
+func TestNarrationChunkFraming(t *testing.T) {
+	cases := []struct {
+		name string
+		tail byte
+		line string
+		want string
+	}{
+		{"mid-line", 'x', "grep_chunks {}", "\ngrep_chunks {}\n"},
+		{"at a line start", '\n', "grep_chunks {}", "grep_chunks {}\n"},
+		{"fresh block", 0, "grep_chunks {}", "grep_chunks {}\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := narrationChunk(tc.tail, tc.line); got != tc.want {
+				t.Fatalf("narrationChunk(%q, %q) = %q, want %q", tc.tail, tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// The narration carries no "[MCP] " prefix: the tool name is the first token.
+func TestToolNarrationHasNoPrefix(t *testing.T) {
+	cases := map[string]codexagent.RoundTrip{
+		"search_bm25_chunks {}":                {Tool: "search_bm25_chunks", Status: codexagent.ToolStatusRunning, Args: "{}"},
+		"search_bm25_chunks returned in 886ms": {Tool: "search_bm25_chunks", Status: codexagent.ToolStatusCompleted, DurationMS: 886},
+		"grep_chunks failed in 12ms":           {Tool: "grep_chunks", Status: codexagent.ToolStatusFailed, DurationMS: 12},
+		"list_chunks":                          {Tool: "list_chunks", Status: codexagent.ToolStatusRunning},
+	}
+	for want, rt := range cases {
+		if got := toolNarration(rt); got != want {
+			t.Fatalf("toolNarration(%+v) = %q, want %q", rt, got, want)
+		}
+		if strings.Contains(toolNarration(rt), "[MCP]") {
+			t.Fatalf("narration still carries the [MCP] prefix: %q", toolNarration(rt))
+		}
 	}
 }

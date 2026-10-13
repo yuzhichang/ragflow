@@ -348,6 +348,11 @@ func (s *ChatPipelineService) codexAgent(
 			thinking     bool
 			contentDelta strings.Builder
 		)
+		// The last byte written to the reasoning stream, so a narrated tool step can be
+		// separated from the text around it by EXACTLY one newline: the model's reasoning
+		// runs straight into the step otherwise ("...characteristics.search_bm25_chunks
+		// {...}"), which is unreadable. A fresh think block starts at a line boundary.
+		var reasoningTail byte
 		emitReasoning := func(text string) {
 			if text == "" {
 				return
@@ -355,8 +360,10 @@ func (s *ChatPipelineService) codexAgent(
 			if !thinking {
 				out <- AsyncChatResult{Final: false, StartToThink: true}
 				thinking = true
+				reasoningTail = 0
 			}
 			out <- AsyncChatResult{Final: false, Reasoning: text}
+			reasoningTail = text[len(text)-1]
 		}
 		emitContent := func(text string) {
 			if text == "" {
@@ -382,10 +389,11 @@ func (s *ChatPipelineService) codexAgent(
 			if !thinking {
 				out <- AsyncChatResult{Final: false, StartToThink: true}
 				thinking = true
+				reasoningTail = 0
 			}
 			out <- AsyncChatResult{
 				Final:     false,
-				Reasoning: line,
+				Reasoning: narrationChunk(reasoningTail, line),
 				ThinkEvent: &ThinkEvent{
 					Kind:       toolThinkKind(rt.Status),
 					Stage:      "MCP",
@@ -396,6 +404,7 @@ func (s *ChatPipelineService) codexAgent(
 					Summary:    line,
 				},
 			}
+			reasoningTail = '\n'
 		}
 
 		req := codexagent.TurnRequest{
@@ -552,24 +561,33 @@ func codexCitationContract(quote bool) string {
 }
 
 // chatKBIDs extracts the dialog's knowledge-base ids as strings.
-// toolNarration is the thinking-stream line for one MCP tool step. It follows the
-// in-process engines' "[stage] sentence" shape (see runtime.ThinkKindStage) so the think
-// panel reads the same across modes — and, unlike a step event, it shows in the UI today:
-// the panel renders the thinking text, not the structured think_event.
+// narrationChunk frames one narrated tool line for the thinking stream: exactly one
+// newline before it (only when the stream is mid-line — a fresh block already starts on a
+// line boundary) and exactly one after, so the line never runs into the reasoning text
+// around it.
+func narrationChunk(tail byte, line string) string {
+	if tail != 0 && tail != '\n' {
+		return "\n" + line + "\n"
+	}
+	return line + "\n"
+}
+
+// toolNarration is the thinking-stream line for one MCP tool step: the call with its
+// arguments, then the outcome. emitTool frames it with exactly one newline on each side.
 func toolNarration(rt codexagent.RoundTrip) string {
 	if rt.Tool == "" {
 		return ""
 	}
 	switch rt.Status {
 	case codexagent.ToolStatusCompleted:
-		return fmt.Sprintf("[MCP] %s returned in %dms", rt.Tool, rt.DurationMS)
+		return fmt.Sprintf("%s returned in %dms", rt.Tool, rt.DurationMS)
 	case codexagent.ToolStatusFailed:
-		return fmt.Sprintf("[MCP] %s failed in %dms", rt.Tool, rt.DurationMS)
+		return fmt.Sprintf("%s failed in %dms", rt.Tool, rt.DurationMS)
 	default:
 		if rt.Args == "" {
-			return fmt.Sprintf("[MCP] %s", rt.Tool)
+			return rt.Tool
 		}
-		return fmt.Sprintf("[MCP] %s %s", rt.Tool, rt.Args)
+		return rt.Tool + " " + rt.Args
 	}
 }
 
