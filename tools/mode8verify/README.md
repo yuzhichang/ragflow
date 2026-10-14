@@ -10,13 +10,16 @@ Codex app-server's own rollouts under `$CODEX_HOME/sessions`.
 | probe | capability | pass signal |
 |-------|------------|-------------|
 | `mcp` | knowledge-base retrieval over the MCP bridge | a thread called `search_bm25_chunks` / `search_semantic_chunks` / `grep_chunks` / `list_chunks` |
-| `code` | generating and **executing Python** | a thread ran a Python command (`python3 -c …` / heredoc) **and** the answer carries the exact computed value |
+| `code` | generating Python, importing a **stdlib package**, and executing it | the run imports `datetime`, parses two fixed day-precision dates, and the answer carries the exact integer year difference (`28`) and day count (`10328`) |
 | `agent` | sub-agent delegation (`features.multi_agent_v2`) | a spawned child received a **readable** task and **itself** ran a retrieval tool |
 
 The `code` probe checks *what* was executed, not merely that the shell was used: the captured
-command line must invoke Python, so a run that answers from a non-code route (or shells out to
-something else) fails instead of passing on the shell counter alone. mode 8's sandbox is
-read-only, so "generate and run a script" means `python3 -c …` or `python3 - <<'PY' … PY`.
+command line must invoke Python **and** import a standard-library module (`datetime`), so a run
+that answers from a non-code route, shells out to something else, or cannot import a stdlib
+package fails instead of passing on the shell counter alone. The date pair is fixed
+(`1998-07-05` → `2026-10-14`) so the expected `28` years / `10328` days are deterministic — the
+floor-days/365 and calendar-year readings agree. mode 8's sandbox is read-only, so "generate and
+run a script" means `python3 -c …` or `python3 - <<'PY' … PY` rather than writing a `.py` file.
 
 The `agent` probe is the important one. A delegated task can look fine in the rollout yet never
 reach the child model — the child then reports "no task" and idles while the parent waits out

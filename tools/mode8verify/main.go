@@ -7,7 +7,8 @@
 //
 //	MCP    knowledge-base retrieval tools (search_bm25_chunks / search_semantic_chunks /
 //	       grep_chunks / list_chunks) reached the agent_rag tools through the MCP bridge
-//	code   the model generated Python and ran it, yielding an exact computed value
+//	code   the model generated Python that imports a stdlib package (datetime) and ran it,
+//	       deriving exact values from two day-precision dates
 //	agent  a spawned sub-agent received its delegated task and did work of its own
 //
 // The agent probe is the one that catches the third-party-provider failure mode: when the
@@ -618,20 +619,32 @@ func cmdVerify(args []string) error {
 		},
 		{
 			name: "code",
-			question: "请生成一段 Python 脚本精确计算 2 的 100 次方减 1，并用代码执行工具运行这段脚本，" +
-				"在回答中给出完整的十进制结果。",
+			question: "请生成一段 Python 脚本：用内置 datetime 模块把两个精确到天的日期字符串解析为日期——" +
+				"\"1998-07-05\" 与 \"2026-10-14\"——计算两者相差的整数年数与总天数，然后用代码执行工具运行这段脚本，" +
+				"在回答中给出整数年数和总天数。",
 			check: func(threads []*thread, answer string) error {
-				const want = "1267650600228229401496703205375"
+				// The date pair is fixed so the numbers are deterministic; the floor-days/365
+				// and calendar-year readings both give 28, so either implementation passes.
+				const wantDays, wantYears = "10328", "28"
 				for _, t := range threads {
 					cmd, ok := t.pythonExecution()
 					if !ok {
 						continue
 					}
-					if !strings.Contains(answer, want) {
-						return fmt.Errorf("Python ran (%s) but the answer lacks the exact value %s", truncate(cmd, 80), want)
+					// The point of this probe is that the model imports a Python
+					// STANDARD-LIBRARY package and does real work with it, not that it can
+					// do arithmetic.
+					if !strings.Contains(cmd, "import") || !strings.Contains(cmd, "datetime") {
+						return fmt.Errorf("Python ran but without a stdlib import (datetime): %s", truncate(cmd, 90))
 					}
-					return fmt.Errorf("ok: %s ran generated Python (%s) and the answer carries the exact value",
-						t.ID, truncate(cmd, 80))
+					if !strings.Contains(answer, wantDays) {
+						return fmt.Errorf("Python ran (%s) but the answer lacks the total days %s", truncate(cmd, 90), wantDays)
+					}
+					if !strings.Contains(answer, wantYears) {
+						return fmt.Errorf("the answer lacks the integer year difference %s", wantYears)
+					}
+					return fmt.Errorf("ok: %s imported datetime and ran (%s); the answer carries %s days / %s years",
+						t.ID, truncate(cmd, 70), wantDays, wantYears)
 				}
 				// Distinguish "the shell was never used" from "it ran something that is not
 				// Python": the probe is about executing GENERATED code, not any command.
