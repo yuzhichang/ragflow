@@ -123,6 +123,9 @@ func TestMcpToolRoundTrip(t *testing.T) {
 	if got.Tool != "search_bm25_chunks" || got.Status != ToolStatusCompleted || got.DurationMS != 340 {
 		t.Fatalf("round trip = %+v", got)
 	}
+	if got.Kind != RoundTripKindMCP {
+		t.Fatalf("kind = %q, want %q", got.Kind, RoundTripKindMCP)
+	}
 	if got.Args != `{"queries":["曹操 生卒年","孙权 生卒年"]}` {
 		t.Fatalf("args must be compact JSON: %q", got.Args)
 	}
@@ -134,6 +137,62 @@ func TestMcpToolRoundTrip(t *testing.T) {
 	// An item with no tool name is not a tool call.
 	if _, ok := mcpToolRoundTrip(item(map[string]any{"server": "ragflow"})); ok {
 		t.Fatal("an item without a tool name must not parse as a tool call")
+	}
+}
+
+// commandRoundTrip reads a local shell execution — the channel mode 8 now permits for
+// arithmetic — so the thinking stream can show the model computing rather than only
+// asserting a number. Its status maps the command enum AND the exit code: a server
+// "completed" with a non-zero exit is still a failure.
+func TestCommandRoundTrip(t *testing.T) {
+	item := func(payload map[string]any) codexgo.Item {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return codexgo.Item{ID: "x1", Kind: codexgo.ItemKindCommandExecution, Payload: raw}
+	}
+
+	got, ok := commandRoundTrip(item(map[string]any{
+		"command":    "python3 -c 'print(1234*5678)'",
+		"status":     "completed",
+		"exitCode":   0,
+		"durationMs": 42,
+	}))
+	if !ok {
+		t.Fatal("a well-formed commandExecution must parse")
+	}
+	if got.Tool != commandToolName || got.Kind != RoundTripKindCommand || got.Status != ToolStatusCompleted || got.DurationMS != 42 {
+		t.Fatalf("round trip = %+v", got)
+	}
+	if got.ExitCode == nil || *got.ExitCode != 0 {
+		t.Fatalf("exit code = %v, want 0", got.ExitCode)
+	}
+
+	// A non-zero exit is a failure even when the server reports "completed".
+	failed, ok := commandRoundTrip(item(map[string]any{"command": "python3 -c 'boom'", "status": "completed", "exitCode": 1}))
+	if !ok || failed.Status != ToolStatusFailed || failed.ExitCode == nil || *failed.ExitCode != 1 {
+		t.Fatalf("non-zero exit must read as failed: %+v ok=%v", failed, ok)
+	}
+	// The sandbox refusing a command (a write outside the profile, or the network) is a
+	// failure, not a silent no-op.
+	if declined, ok := commandRoundTrip(item(map[string]any{"command": "curl https://example.com", "status": "declined"})); !ok || declined.Status != ToolStatusFailed {
+		t.Fatalf("declined must read as failed: %+v ok=%v", declined, ok)
+	}
+	// The item/started half carries no exit code and reads as running.
+	if running, ok := commandRoundTrip(item(map[string]any{"command": "node -e '1+1'", "status": "inProgress"})); !ok || running.Status != ToolStatusRunning || running.ExitCode != nil {
+		t.Fatalf("in-progress must read as running: %+v ok=%v", running, ok)
+	}
+	// A command line is required; an item without one is not an execution.
+	if _, ok := commandRoundTrip(item(map[string]any{"status": "completed"})); ok {
+		t.Fatal("an item without a command must not parse as an execution")
+	}
+
+	// The command line is collapsed to one line and bounded, like tool arguments.
+	long, ok := commandRoundTrip(item(map[string]any{"command": "python3 -c \"\n" + strings.Repeat("x", 400) + "\n\"", "status": "inProgress"}))
+	if !ok || strings.Contains(long.Args, "\n") || len(long.Args) > 303 {
+		t.Fatalf("args must be one bounded line: len=%d", len(long.Args))
 	}
 }
 

@@ -143,3 +143,43 @@ func TestToolNarrationHasNoPrefix(t *testing.T) {
 		}
 	}
 }
+
+// commandNarration renders a local shell execution distinctly from a tool call: the command
+// line plus its exit status, so a user watching the panel sees the model compute rather than
+// only assert a number.
+func TestCommandNarration(t *testing.T) {
+	exit0, exit1 := 0, 1
+	cases := []struct {
+		name string
+		rt   codexagent.RoundTrip
+		want string
+	}{
+		{
+			name: "completed",
+			rt:   codexagent.RoundTrip{Tool: "shell", Kind: codexagent.RoundTripKindCommand, Args: "python3 -c 'print(1)'", Status: codexagent.ToolStatusCompleted, DurationMS: 42, ExitCode: &exit0},
+			want: "shell: python3 -c 'print(1)' (exit 0, 42ms)",
+		},
+		{
+			name: "non-zero exit",
+			rt:   codexagent.RoundTrip{Tool: "shell", Kind: codexagent.RoundTripKindCommand, Args: "node -e boom", Status: codexagent.ToolStatusFailed, DurationMS: 7, ExitCode: &exit1},
+			want: "shell: node -e boom (exit 1, 7ms)",
+		},
+		{
+			name: "declined without an exit code still reads as failed",
+			rt:   codexagent.RoundTrip{Tool: "shell", Kind: codexagent.RoundTripKindCommand, Args: "curl x", Status: codexagent.ToolStatusFailed, DurationMS: 3},
+			want: "shell: curl x (failed, 3ms)",
+		},
+		{
+			name: "running shows the command alone",
+			rt:   codexagent.RoundTrip{Tool: "shell", Kind: codexagent.RoundTripKindCommand, Args: "python3 -c '1+1'", Status: codexagent.ToolStatusRunning},
+			want: "shell: python3 -c '1+1'",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commandNarration(tc.rt); got != tc.want {
+				t.Fatalf("commandNarration(%+v) = %q, want %q", tc.rt, got, tc.want)
+			}
+		})
+	}
+}

@@ -391,7 +391,13 @@ func (s *ChatPipelineService) codexAgent(
 		// into their thinking text for the same reason; the structured ThinkEvent travels
 		// alongside for a client that renders steps rather than paragraphs.
 		emitTool := func(rt codexagent.RoundTrip) {
-			line := toolNarration(rt)
+			// A local shell execution is narrated like a tool step, but under its own
+			// stage and with exit-status wording: a command's outcome is a process exit,
+			// not a tool result.
+			stage, line := "MCP", toolNarration(rt)
+			if rt.Kind == codexagent.RoundTripKindCommand {
+				stage, line = "shell", commandNarration(rt)
+			}
 			if line == "" {
 				return
 			}
@@ -405,7 +411,7 @@ func (s *ChatPipelineService) codexAgent(
 				Reasoning: narrationChunk(reasoningTail, line),
 				ThinkEvent: &ThinkEvent{
 					Kind:       toolThinkKind(rt.Status),
-					Stage:      "MCP",
+					Stage:      stage,
 					Tool:       rt.Tool,
 					Args:       rt.Args,
 					Status:     rt.Status,
@@ -629,6 +635,26 @@ func toolNarration(rt codexagent.RoundTrip) string {
 			return rt.Tool
 		}
 		return rt.Tool + " " + rt.Args
+	}
+}
+
+// commandNarration renders one local shell execution for the thinking stream: the command
+// line, then its exit status and duration. It mirrors toolNarration, whose "returned in"
+// wording is about a tool result rather than a process exit.
+func commandNarration(rt codexagent.RoundTrip) string {
+	if rt.Args == "" {
+		return rt.Tool
+	}
+	switch rt.Status {
+	case codexagent.ToolStatusCompleted:
+		return fmt.Sprintf("%s: %s (exit 0, %dms)", rt.Tool, rt.Args, rt.DurationMS)
+	case codexagent.ToolStatusFailed:
+		if rt.ExitCode != nil {
+			return fmt.Sprintf("%s: %s (exit %d, %dms)", rt.Tool, rt.Args, *rt.ExitCode, rt.DurationMS)
+		}
+		return fmt.Sprintf("%s: %s (failed, %dms)", rt.Tool, rt.Args, rt.DurationMS)
+	default:
+		return fmt.Sprintf("%s: %s", rt.Tool, rt.Args)
 	}
 }
 

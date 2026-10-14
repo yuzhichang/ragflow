@@ -136,19 +136,39 @@ type TurnBinder interface {
 	Unbind(ctx context.Context, handle string)
 }
 
-// RoundTrip is one observed MCP tool call: the call itself (with its arguments) and its
+// RoundTrip is one observed tool call: the call itself (with its arguments) and its
 // outcome. Mode 8 has no client-side tool loop to report from, so these are read off the
 // thread items the Codex server emits; the caller narrates them into the thinking stream.
 type RoundTrip struct {
-	// Tool is the MCP tool name as the model called it (e.g. "search_bm25_chunks").
+	// Tool is the MCP tool name as the model called it (e.g. "search_bm25_chunks"), or
+	// "shell" for a local command execution.
 	Tool string
-	// Args is the call's arguments, compacted for display (may be truncated).
+	// Kind separates the two item kinds this carries: RoundTripKindMCP for an MCP tool
+	// call, RoundTripKindCommand for a `commandExecution` (the local shell mode 8 now
+	// permits for computation). The caller renders the two differently.
+	Kind string
+	// Args is the call's arguments, compacted for display (may be truncated); for a
+	// command it is the command line.
 	Args string
-	// Status is "running", "completed" or "failed" — the v2 McpToolCallStatus.
+	// Status is "running", "completed" or "failed".
 	Status string
 	// DurationMS is the server-reported call duration (0 while running / unknown).
 	DurationMS int64
+	// ExitCode is a command execution's process exit status; nil for an MCP tool call,
+	// whose outcome is the tool result rather than a process exit.
+	ExitCode *int
 }
+
+const (
+	// RoundTripKindMCP is an MCP tool call (the retrieval path).
+	RoundTripKindMCP = "mcp"
+	// RoundTripKindCommand is a local shell command execution.
+	RoundTripKindCommand = "command"
+	// commandToolName is the display name for a command execution in the thinking
+	// stream and in tool_call_counts (a distinct key, so a shell call never inflates the
+	// benchmark's retrieval "Search Calls", which sums only the configured search tools).
+	commandToolName = "shell"
+)
 
 // RoundTrip statuses (the v2 McpToolCallStatus values).
 const (
@@ -780,6 +800,17 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 						}
 					}
 				}
+				if e.Item != nil && e.Item.Kind == codexgo.ItemKindCommandExecution {
+					// The call half of a local shell execution: command line only (no
+					// exit code yet). Narrated so a user sees the model computing.
+					if rt, ok := commandRoundTrip(*e.Item); ok {
+						toolCallsSeen[e.Item.ID] = true
+						tally.call(rt.Tool)
+						if req.OnTool != nil {
+							req.OnTool(rt)
+						}
+					}
+				}
 				if e.Item != nil && e.Item.Kind == codexgo.ItemKindContextCompaction {
 					noteCompaction()
 				}
@@ -816,6 +847,30 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 							}
 							tally.outcome(rt)
 							retrieval.add(retrievalaccount.AccountToolOutput(rt.Tool, mcpToolOutput(*e.Item)))
+							if req.OnTool != nil {
+								req.OnTool(rt)
+							}
+						}
+					}
+					// The outcome half of a local shell execution. No retrieval
+					// accounting: a command touches no corpus document, so it must not
+					// enter retrieved/served sets.
+					if e.Item.Kind == codexgo.ItemKindCommandExecution {
+						if rt, ok := commandRoundTrip(*e.Item); ok {
+							if !toolCallsSeen[e.Item.ID] {
+								// No item/started was delivered: report the call here so
+								// the caller still sees the command that ran.
+								toolCallsSeen[e.Item.ID] = true
+								call := rt
+								call.Status = ToolStatusRunning
+								call.DurationMS = 0
+								call.ExitCode = nil
+								tally.call(rt.Tool)
+								if req.OnTool != nil {
+									req.OnTool(call)
+								}
+							}
+							tally.outcome(rt)
 							if req.OnTool != nil {
 								req.OnTool(rt)
 							}
@@ -942,10 +997,62 @@ func mcpToolRoundTrip(item codexgo.Item) (RoundTrip, bool) {
 	}
 	return RoundTrip{
 		Tool:       payload.Tool,
+		Kind:       RoundTripKindMCP,
 		Args:       compactArgs(payload.Arguments),
 		Status:     status,
 		DurationMS: payload.DurationMS,
 	}, true
+}
+
+// commandRoundTrip reads a v2 `commandExecution` item — {command, status, exitCode,
+// durationMs, aggregatedOutput} — into a RoundTrip for the thinking stream. It is the local
+// shell mode 8 now permits (approval `never`; the read-only, network-isolated sandbox is the
+// boundary), used for arithmetic the model would otherwise have to do in its head.
+//
+// A command has no MCP tool name, so Tool is the fixed "shell" (a distinct key in
+// tool_call_counts that never inflates the retrieval "Search Calls"). Status maps the
+// command enum: a non-zero exit is a failure even when the server says "completed".
+func commandRoundTrip(item codexgo.Item) (RoundTrip, bool) {
+	var payload struct {
+		Command    string `json:"command"`
+		Status     string `json:"status"`
+		ExitCode   *int   `json:"exitCode"`
+		DurationMS int64  `json:"durationMs"`
+	}
+	if err := item.Decode(&payload); err != nil || strings.TrimSpace(payload.Command) == "" {
+		return RoundTrip{}, false
+	}
+	status := payload.Status
+	switch status {
+	case "", "inProgress":
+		status = ToolStatusRunning
+	case "declined":
+		// The sandbox refused it (a write outside the read-only profile, or the network).
+		status = ToolStatusFailed
+	case "completed":
+		if payload.ExitCode != nil && *payload.ExitCode != 0 {
+			status = ToolStatusFailed
+		}
+	}
+	return RoundTrip{
+		Tool:       commandToolName,
+		Kind:       RoundTripKindCommand,
+		Args:       compactString(payload.Command),
+		Status:     status,
+		DurationMS: payload.DurationMS,
+		ExitCode:   payload.ExitCode,
+	}, true
+}
+
+// compactString renders a command line on one line and caps its length, the same display
+// treatment compactArgs gives tool arguments.
+func compactString(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const cap = 300
+	if len(s) > cap {
+		return s[:cap-3] + "..."
+	}
+	return s
 }
 
 // mcpToolOutput returns the text of an MCP tool call's result — what the bridge returned
