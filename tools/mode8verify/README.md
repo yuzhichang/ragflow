@@ -10,8 +10,13 @@ Codex app-server's own rollouts under `$CODEX_HOME/sessions`.
 | probe | capability | pass signal |
 |-------|------------|-------------|
 | `mcp` | knowledge-base retrieval over the MCP bridge | a thread called `search_bm25_chunks` / `search_semantic_chunks` / `grep_chunks` / `list_chunks` |
-| `code` | the local shell as a computation channel | a thread ran `exec_command` **and** the answer carries the exact computed value |
+| `code` | generating and **executing Python** | a thread ran a Python command (`python3 -c …` / heredoc) **and** the answer carries the exact computed value |
 | `agent` | sub-agent delegation (`features.multi_agent_v2`) | a spawned child received a **readable** task and **itself** ran a retrieval tool |
+
+The `code` probe checks *what* was executed, not merely that the shell was used: the captured
+command line must invoke Python, so a run that answers from a non-code route (or shells out to
+something else) fails instead of passing on the shell counter alone. mode 8's sandbox is
+read-only, so "generate and run a script" means `python3 -c …` or `python3 - <<'PY' … PY`.
 
 The `agent` probe is the important one. A delegated task can look fine in the rollout yet never
 reach the child model — the child then reports "no task" and idles while the parent waits out

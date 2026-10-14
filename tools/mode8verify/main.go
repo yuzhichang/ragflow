@@ -7,7 +7,7 @@
 //
 //	MCP    knowledge-base retrieval tools (search_bm25_chunks / search_semantic_chunks /
 //	       grep_chunks / list_chunks) reached the agent_rag tools through the MCP bridge
-//	code   a local shell execution produced an exact computed value
+//	code   the model generated Python and ran it, yielding an exact computed value
 //	agent  a spawned sub-agent received its delegated task and did work of its own
 //
 // The agent probe is the one that catches the third-party-provider failure mode: when the
@@ -218,6 +218,10 @@ type thread struct {
 	Sub       bool
 	Model     string
 	Tools     map[string]int
+	// ShellCmds are the command lines this thread actually executed locally, so a probe
+	// can check WHAT ran (e.g. that the model generated and ran Python), not merely that
+	// the shell was used.
+	ShellCmds []string
 	// Delivery of a delegated task, which is how the sub-agent probe distinguishes a real
 	// handoff from the third-party-provider failure mode:
 	//   TaskAsUser        a standard `message`/`user` item — the provider-neutral path
@@ -247,15 +251,58 @@ func (t *thread) shellCalls() (string, bool) {
 	return t.callsAny([]string{"exec_command", "shell", "CommandExecution"})
 }
 
-func (t *thread) agentCalls() int {
-	n := 0
-	for tool, count := range t.Tools {
-		switch tool {
-		case "spawn_agent", "wait_agent", "list_agents", "followup_task", "send_message":
-			n += count
+// pythonExecution returns the first locally-executed command that invokes Python. mode 8 runs
+// with a read-only sandbox, so "generate and run a script" means `python3 -c …` or a heredoc
+// (`python3 - <<'PY' … PY`) rather than writing a .py file.
+func (t *thread) pythonExecution() (string, bool) {
+	for _, cmd := range t.ShellCmds {
+		if containsPythonInvocation(cmd) {
+			return cmd, true
 		}
 	}
-	return n
+	return "", false
+}
+
+func containsPythonInvocation(cmd string) bool {
+	for _, token := range []string{"python3", "python", "py -3"} {
+		if strings.Contains(cmd, token) {
+			return true
+		}
+	}
+	return false
+}
+
+// commandFromExecArgs pulls the command line out of an exec_command / shell call's arguments.
+// Codex passes it as `cmd`; a list of argv tokens is joined back for display.
+func commandFromExecArgs(tool, args string) (string, bool) {
+	switch tool {
+	case "exec_command", "shell":
+	default:
+		return "", false
+	}
+	var parsed struct {
+		Cmd     json.RawMessage `json:"cmd"`
+		Command json.RawMessage `json:"command"`
+	}
+	if json.Unmarshal([]byte(args), &parsed) != nil {
+		return "", false
+	}
+	raw := parsed.Cmd
+	if len(raw) == 0 {
+		raw = parsed.Command
+	}
+	if len(raw) == 0 {
+		return "", false
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil && asString != "" {
+		return asString, true
+	}
+	var asList []string
+	if json.Unmarshal(raw, &asList) == nil && len(asList) > 0 {
+		return strings.Join(asList, " "), true
+	}
+	return "", false
 }
 
 func loadThreads(codexHome string, limit int) ([]*thread, error) {
@@ -371,10 +418,11 @@ func (t *thread) parseSource(raw json.RawMessage) {
 
 func (t *thread) parseResponseItem(raw json.RawMessage) {
 	var item struct {
-		Type    string `json:"type"`
-		Name    string `json:"name"`
-		Role    string `json:"role"`
-		Content []struct {
+		Type      string `json:"type"`
+		Name      string `json:"name"`
+		Role      string `json:"role"`
+		Arguments string `json:"arguments"`
+		Content   []struct {
 			Type             string `json:"type"`
 			Text             string `json:"text"`
 			EncryptedContent string `json:"encrypted_content"`
@@ -387,6 +435,9 @@ func (t *thread) parseResponseItem(raw json.RawMessage) {
 	case "function_call":
 		if item.Name != "" {
 			t.Tools[item.Name]++
+		}
+		if command, ok := commandFromExecArgs(item.Name, item.Arguments); ok {
+			t.ShellCmds = append(t.ShellCmds, command)
 		}
 	case "message":
 		for _, c := range item.Content {
@@ -444,6 +495,9 @@ func (t *thread) describe() string {
 	}
 	sort.Strings(tools)
 	line := fmt.Sprintf("  [%s] %s model=%s tools={%s}", kind, label, t.Model, strings.Join(tools, ", "))
+	if cmd, ok := t.pythonExecution(); ok {
+		line += fmt.Sprintf(" python=%q", truncate(cmd, 70))
+	}
 	if t.Sub {
 		delivery := "none recorded"
 		switch {
@@ -563,19 +617,30 @@ func cmdVerify(args []string) error {
 			},
 		},
 		{
-			name:     "code",
-			question: "请用代码执行工具精确计算 2 的 100 次方减 1，并在回答中给出完整的十进制结果。",
+			name: "code",
+			question: "请生成一段 Python 脚本精确计算 2 的 100 次方减 1，并用代码执行工具运行这段脚本，" +
+				"在回答中给出完整的十进制结果。",
 			check: func(threads []*thread, answer string) error {
 				const want = "1267650600228229401496703205375"
 				for _, t := range threads {
-					if _, ok := t.shellCalls(); ok {
-						if !strings.Contains(answer, want) {
-							return fmt.Errorf("shell ran but the answer lacks the exact value %s", want)
-						}
-						return fmt.Errorf("ok: shell executed in %s and the answer carries the exact value", t.ID)
+					cmd, ok := t.pythonExecution()
+					if !ok {
+						continue
+					}
+					if !strings.Contains(answer, want) {
+						return fmt.Errorf("Python ran (%s) but the answer lacks the exact value %s", truncate(cmd, 80), want)
+					}
+					return fmt.Errorf("ok: %s ran generated Python (%s) and the answer carries the exact value",
+						t.ID, truncate(cmd, 80))
+				}
+				// Distinguish "the shell was never used" from "it ran something that is not
+				// Python": the probe is about executing GENERATED code, not any command.
+				for _, t := range threads {
+					if len(t.ShellCmds) > 0 {
+						return fmt.Errorf("shell ran but no Python execution: %s", truncate(t.ShellCmds[0], 80))
 					}
 				}
-				return errors.New("no local shell execution in any new thread")
+				return errors.New("no local code execution in any new thread")
 			},
 		},
 		{
