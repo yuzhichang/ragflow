@@ -291,4 +291,4 @@ replace github.com/AkmalOt/gomsg => github.com/infiniflow/gomsg v0.0.0-202604070
 // libonnxruntime.so is required. The module path matches the import path, so no
 // replace directive is needed.
 
-replace github.com/zealbase/codex-app-server-go => github.com/yuzhichang/codex-app-server-go v0.0.0-20261014022905-f1781588d8b1
+replace github.com/zealbase/codex-app-server-go => github.com/yuzhichang/codex-app-server-go v0.0.0-20261014094337-2555d224bea1

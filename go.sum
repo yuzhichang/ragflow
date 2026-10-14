@@ -678,6 +678,8 @@ github.com/yuzhichang/codex-app-server-go v0.0.0-20261013104523-e51352d789f2 h1:
 github.com/yuzhichang/codex-app-server-go v0.0.0-20261013104523-e51352d789f2/go.mod h1:vxBYPDSBgF4Sn6Jeeh56oBNGIvpSg+WGkYwQGgG4K7Y=
 github.com/yuzhichang/codex-app-server-go v0.0.0-20261014022905-f1781588d8b1 h1:phrRZQq9FR6FilstWe5patmE6d+oS5bMrZ/Jc0oBSc8=
 github.com/yuzhichang/codex-app-server-go v0.0.0-20261014022905-f1781588d8b1/go.mod h1:vxBYPDSBgF4Sn6Jeeh56oBNGIvpSg+WGkYwQGgG4K7Y=
+github.com/yuzhichang/codex-app-server-go v0.0.0-20261014094337-2555d224bea1 h1:2kAnPPS93oQjL8K5+y4LF/5b8R5IewXUQGo6sh8URP8=
+github.com/yuzhichang/codex-app-server-go v0.0.0-20261014094337-2555d224bea1/go.mod h1:vxBYPDSBgF4Sn6Jeeh56oBNGIvpSg+WGkYwQGgG4K7Y=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
 github.com/zeebo/assert v1.3.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN/wJ0=
 github.com/zeebo/xxh3 v1.0.2 h1:xZmwmqxHZA8AI603jOQ0tMqmBr9lPeFwGg6d+xy9DC0=

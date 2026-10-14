@@ -222,6 +222,23 @@ func InstallCodexWebSearchResolver() {
 	})
 }
 
+// codexProviderAllowed reports whether a provider speaks the Responses wire API Codex
+// requires, i.e. it is inside the configured allowlist. An unset or empty allowlist means
+// "no restriction" (see the plan, decision U2).
+func codexProviderAllowed(providerName string) bool {
+	cfg := getCodexConfig()
+	if cfg == nil || len(cfg.ResponsesProviders) == 0 {
+		return true
+	}
+	name := strings.ToLower(providerName)
+	for _, p := range cfg.ResponsesProviders {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 // codexResponsesCapable reports whether the dialog's model provider speaks the
 // Responses wire API Codex requires. A provider outside the configured allowlist makes
 // mode 8 fall back to the regular pipeline (see the plan, decision U2).
@@ -234,15 +251,7 @@ func (s *ChatPipelineService) codexResponsesCapable(ctx context.Context, userID 
 	if err != nil || target == nil {
 		return false
 	}
-	name := strings.ToLower(target.Driver.Name())
-	allowed := false
-	for _, p := range cfg.ResponsesProviders {
-		if p == name {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	if !codexProviderAllowed(target.Driver.Name()) {
 		return false
 	}
 	// The thread declares the instance's base_url as the provider endpoint; if it is
@@ -277,6 +286,131 @@ func (s *ChatPipelineService) resolveCodexModelTarget(ctx context.Context, userI
 	// Codex appends "/responses" to this base; normalize the version segment first.
 	target.BaseURL = normalizeResponsesBaseURL(target.BaseURL)
 	return target, nil
+}
+
+// codexTurnTarget is one provider a mode-8 turn may run on: the dialog's own model, or a member
+// of the dialog's failover roster.
+type codexTurnTarget struct {
+	Target *ResolvedModelTarget
+	// ContextWindow and MaxOutput are resolved with THIS candidate's llm id, so a failover
+	// thread tells Codex the right window instead of the primary's.
+	ContextWindow int
+	MaxOutput     int
+}
+
+// codexTurnTargets returns the ordered providers a mode-8 turn may use: the dialog's own model
+// first, then the members of the dialog's `llm_setting.failover_llm_ids` — the same roster the
+// in-process eino engines fail over with (agenticModelChain). The roster is best-effort: a
+// member that cannot be resolved, cannot carry a Responses turn, or duplicates an earlier
+// candidate is skipped with a warning rather than failing the turn.
+func (s *ChatPipelineService) codexTurnTargets(ctx context.Context, userID string, chat *entity.Chat, primary *ResolvedModelTarget) []codexTurnTarget {
+	targets := []codexTurnTarget{s.codexTurnTargetFor(ctx, chat.TenantID, chat.LLMID, primary)}
+	seen := map[string]bool{}
+	if primary != nil {
+		seen[candidateKey(primary)] = true
+	}
+	access := ModelAccess{UserID: userID, TenantID: chat.TenantID}
+	for _, llmID := range agenticFailoverModelIDs(chat) {
+		if llmID == "" || llmID == chat.LLMID {
+			continue
+		}
+		target, err := s.ModelFactory.ResolveChatTarget(ctx, access, llmID)
+		if err != nil || target == nil {
+			common.WarnCtx(ctx, "codex: cannot resolve a failover model; skipping it",
+				zap.String("chat_id", chat.ID), zap.String("llm_id", llmID), zap.Error(err))
+			continue
+		}
+		target.BaseURL = normalizeResponsesBaseURL(target.BaseURL)
+		if reason, ok := codexCandidateUsable(target); !ok {
+			common.WarnCtx(ctx, "codex: failover model cannot carry a Responses turn; skipping it",
+				zap.String("chat_id", chat.ID), zap.String("llm_id", llmID), zap.String("reason", reason))
+			continue
+		}
+		if key := candidateKey(target); seen[key] {
+			continue
+		} else {
+			seen[key] = true
+		}
+		targets = append(targets, s.codexTurnTargetFor(ctx, chat.TenantID, llmID, target))
+	}
+	if len(targets) > 1 {
+		common.InfoCtx(ctx, "codex: failover chain built",
+			zap.String("chat_id", chat.ID), zap.Int("candidates", len(targets)))
+	}
+	return targets
+}
+
+// codexTurnTargetFor pairs a resolved target with the context window and output cap its model
+// declares in the provider catalog. Zero means "unknown, leave Codex's own value".
+func (s *ChatPipelineService) codexTurnTargetFor(ctx context.Context, tenantID, llmID string, target *ResolvedModelTarget) codexTurnTarget {
+	t := codexTurnTarget{Target: target}
+	if target == nil {
+		return t
+	}
+	t.ContextWindow = dao.ResolveModelContentLength(ctx, nil, tenantID, llmID, target.Driver.Name(), target.ModelName)
+	t.MaxOutput = dao.ResolveModelMaxOutput(ctx, nil, tenantID, llmID, target.Driver.Name(), target.ModelName)
+	return t
+}
+
+// candidateKey identifies a candidate for dedup: the endpoint plus the model it serves.
+func candidateKey(target *ResolvedModelTarget) string {
+	return target.BaseURL + "\x00" + target.ModelName
+}
+
+// codexCandidateUsable reports whether a failover member can carry a mode-8 turn: its provider
+// must be inside the Responses allowlist, and its instance must declare a base_url — the thread
+// declares exactly that URL as its endpoint, so an empty one gives Codex no endpoint at all.
+func codexCandidateUsable(target *ResolvedModelTarget) (string, bool) {
+	if target == nil {
+		return "the model target could not be resolved", false
+	}
+	if !codexProviderAllowed(target.Driver.Name()) {
+		return fmt.Sprintf("provider %q is outside codex.responses_providers", target.Driver.Name()), false
+	}
+	if strings.TrimSpace(target.BaseURL) == "" {
+		return "the model instance does not declare a base_url", false
+	}
+	return "", true
+}
+
+// codexFailoverEligible reports whether a failed turn should be retried on the next provider,
+// returning the typed failure for the log and the thinking stream. It refuses the cases where a
+// retry is wrong rather than merely unhelpful:
+//
+//   - the per-session binding is held: that is a lock, not a provider failure, and retrying
+//     would race the turn that holds it;
+//   - the request context is done: the client is gone, so a retry has nobody to answer;
+//   - answer text already reached the client: a second attempt would append a second answer
+//     after the first, and the first is already the user's;
+//   - the failure is not typed as a provider one (see codexagent.TurnError, whose classification
+//     is deliberately conservative).
+func codexFailoverEligible(ctx context.Context, runErr error, emittedContent int) (*codexagent.TurnError, bool) {
+	if runErr == nil || ctx.Err() != nil || emittedContent > 0 {
+		return nil, false
+	}
+	if errors.Is(runErr, mcp.ErrCodexTurnBusy) {
+		return nil, false
+	}
+	turnErr, ok := codexagent.AsTurnError(runErr)
+	if !ok || !turnErr.RetryableProviderFailure() {
+		return nil, false
+	}
+	return turnErr, true
+}
+
+// failoverReason renders a typed turn failure for the thinking stream.
+func failoverReason(turnErr *codexagent.TurnError) string {
+	if turnErr == nil {
+		return "unknown error"
+	}
+	switch {
+	case turnErr.Kind != "" && turnErr.HTTPStatus != 0:
+		return fmt.Sprintf("%s (http %d)", turnErr.Kind, turnErr.HTTPStatus)
+	case turnErr.Kind != "":
+		return string(turnErr.Kind)
+	default:
+		return turnErr.Message
+	}
 }
 
 // codexAgent runs one mode 8 (Codex) turn: it brokers the session's Codex thread (via
@@ -317,14 +451,14 @@ func (s *ChatPipelineService) codexAgent(
 	}
 	datasetIDs := chatKBIDs(chat)
 
-	// The dialog model's real context window and output cap, from the provider catalog
-	// (conf/all_models.json). Codex resolves any model outside its own manifest to
-	// fallback metadata with no context window — and then neither knows the limit nor
-	// auto-compacts (context_window.rs), so a full-history rebuild could overflow the
-	// provider's real window and fail there. Handing Codex the true window lets it
-	// compact first; zero means "unknown, leave Codex's own value".
-	contextWindow := dao.ResolveModelContentLength(ctx, nil, chat.TenantID, chat.LLMID, target.Driver.Name(), target.ModelName)
-	maxOutput := dao.ResolveModelMaxOutput(ctx, nil, chat.TenantID, chat.LLMID, target.Driver.Name(), target.ModelName)
+	// The ordered providers this turn may run on: the dialog's own model first, then its
+	// failover roster. A provider failure advances to the next candidate (see
+	// codexFailoverEligible). Each candidate carries its model's real context window and output
+	// cap from the provider catalog (conf/all_models.json): Codex resolves any model outside its
+	// own manifest to fallback metadata with no context window — and then neither knows the
+	// limit nor auto-compacts (context_window.rs), so a full-history rebuild could overflow the
+	// provider's real window and fail there. Zero means "unknown, leave Codex's own value".
+	candidates := s.codexTurnTargets(ctx, userID, chat, target)
 
 	runner, err := getCodexRunner()
 	if err != nil {
@@ -449,21 +583,47 @@ func (s *ChatPipelineService) codexAgent(
 			}
 			reasoningTail = '\n'
 		}
+		// A provider failover is a model-level event, like a compaction: narrate it into the
+		// thinking stream (and the log) so a user watching the panel learns the turn restarted
+		// on another model rather than staring at a gap.
+		emitFailover := func(from, to *ResolvedModelTarget, turnErr *codexagent.TurnError) {
+			line := fmt.Sprintf("provider failover: %s failed (%s); retrying on %s",
+				from.ModelName, failoverReason(turnErr), to.ModelName)
+			common.WarnCtx(ctx, "codex: provider failover",
+				zap.String("chat_id", chat.ID),
+				zap.String("from_model", from.ModelName),
+				zap.String("from_provider", from.Driver.Name()),
+				zap.String("to_model", to.ModelName),
+				zap.String("kind", string(turnErr.Kind)),
+				zap.Int("http_status", turnErr.HTTPStatus),
+				zap.Error(turnErr))
+			if !thinking {
+				out <- AsyncChatResult{Final: false, StartToThink: true}
+				thinking = true
+				reasoningTail = 0
+			}
+			out <- AsyncChatResult{
+				Final:     false,
+				Reasoning: narrationChunk(reasoningTail, line),
+				ThinkEvent: &ThinkEvent{
+					Kind:    "provider_failover",
+					Stage:   "provider",
+					Summary: line,
+				},
+			}
+			reasoningTail = '\n'
+		}
 
-		req := codexagent.TurnRequest{
-			TenantID:   chat.TenantID,
-			SessionID:  sessionID,
-			DatasetIDs: datasetIDs,
-			WebSearch:  useWebSearch,
-			Model:      target.ModelName,
-			ProviderID: target.Driver.Name(),
-			// The dialog model's window / output cap and the fixed reasoning effort are
-			// baked into the thread config so Codex knows the real limit (see above).
-			ModelContextWindow: contextWindow,
-			ModelMaxOutput:     maxOutput,
-			ReasoningEffort:    cfg.ReasoningEffort,
-			MCPURL:             mcpURL,
-			Ticket:             handle,
+		// Everything that does not depend on which provider answers the turn. A provider cannot
+		// be changed on an existing Codex thread, so each attempt below is its own request.
+		base := codexagent.TurnRequest{
+			TenantID:        chat.TenantID,
+			SessionID:       sessionID,
+			DatasetIDs:      datasetIDs,
+			WebSearch:       useWebSearch,
+			ReasoningEffort: cfg.ReasoningEffort,
+			MCPURL:          mcpURL,
+			Ticket:          handle,
 			// The binding carries the conversation id and this turn's web-search
 			// decision; the bridge resolves the provider from them at request time,
 			// so the provider's credentials stay in the DB and never reach the
@@ -494,14 +654,38 @@ func (s *ChatPipelineService) codexAgent(
 				return alive
 			},
 		}
-		// The codex thread's per-thread provider declares exactly the instance's
-		// base_url. mode 8 requires the dialog's model instance to set a base_url that
-		// speaks the Responses API (Codex's wire_api); there is deliberately no fallback
-		// to the provider factory's default URL (see the plan, §13 / P2-13).
-		req.ProviderBaseURL = target.BaseURL
-		req.ProviderToken = target.APIKey
 
-		outcome, runErr := runner.RunTurn(ctx, req)
+		// Walk the candidates in order. The first attempt takes the normal thread-reuse path; a
+		// retry must be bound to ITS provider, so it rebuilds and leaves the stored mapping
+		// alone (ForceRebuild) — see codexFailoverEligible for when a retry is allowed at all.
+		//
+		// Each per-thread provider declares exactly the instance's base_url (normalized to the
+		// versioned Responses endpoint Codex appends "/responses" to); there is deliberately no
+		// fallback to the provider factory's default URL (see the plan, §13 / P2-13).
+		var (
+			outcome *codexagent.TurnOutcome
+			runErr  error
+		)
+		for i, candidate := range candidates {
+			req := base
+			req.Model = candidate.Target.ModelName
+			req.ProviderID = candidate.Target.Driver.Name()
+			req.ProviderBaseURL = candidate.Target.BaseURL
+			req.ProviderToken = candidate.Target.APIKey
+			req.ModelContextWindow = candidate.ContextWindow
+			req.ModelMaxOutput = candidate.MaxOutput
+			req.ForceRebuild = i > 0
+
+			outcome, runErr = runner.RunTurn(ctx, req)
+			if runErr == nil {
+				break
+			}
+			turnErr, eligible := codexFailoverEligible(ctx, runErr, contentDelta.Len())
+			if !eligible || i == len(candidates)-1 {
+				break
+			}
+			emitFailover(candidate.Target, candidates[i+1].Target, turnErr)
+		}
 		if runErr != nil {
 			if thinking {
 				out <- AsyncChatResult{Final: false, EndToThink: true}

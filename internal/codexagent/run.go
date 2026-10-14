@@ -127,6 +127,12 @@ type TurnRequest struct {
 	// dead handle (a restart lost it, or it expired between turns) is never resumed. nil
 	// means "assume alive".
 	HandleAlive func(token string) bool
+	// ForceRebuild makes this turn ignore any stored thread and never persist the one it
+	// builds. It is how a provider-failover retry gets a thread bound to the new provider:
+	// the stored thread carries the failed provider's base_url/token, and provider identity
+	// is deliberately NOT part of the reuse key, so the retry must neither resume nor
+	// overwrite that mapping. Empty is the normal path.
+	ForceRebuild bool
 }
 
 // TurnBinder installs and removes the per-turn authorization a turn's MCP handle needs.
@@ -496,9 +502,11 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// RAGFlow's truth AND the stored handle is still alive. thread/resume does not reload
 	// mcp_servers, so a scope change still rebuilds (see the plan, D3); a history change
 	// must replay (see P1#6); a dead handle means the thread's baked-in MCP URL would 401,
-	// so it MUST rebuild (see P1#4).
+	// so it MUST rebuild (see P1#4). ForceRebuild is a provider-failover retry: the stored
+	// thread is bound to the failed provider, and provider identity is deliberately NOT in
+	// the reuse key, so the retry must never resume it.
 	handleAlive := req.HandleAlive == nil || rec.Ticket == "" || req.HandleAlive(rec.Ticket)
-	if found && rec.ScopeFingerprint == scopeFP && rec.HistoryFingerprint == seenFP && handleAlive {
+	if shouldReuseThread(found, rec, scopeFP, seenFP, handleAlive, req.ForceRebuild) {
 		if th, err := r.client.ResumeThread(ctx, rec.ThreadID, r.threadOptions(req, workDir)...); err == nil {
 			defer th.Close()
 			out, err := r.consume(ctx, th, req, current)
@@ -540,7 +548,13 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// answer. The NEXT turn's already-seen history must equal this to reuse. Skip it if
 	// the session was deleted mid-turn (handle revoked) — otherwise this Put would
 	// resurrect the mapping the delete just removed.
-	if r.handleLive(req) {
+	//
+	// A ForceRebuild (provider-failover) attempt is also NOT persisted: its thread is bound
+	// to a different provider, and provider identity is deliberately not fingerprinted, so
+	// storing it would let a later primary turn match the record and silently resume a thread
+	// pointing at the backup endpoint. Leaving the mapping untouched keeps "primary first"
+	// semantics for the next turn.
+	if !req.ForceRebuild && r.handleLive(req) {
 		if err := r.store.Put(ctx, ThreadRecord{
 			TenantID:           req.TenantID,
 			SessionID:          req.SessionID,
@@ -562,6 +576,15 @@ func (r *Runner) handleLive(req TurnRequest) bool {
 		return true
 	}
 	return req.HandleAlive(req.Ticket)
+}
+
+// shouldReuseThread reports whether the stored record may be resumed for this turn: it must
+// exist, the thread's scope and already-seen history must still match RAGFlow's, its baked-in
+// MCP handle must be alive, and the turn must not be a provider-failover retry (forceRebuild),
+// whose stored thread points at the failed provider.
+func shouldReuseThread(found bool, rec ThreadRecord, scopeFP, seenFP string, handleAlive, forceRebuild bool) bool {
+	return found && !forceRebuild && rec.ScopeFingerprint == scopeFP &&
+		rec.HistoryFingerprint == seenFP && handleAlive
 }
 
 // appendAssistant returns msgs with an assistant message carrying content appended.
@@ -1094,10 +1117,13 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 					continue
 				}
 				// The detail is NESTED under `error` (TurnError); reading the flat
-				// message field reported "no detail" for every real error.
+				// message field reported "no detail" for every real error. Classify it so
+				// a caller can decide whether the failure is a provider one worth failing
+				// over (see TurnError).
+				kind, httpStatus := e.Classify()
 				msg := e.Detail()
-				if code := e.ErrorCode(); code != "" || msg != "" {
-					return nil, fmt.Errorf("codexagent: turn error (code=%q): %s", code, msg)
+				if kind != codexgo.CodexErrorUnknown || msg != "" {
+					return nil, &TurnError{Kind: kind, HTTPStatus: httpStatus, Message: msg}
 				}
 				// A non-retryable error with no message at all: keep the bare
 				// notification and keep reading so that a failed turn/completed's own
@@ -1109,7 +1135,13 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 				completed = true
 				// A terminal turn that failed or was interrupted is NOT success.
 				if status := turnStatus(e); status == codexgo.TurnStatusFailed || status == codexgo.TurnStatusInterrupted {
-					return nil, fmt.Errorf("codexagent: turn %s: %s", status, turnErrorDetail(e.Turn, streamErr))
+					kind, httpStatus, _ := codexgo.ClassifyTurnError(e.Turn)
+					return nil, &TurnError{
+						Status:     string(status),
+						Kind:       kind,
+						HTTPStatus: httpStatus,
+						Message:    turnErrorDetail(e.Turn, streamErr),
+					}
 				}
 				// The authoritative answer is the turn's final agent message. Prefer
 				// the completed message items (item/completed), then the turn's own

@@ -449,6 +449,7 @@ memory 的写入由 app-server 进程内完成（`LocalMemoriesBackend` 用 `tok
 - 未配置 `codex.endpoint` → 降级普通 RAG + 明确告警。
 - WS 断开 → 依赖 `WithAutoReconnect`；恢复后仅凭流式事件补齐终局（backfill 依赖的 `thread/turns/list` 在本机 codex 不可达，见 §5.3），`sdk/*` 不原样转发前端。
 - MCP 工具全失败 → 以 `<tool_error>` 形态返回给 Codex（Codex 可见），同时引擎记 `ToolCallErrors`。
+- **provider 故障转移（failover）**：一轮 turn 因 provider 侧持续性故障失败时，按对话框的 `failover_llm_ids` 用下一个候选重跑——换 provider 即**重建 thread**。触发条件、候选筛选与思考流可见性见 §5.10。
 
 ### 5.7 认证链路（RAGFlow → Codex → RAGFlow MCP bridge）
 
@@ -556,6 +557,32 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 **额外开启的能力开关**（能力上限测试）：`features.token_budget`（加 `get_context_remaining` + `new_context_window`；并把自动压缩切到 inline token-budget 任务）、`features.current_time_reminder`（加 `current_time` 工具）、`features.sleep_tool`（默认已开但 mode 默认 `model_driven`，仅在时钟提醒开启时才注册 —— 这里显式设 `{enabled:true, mode:"always_on"}`）、`features.multi_agent_v2` + `features.multi_agent_v2_dynamic_tools`（V2 协作工具：spawn/send_message/followup_task/list_agents/wait_agent；子智能体会额外开 thread，token 与并发都会上升）。`features.multi_agent_v2` 以**表**（而非简写 `true`）传入，以便同时携带 `subagent_developer_instructions`（子智能体契约，见 §5.4）。
 
 ---
+
+### 5.10 provider 故障转移（failover，2026-10-14 新增）
+
+**目标**：一轮 turn 在**主 provider** 上因 provider 侧的持续性故障失败时，自动改用对话框配置的下一个候选（其 base_url / key / model）重跑这一轮。失败触发、自动、有界（每个候选最多试一次）。
+
+**候选来源**：复用对话框的 `llm_setting.failover_llm_ids`——与 mode 5/6/7 的 eino 链**同一份名单**（读取者 `agenticFailoverModelIDs`）。主模型在前，成员按配置顺序在后；`codexTurnTargets` 逐个解析（`ResolveChatTarget` + `normalizeResponsesBaseURL` + **各自 llm id** 的 window/output），并**跳过**解析失败 / 不在 `codex.responses_providers` 白名单 / 无 `base_url` / 与前面重复的候选（逐条告警，best-effort，与 `agenticModelChain` 的取舍一致）。
+
+**触发条件**（`codexFailoverEligible`）——以下任一即**不**转移：
+
+- `ErrCodexTurnBusy`：会话锁，不是 provider 故障；
+- 请求 ctx 已结束：客户端已走，重试没有接收方；
+- turn 被 interrupted：人为停止；
+- **已经向客户端输出过 answer 文本**（`contentDelta.Len() > 0`）：再试会把第二份答案接在第一份之后。
+
+其余情况下只有**类型化**的 provider 故障才转移。为此补了两层类型：
+
+- SDK（fork `codex-app-server-go`）：`CodexErrorKind` + `ParseCodexErrorInfo` / `ErrorEvent.Classify()` / `ClassifyTurnError(*Turn)`，把上游 `error.codexErrorInfo` 的两种联合形态（字符串枚举；`{"httpConnectionFailed":{"httpStatusCode":500}}` 式单键对象）解析成类型；
+- 引擎（`internal/codexagent`）：`TurnError{Status, Kind, HTTPStatus, Message}` 实现 `error`，可用 `errors.As` 取；`TurnError.RetryableProviderFailure()` 承载转移策略。
+
+**可转移的 kind**：`internalServerError`（provider HTTP 500）、`serverOverloaded`、`responseTooManyFailedAttempts`（429）、`httpConnectionFailed`、`responseStreamConnectionFailed`、`responseStreamDisconnected`、`unauthorized`。**`other` 与空 kind 一律不转移**：上游映射有损（未知模型 400 / 被拒提示词 / 内容过滤都落到 `other`），属确定性失败，换 provider 只会再花一轮。这是刻意的保守取舍；实测若发现漏判再放宽。
+
+**线程**：provider 是 thread 创建时烘焙的，**换 provider 必然重建 thread**。首次尝试走正常复用路径；重试带 `TurnRequest.ForceRebuild`——**既不复用、也不写回** ThreadRecord。不写回是刻意的：provider 身份不在复用键里，写回会让下一轮的主模型指纹命中这条记录、静默续用指向备用端点的 thread；不写回则保持"每轮仍先试主模型"。
+
+**可见性**：转移时向思考流写一条模型级事件 `ThinkEvent{Kind:"provider_failover", Stage:"provider"}`（形如 `provider failover: <m1> failed (<kind>, http N); retrying on <m2>`），并 `WarnCtx` 记一条日志（含 chat_id / from / to / kind / http_status）。全部候选失败 → 仍走既有的 `**ERROR**` 终局（busy 文案不变）。
+
+**未做**：候选冷却（eino 的 30s `failoverCooldown` 短路）。主模型每轮都会先被尝试，若它持续故障则每轮多一次快速失败 + 一次重建；后续可按需补上。
 
 ## 6. 依赖与版本固定
 
