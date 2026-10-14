@@ -39,9 +39,13 @@ const controlledMCPServer = "ragflow"
 // retrieval path.
 //
 // mode 8 therefore ACCEPTS that specific elicitation (the retrieval tools must run) and
-// leaves every other axis at the SDK's default refusal: command execution, file changes,
-// permissions, and any other elicitation are declined. The read-only sandbox still bounds
-// what an approved tool can do.
+// leaves every other axis at the SDK's default refusal: permissions and any other
+// elicitation are declined, and so are command/file approvals IF one is ever asked. Note
+// the last clause is defense in depth, not the active gate: mode 8 runs ApprovalNever, so
+// codex does not prompt for exec/file at all — it allows non-dangerous commands and lets
+// the read-only, network-isolated sandbox bound them (a local script for arithmetic is
+// wanted; writes and the web are not). This handler simply guarantees that a stray approval
+// request can never be auto-granted.
 func Dispatcher() *codexgo.Dispatcher {
 	return &codexgo.Dispatcher{Elicitation: mcpToolApproval{}}
 }

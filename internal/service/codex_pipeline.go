@@ -557,36 +557,38 @@ func (s *ChatPipelineService) codexAgent(
 	return out, nil
 }
 
-// codexCitationContract is the thread's base instructions (see the plan, D5/§4.7). Besides
-// the provenance format — the model ENDS each sourced line with that passage's tuple, and
-// the backend (not the model) assigns [ID:N] — it states two things the model would
-// otherwise get wrong.
+// codexCitationContract is the thread's citation contract (see the plan, D5/§4.7). It is
+// delivered as DEVELOPER instructions — additive to Codex's own prompt — and covers the
+// provenance format (the model ENDS each sourced line with that passage's tuple, and the
+// backend, not the model, assigns [ID:N]) plus the tool split the model would otherwise get
+// wrong.
 //
-// It is DELIBERATELY generic about web search. The base instructions are baked into a
-// thread at create and thread/resume does not reload them, while web search is a per-turn
-// decision; encoding the decision here would make the prompt and the tool list two copies
-// of one fact that must be kept in agreement. Instead the MCP tool list is the single
-// source of truth — the bridge advertises its web search tool only when the conversation
-// enables it — and the prompt points at that list ("use only the tools you are given").
-// The prompt therefore never goes stale: it is the same whether web search is on or off.
+// It is DELIBERATELY generic about web search. The contract is baked into a thread at
+// create and thread/resume does not reload it, while web search is a per-turn decision;
+// encoding the decision here would make the prompt and the tool list two copies of one fact
+// that must be kept in agreement. Instead the MCP tool list is the single source of truth —
+// the bridge advertises its web search tool only when the conversation enables it — and the
+// prompt points at that list ("use exactly the retrieval tools it contains"). The prompt
+// therefore never goes stale: it is the same whether web search is on or off.
 //
-// The second constant is the shell. Codex hands the model an environment (a shell, a
-// working directory) that mode 8 has deliberately closed off: the approval layer refuses
-// command execution and the read-only sandbox restricts the network (see §5.5). Left
-// unsaid, the model reads the advertised shell as usable, burns the turn trying `curl`,
-// and re-tries after each refusal instead of reading the passages it retrieved. So the
-// prompt says plainly that the shell is not a path to the web.
+// The shell is a LOCAL COMPUTATION channel, not a retrieval one. mode 8 runs with
+// ApprovalNever + a read-only sandbox whose network_access is false, so a short script
+// (e.g. `python3 -c ...`) runs for arithmetic but cannot reach the network — enabling Codex
+// to compute exactly without giving the model a way around the conversation's web-search
+// setting. The prompt therefore ALLOWS the shell for calculation and forbids it for the
+// web: left unsaid, the model either refuses to compute, or burns the turn on `curl`.
 func codexCitationContract(quote bool) string {
 	var b strings.Builder
-	b.WriteString("Answer the user in prose. Your tools are the MCP tools provided for this conversation: " +
+	b.WriteString("Answer the user in prose. Your RETRIEVAL tools are the MCP tools provided for this conversation: " +
 		"the knowledge-base retrieval tools, and — when this conversation enables web search — a web search tool. " +
-		"The tool list you are given is authoritative: use exactly the tools it contains, and never assume a " +
-		"capability it does not list. ")
-	b.WriteString("This environment has no shell and no internet access: never call exec_command/shell, and never " +
-		"fetch a URL directly (curl or otherwise) — the shell is not a way to reach the web, such attempts are " +
-		"refused, and they only waste the turn. If the web search tool is available and the knowledge base does " +
-		"not cover the question, use that tool instead; otherwise answer from the retrieved passages and say " +
-		"plainly what they do not cover. ")
+		"The tool list you are given is authoritative: use exactly the retrieval tools it contains, and never assume " +
+		"a retrieval capability it does not list. ")
+	b.WriteString("You also have a shell for LOCAL computation only: when a question needs arithmetic, counting or a " +
+		"short script, run it (e.g. python3 or node) instead of guessing. The shell has NO network access, so never " +
+		"use it to fetch or search the web (curl and the like) — such attempts are blocked by the sandbox and only " +
+		"waste the turn. All retrieval therefore comes from the tools above: if the web search tool is available and " +
+		"the knowledge base does not cover the question, use that tool; otherwise answer from the retrieved passages " +
+		"and say plainly what they do not cover. ")
 	if !quote {
 		return b.String()
 	}

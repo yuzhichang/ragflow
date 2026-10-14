@@ -165,11 +165,13 @@ func InstructionsFingerprint(instructions string) string {
 // mode 8 enables — both baked into a thread at create and not reloaded on resume:
 //   - the contract rides DEVELOPER instructions (additive), never base instructions, so
 //     Codex keeps its own agentic prompt (planning / verification / answer shape);
-//   - the plan tool (`tools.update_plan`) is enabled.
+//   - the plan tool (`tools.update_plan`) is enabled;
+//   - the approval policy is `never` (shell allowed for LOCAL computation; the read-only,
+//     network-isolated sandbox is the boundary that still blocks writes and the web).
 //
-// Bump the suffix whenever either changes, so threads built under the old policy rebuild
-// exactly once (the same device as hostedToolsPolicy).
-const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1"
+// Bump the suffix whenever any of these changes, so threads built under the old policy
+// rebuild exactly once (the same device as hostedToolsPolicy).
+const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=never-v1"
 
 // InstructionsPolicyFingerprint returns the current instruction/tool policy marker (see
 // instructionsPolicy).

@@ -47,37 +47,42 @@ func TestNormalizeResponsesBaseURL(t *testing.T) {
 	}
 }
 
-// TestCodexCitationContractIsGenericAndForbidsTheShell pins the two properties the base
-// instructions must have now that web search is a PER-TURN decision while the instructions
-// are baked into a thread at create (and not reloaded by resume):
+// TestCodexCitationContractDefersCapabilityAndScopesTheShell pins the two properties the
+// citation contract must have now that web search is a PER-TURN decision while the contract
+// is baked into a thread at create (and not reloaded by resume):
 //
-//   - they are generic about the toolset — the MCP tool list is the single source of truth
-//     for whether web search exists, so the prompt must not claim either way, and must stay
-//     identical across a web-search toggle (otherwise prompt and tool list are two copies
-//     of one fact that can disagree);
-//   - they forbid the shell as a path to the web, so the model — which sees an advertised
-//     shell in its environment — does not burn the turn on `curl`.
-func TestCodexCitationContractIsGenericAndForbidsTheShell(t *testing.T) {
+//   - it is generic about the RETRIEVAL toolset — the MCP tool list is the single source of
+//     truth for whether web search exists, so the prompt must not claim either way, and must
+//     stay identical across a web-search toggle (otherwise prompt and tool list are two
+//     copies of one fact that can disagree);
+//   - it scopes the shell: LOCAL computation is wanted (mode 8 runs ApprovalNever so a short
+//     script resolves arithmetic exactly), but the shell has no network, so it must never be
+//     used as a path to the web — otherwise the model either refuses to compute, or burns
+//     the turn on `curl`.
+func TestCodexCitationContractDefersCapabilityAndScopesTheShell(t *testing.T) {
 	quoted := codexCitationContract(true)
 
 	// Capability comes from the tool list, not the prompt: conditional everywhere.
 	if !strings.Contains(quoted, "authoritative") || !strings.Contains(quoted, "tool list") {
 		t.Errorf("contract does not defer capability to the MCP tool list:\n%s", quoted)
 	}
-	if !strings.Contains(quoted, "no shell and no internet access") {
-		t.Errorf("contract does not state the shell/network gap:\n%s", quoted)
-	}
-	for _, must := range []string{"exec_command", "curl", "not a way to reach the web"} {
-		if !strings.Contains(quoted, must) {
-			t.Errorf("contract does not forbid the shell clearly (%q missing):\n%s", must, quoted)
-		}
-	}
-	// It must not assert web search either way — that is the tool list's job.
-	if strings.Contains(quoted, "You have") {
-		t.Errorf("contract asserts capabilities rather than deferring to the tool list:\n%s", quoted)
-	}
 	if !strings.Contains(quoted, "when this conversation enables web search") {
 		t.Errorf("contract does not present web search conditionally:\n%s", quoted)
+	}
+	if strings.Contains(quoted, "You have a web search tool") {
+		t.Errorf("contract asserts the web capability instead of deferring to the tool list:\n%s", quoted)
+	}
+	// Local computation is permitted...
+	for _, must := range []string{"LOCAL computation", "python3", "arithmetic"} {
+		if !strings.Contains(quoted, must) {
+			t.Errorf("contract does not permit local computation (%q missing):\n%s", must, quoted)
+		}
+	}
+	// ...but the shell is never a path to the web.
+	for _, must := range []string{"NO network access", "curl", "blocked by the sandbox"} {
+		if !strings.Contains(quoted, must) {
+			t.Errorf("contract does not forbid the shell as a web path (%q missing):\n%s", must, quoted)
+		}
 	}
 
 	// Both provenance forms are described, the web one conditionally on the tool.
@@ -88,10 +93,10 @@ func TestCodexCitationContractIsGenericAndForbidsTheShell(t *testing.T) {
 		t.Errorf("the web form is not tied to the web tool:\n%s", quoted)
 	}
 
-	// Quote off still states capabilities and forbids the shell; it only drops the format.
+	// Quote off still scopes the shell and defers capability; it only drops the format.
 	plain := codexCitationContract(false)
-	if !strings.Contains(plain, "no shell and no internet access") || !strings.Contains(plain, "curl") {
-		t.Errorf("quote-off contract dropped the capability statement:\n%s", plain)
+	if !strings.Contains(plain, "NO network access") || !strings.Contains(plain, "curl") {
+		t.Errorf("quote-off contract dropped the shell scope:\n%s", plain)
 	}
 	if strings.Contains(plain, "(doc: <doc_name>") {
 		t.Errorf("quote-off contract should not prescribe a provenance format:\n%s", plain)

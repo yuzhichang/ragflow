@@ -386,12 +386,13 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 - **只读 sandbox**：建 thread 时 `WithThreadSandbox(codexgo.SandboxReadOnly)`（或称 `read-only`）。禁止写文件、改变工作目录。
 - **工作目录隔离**：`WithThreadCWD` 指向一个空的、无敏感的目录（不暴露 RAGFlow 代码/配置/密钥）。
-- **审批策略**：用 `untrusted` 档，并安装 `codexagent.Dispatcher()`（`internal/codexagent/approval.go`）：**accept `mcp_tool_call` elicitation**（检索工具必需——否则连同工具一起被拒，见 §12 实测），**decline** 命令执行/文件变更/权限/其它 elicitation。注意：这只能拦「需要审批的动作」，**不能替代 sandbox**。
-- **内置命令执行工具（`shell` / `exec_command`）：保留，但被两道关挡住——不通过 config 禁用**。曾考虑用 `features.shell_tool=false` 把执行工具整个摘掉，但**判定为过度**：堵网络不需要牺牲工具，且下面两道独立的关已经堵死。
-  1. **审批关**：`Dispatcher()` 只 accept `mcp_tool_call`；命令执行（`Exec`）与文件变更（`File`）两个 handler 都未配置，SDK 的既定行为是**一律 decline**（`interaction.go`：`Exec`/`File` 为 nil 时该类请求被拒）。**实测观测**：某 session 的 rollout 里模型尝试 `exec_command: curl https://en.wikipedia.org/…`，得到的输出是 `exec_command failed: … Rejected("rejected by user")` —— 命令**没有执行**，自然也没有网络访问。
-  2. **沙箱关**：只读 sandbox 对应 `PermissionProfile::read_only()`，其 `NetworkSandboxPolicy` 为 **`Restricted`**（`protocol/src/permissions.rs`，默认即 Restricted）；Linux 上由 seccomp 拒绝 socket 系统调用（`linux-sandbox/src/seccomp.rs:114`）并由 bubblewrap 隔离网络命名空间（`bwrap.rs` 的 `BwrapNetworkMode::Isolated`）兜底。即便某条命令被判为「无需审批」而真的跑起来，网络仍出不去。
-  - 不变量：**绝不 accept 命令执行/文件变更/权限类审批**（否则第一道关失效）。第二道关是纵深防御，不依赖它单独成立。
-  - 副作用（已接受）：模型仍可能**尝试**执行命令，因而在 UI/rollout 里看到被拒的 `curl` 之类调用——这是"尝试被拦"，不是"访问成功"。
+- **审批策略：`never`（2026-10-14 起，见下）。** 这是**有意放宽**：模式 8 需要一个**本地计算**通道（算术/计数/短脚本），否则多跳数值题只能靠模型心算。`ApprovalNever` 下 codex 不为 exec/file 请求审批，`exec_policy` 对**非危险**命令直接 `Allow`（"relying on the sandbox for protection"），因此 `python3 -c ...` 之类可以运行。隔离从此**只由沙箱承担**（见下条）。
+- **审批策略的历史值 `untrusted`**：曾用 `AskForApproval::UnlessTrusted`，其语义是「**未在 exec policy 规则里显式允许的每个命令**都要审批」（`core/src/exec_policy.rs`），而 `codexagent.Dispatcher()`（`internal/codexagent/approval.go`）只 accept `mcp_tool_call` elicitation、未配置 `Exec`/`File` handler → SDK 对 `execCommandApproval` 返回 `DenyReview()`，对 v2 `item/commandExecution/requestApproval` 因 `Exec==nil` 同样拒绝。实测：某 session 的 rollout 里模型尝试 `exec_command: curl https://en.wikipedia.org/…`，输出为 `exec_command failed: … Rejected("rejected by user")`——命令没有执行。**该档位现已弃用**（它同时挡住了我们想要的本地计算）。
+- **内置命令执行工具（`shell` / `exec_command`）：保留、且现在可运行，只由沙箱约束**（不通过 config 禁用）。曾考虑 `features.shell_tool=false` 整个摘掉，**判定为过度**（堵网络不需要牺牲工具）；现在则更进一步——**主动允许本地计算**：
+  1. **审批关：已不适用**（策略为 `never`，codex 不发起 exec 审批）。`Dispatcher()` 仍只 accept `mcp_tool_call`，`Exec`/`File` 为 nil → 若有请求仍是拒绝（`interaction.go`），但这现在是**纵深防御**，不是活跃闸门。
+  2. **沙箱关：唯一且必须成立的一道。** 只读 sandbox 对应 `PermissionProfile::read_only()`，其 `NetworkSandboxPolicy` 为 **`Restricted`**（`protocol/src/permissions.rs`，默认即 Restricted）；Linux 上由 seccomp 拒绝 socket 系统调用（`linux-sandbox/src/seccomp.rs:114`）并由 bubblewrap 隔离网络命名空间（`bwrap.rs` 的 `BwrapNetworkMode::Isolated`）兜底。且 `SandboxPolicy::ReadOnly{ network_access }` 的 `network_access` 默认 **false**（宿主 `~/.codex/config.toml` 无 `sandbox_workspace_write` 覆盖，已核）。
+  - **因此**：命令**可以执行**（本地计算），但**写文件被拒、网络出不去**；危险命令（`dangerous_command_match`）即便 `Never` 仍是 `Decision::Forbidden`。
+  - **副作用/代价（已接受）**：命令的执行面从"两道关"收窄为"一道关（沙箱）"。沙箱若在某平台失效或存在逃逸，模型即获得宿主命令执行能力——这正是 §5.5 前置验证与"按租户隔离 Codex"该覆盖的场景。
 - **关闭所有「服务端工具」（hosted tools）——已实现**：建 thread 时下发 `WithThreadConfigOverride("web_search", "disabled")`（`internal/codexagent/run.go` 的 `threadOptions`）。
   - **「服务端工具」是什么**：Responses API 里有一类工具**不由 Codex 本地执行**，而是把 `{"type": …}` 声明发给**模型服务商**、由服务商在其服务端运行并把结果回灌给模型——本地上看不到任何调用，也**无法用 sandbox/审批拦**。对自定义 Responses provider，Codex 只会发出其中一个：内置 `web_search`（`core/src/tools/hosted_spec.rs` 的 `create_web_search_tool`，随 `web_search_mode` 决定 `external_web_access`/`indexed_web_access`）。另一个 hosted 工具（image generation）要求 OpenAI 官方鉴权，自定义 provider 下**从不发出**（`spec_plan.rs:800-829` 的 `image_generation_available`）。
   - **为什么要关（收费）**：这些工具由**服务商计费**，例如 MiniMax 的 tools 定价（<https://platform.minimax.cn/docs/pricing/overview#tools/tools>）。而且它与会话设置无关——Codex 默认打开（`WebSearchMode` 默认 `Cached`；provider capability `web_search` 默认 `true`，且 provider 侧**没有** `web_search=false` 的覆盖项）。不关的话，一个「没开联网」的会话也会悄悄联网并产生费用，且检索数据绕过了 RAGFlow 的作用域与引用链路。关掉后，模式 8 的联网**只能**走 RAGFlow 自己的 `web_search`（MCP 工具，仅在会话启用时注入，见 §4.4/D9），与本地引擎的语义一致。
@@ -513,7 +514,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 两者都是 **create 时烘焙、resume 不重载**，故折进 scope fingerprint：`InstructionsFingerprint(契约文本)` + `InstructionsPolicyFingerprint()`（策略标记 `instructions=developer-v1;update_plan=on-v1`）。后者是**无条件**折入的，因此旧策略下建的 thread 会**重建一次**。
 
-其余工具面不变：provider 托管 `web_search` 仍关闭（计费）；shell 仍被广告但提示词禁止使用、sandbox read-only + 审批拒绝——mode-8 工作目录为空临时目录、语料只能经 MCP 触达，shell 无实际用途。
+其余工具面：provider 托管 `web_search` 仍关闭（计费）；**shell 现在被允许用于本地计算**（审批改为 `never`，见 §5.5）——契约改成"可用 shell 做本地算术/短脚本，但 shell 无网络、不得用它抓网页"，沙箱的 read-only + `network_access=false` 是唯一的边界（写文件、联网仍被拒）。
 
 ---
 

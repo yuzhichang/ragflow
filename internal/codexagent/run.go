@@ -596,7 +596,15 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		codexgo.WithThreadConfigOverride("tools.update_plan", map[string]interface{}{"enabled": true}),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
-		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalUntrusted()),
+		// ApprovalNever: codex neither prompts nor refuses — exec_policy allows any
+		// non-dangerous command and relies on the SANDBOX for protection (read-only
+		// filesystem, network_access=false). Deliberate: it lets the model run a short
+		// local script for arithmetic (there is no other way to compute exactly), while
+		// the sandbox still denies writes AND network, so the shell cannot become a way
+		// around the conversation's web-search setting or touch the host. Dangerous
+		// commands remain Forbidden regardless. Paired with the citation contract, which
+		// permits local computation and forbids using the shell for the web.
+		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalNever()),
 	}
 	if req.Model != "" {
 		opts = append(opts, codexgo.WithThreadModel(req.Model))
