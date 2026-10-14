@@ -1538,6 +1538,9 @@ func (s *ChatSessionService) ChatCompletions(
 						if len(result.ShallowReadChunkIDs) > 0 {
 							ans["shallow_read_chunk_ids"] = result.ShallowReadChunkIDs
 						}
+						if result.Compactions > 0 {
+							ans["compactions"] = result.Compactions
+						}
 						if result.Usage != nil {
 							ans["usage"] = result.Usage
 						}
@@ -1665,6 +1668,7 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	var gateAudit *agentic_rag.GateAuditRecord
 	var deepReadChunks, shallowReadChunks int
 	var deepReadChunkIDs, shallowReadChunkIDs []string
+	var compactions int
 	var usage *TurnUsage
 	var elapsedSeconds float64
 	var rounds []agentic_rag.IterativeRoundStat
@@ -1689,6 +1693,7 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 			shallowReadChunks = result.ShallowReadChunks
 			deepReadChunkIDs = result.DeepReadChunkIDs
 			shallowReadChunkIDs = result.ShallowReadChunkIDs
+			compactions = result.Compactions
 			usage = result.Usage
 			elapsedSeconds = result.ElapsedSeconds
 			rounds = result.Rounds
@@ -1745,6 +1750,9 @@ func accumulateNonStreamAnswer(resultChan <-chan AsyncChatResult) map[string]int
 	}
 	if len(shallowReadChunkIDs) > 0 {
 		ans["shallow_read_chunk_ids"] = shallowReadChunkIDs
+	}
+	if compactions > 0 {
+		ans["compactions"] = compactions
 	}
 	if usage != nil {
 		ans["usage"] = usage
@@ -2119,6 +2127,10 @@ type sseAnswerChunk struct {
 	ShallowReadChunks   int            `json:"shallow_read_chunks,omitempty"`
 	DeepReadChunkIDs    []string       `json:"deep_read_chunk_ids,omitempty"`
 	ShallowReadChunkIDs []string       `json:"shallow_read_chunk_ids,omitempty"`
+	// Compactions counts the context compactions an agentic engine performed this turn
+	// (mode 8 only). The struct is hand-written, so a producer field not copied in
+	// sseMarshalChunk is silently dropped from the stream.
+	Compactions int `json:"compactions,omitempty"`
 }
 
 // sseWrapper wraps the SSE response with deterministic field order matching Python:
@@ -2262,6 +2274,9 @@ func sseMarshalChunk(ans map[string]interface{}, chatID string) string {
 	}
 	chunk.DeepReadChunkIDs, _ = ans["deep_read_chunk_ids"].([]string)
 	chunk.ShallowReadChunkIDs, _ = ans["shallow_read_chunk_ids"].([]string)
+	if v, ok := ans["compactions"].(int); ok {
+		chunk.Compactions = v
+	}
 	wrapper := sseWrapper{Code: 0, Message: "", Data: chunk}
 	return marshalJSONWithSpaces(wrapper)
 }

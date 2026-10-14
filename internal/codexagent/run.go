@@ -73,6 +73,18 @@ type TurnRequest struct {
 	ProviderBaseURL string
 	ProviderToken   string
 
+	// ModelContextWindow and ModelMaxOutput are the dialog model's real context window
+	// and output cap (conf/all_models.json context_length / max_output). They are handed
+	// to Codex as thread config because a model outside Codex's own manifest resolves to
+	// fallback metadata with context_window = None — Codex then neither knows the window
+	// nor auto-compacts (context_window.rs), so a full-history rebuild can overflow the
+	// provider's real window. Zero means "unknown; leave Codex's own value".
+	ModelContextWindow int
+	ModelMaxOutput     int
+	// ReasoningEffort is the fixed Codex reasoning effort this deployment uses
+	// ("minimal" | "low" | "medium" | "high"). Empty leaves Codex's configured default.
+	ReasoningEffort string
+
 	// MCPURL is the full /mcp/codex/<handle> URL this process exposes to Codex.
 	MCPURL string
 	// Ticket is the stable session handle inside MCPURL. It is persisted per thread so a
@@ -99,6 +111,10 @@ type TurnRequest struct {
 	OnContent   func(string)
 	OnReasoning func(string)
 	OnTool      func(RoundTrip)
+	// OnCompaction is called once per turn (at most) when Codex compacts its context.
+	// Mode 8 narrates it into the thinking stream so a watching user learns the model's
+	// history was summarized; it does not change how the thread is rebuilt.
+	OnCompaction func()
 	// HandleAlive reports whether a stored handle is still live. When it returns false a
 	// reuse is refused and the thread is rebuilt, so a thread whose MCP URL carries a
 	// dead handle (a restart lost it, or it expired between turns) is never resumed. nil
@@ -299,6 +315,15 @@ type TurnOutcome struct {
 	// Rebuilt is true when the turn ran on a freshly created thread (first turn, or
 	// a rebuild after scope/history drift).
 	Rebuilt bool
+	// Compactions counts the context compactions Codex performed during this turn (0 or
+	// 1; a turn's context is compacted at most once). It is observability, not behavior:
+	// mode 8 never trims a rebuilt thread's history, so a compaction costs the model's
+	// detail only inside the live thread, never in RAGFlow's stored conversation.
+	Compactions int
+	// ContextWindow is the model context window Codex reported for this turn
+	// (ThreadTokenUsage.ModelContextWindow). Zero means Codex does not know the window —
+	// the dialog model resolved to fallback metadata and auto-compaction is disabled.
+	ContextWindow int
 }
 
 // TurnUsage is one turn's token cost. Field names match service.TurnUsage so a caller maps
@@ -403,6 +428,14 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	if req.Instructions != "" {
 		scopeFP = CombineFingerprints(scopeFP, InstructionsFingerprint(req.Instructions))
 	}
+	// The model window / auto-compaction limit / reasoning effort are baked into the
+	// thread's config at create and not reloaded on resume, so they are part of the reuse
+	// key too: a corrected window or a changed effort must rebuild the thread.
+	autoCompactLimit := 0
+	if req.ModelContextWindow > 0 && req.ModelContextWindow > req.ModelMaxOutput {
+		autoCompactLimit = req.ModelContextWindow - req.ModelMaxOutput
+	}
+	scopeFP = CombineFingerprints(scopeFP, ModelParamsFingerprint(req.ModelContextWindow, autoCompactLimit, req.ReasoningEffort))
 	// The history the thread must ALREADY have is everything before the current user
 	// message. Normal growth (the previous answer + this question) is not drift; a
 	// deletion or edit makes this differ from what we recorded after the last turn.
@@ -557,6 +590,23 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 	if req.Model != "" {
 		opts = append(opts, codexgo.WithThreadModel(req.Model))
 	}
+	// Tell Codex the dialog model's REAL window. Codex resolves any model outside its own
+	// manifest to fallback metadata (context_window = None), and with no window it neither
+	// knows the limit nor auto-compacts — so a full-history rebuild can overflow the
+	// provider's window and fail there. Baking the window in lets Codex compact before it.
+	// The auto-compaction limit is the input budget (window minus the model's output cap),
+	// which also overrides whatever global default the shared server carries.
+	if req.ModelContextWindow > 0 {
+		opts = append(opts, codexgo.WithThreadConfigOverride("model_context_window", req.ModelContextWindow))
+		if limit := req.ModelContextWindow - req.ModelMaxOutput; limit > 0 {
+			opts = append(opts, codexgo.WithThreadConfigOverride("model_auto_compact_token_limit", limit))
+		}
+	}
+	// A fixed reasoning effort (this deployment's choice); a change is folded into the
+	// scope fingerprint so the thread rebuilds, since Codex reads it at create.
+	if req.ReasoningEffort != "" {
+		opts = append(opts, codexgo.WithThreadConfigOverride("model_reasoning_effort", req.ReasoningEffort))
+	}
 	// Only declare a per-thread provider when one is supplied; otherwise the thread
 	// uses whatever provider the shared Codex is configured with.
 	if req.ProviderID != "" {
@@ -644,6 +694,20 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 	var tally toolTally
 	// Retrieval accounting, from the same tool results the narration reads.
 	var retrieval retrievalAccounting
+	// A turn's context is compacted at most once, but two surfaces can announce it — the
+	// `contextCompaction` thread item and the `thread/compacted` notification — so this
+	// flag makes the count a count of compactions, not of announcements.
+	compacted := false
+	noteCompaction := func() {
+		if compacted {
+			return
+		}
+		compacted = true
+		out.Compactions++
+		if req.OnCompaction != nil {
+			req.OnCompaction()
+		}
+	}
 
 	for {
 		select {
@@ -689,9 +753,15 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 						}
 					}
 				}
+				if e.Item != nil && e.Item.Kind == codexgo.ItemKindContextCompaction {
+					noteCompaction()
+				}
 			case codexgo.ItemCompletedEvent:
 				if e.Item != nil {
 					items = append(items, *e.Item)
+					if e.Item.Kind == codexgo.ItemKindContextCompaction {
+						noteCompaction()
+					}
 					// Fallback for providers that deliver reasoning as a finished item:
 					// only when this item never streamed deltas (see reasoningDeltaItems).
 					if e.Item.Kind == codexgo.ItemKindReasoning && !reasoningDeltaItems[e.Item.ID] {
@@ -748,6 +818,10 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 						req.OnReasoning(e.Text)
 					}
 				}
+			case codexgo.ThreadCompactedEvent:
+				// The notification half of the same event (see noteCompaction); only
+				// reaches us now that eventMatchesTurn routes thread/compacted.
+				noteCompaction()
 			case codexgo.ThreadTokenUsageUpdatedEvent:
 				// One notification per model call. `Last` is that call's usage, so the
 				// running sum is the turn's cost; `Total` is thread-cumulative and would
@@ -757,6 +831,13 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 					usage.PromptTokens += int(e.TokenUsage.Last.InputTokens)
 					usage.CompletionTokens += int(e.TokenUsage.Last.OutputTokens)
 					usage.TotalTokens += int(e.TokenUsage.Last.TotalTokens)
+					// Codex reports the window it resolved for this model here; zero
+					// means it does not know one (fallback metadata), which disables
+					// auto-compaction and is what makes a full-history rebuild racy
+					// against the provider's real limit.
+					if e.TokenUsage.ModelContextWindow > 0 {
+						out.ContextWindow = int(e.TokenUsage.ModelContextWindow)
+					}
 				}
 			case codexgo.ErrorEvent:
 				if e.WillRetry {

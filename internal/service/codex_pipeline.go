@@ -317,6 +317,15 @@ func (s *ChatPipelineService) codexAgent(
 	}
 	datasetIDs := chatKBIDs(chat)
 
+	// The dialog model's real context window and output cap, from the provider catalog
+	// (conf/all_models.json). Codex resolves any model outside its own manifest to
+	// fallback metadata with no context window — and then neither knows the limit nor
+	// auto-compacts (context_window.rs), so a full-history rebuild could overflow the
+	// provider's real window and fail there. Handing Codex the true window lets it
+	// compact first; zero means "unknown, leave Codex's own value".
+	contextWindow := dao.ResolveModelContentLength(ctx, nil, chat.TenantID, chat.LLMID, target.Driver.Name(), target.ModelName)
+	maxOutput := dao.ResolveModelMaxOutput(ctx, nil, chat.TenantID, chat.LLMID, target.Driver.Name(), target.ModelName)
+
 	runner, err := getCodexRunner()
 	if err != nil {
 		return nil, err
@@ -406,6 +415,29 @@ func (s *ChatPipelineService) codexAgent(
 			}
 			reasoningTail = '\n'
 		}
+		// A context compaction is narrated like a tool step. It is a real event in the
+		// turn — Codex summarized the model's history to fit the window — and the think
+		// panel is the only place a user watches the run, so it belongs there. It does
+		// not change how the thread is rebuilt: mode 8 never trims a rebuilt thread's
+		// history, so RAGFlow's stored conversation keeps every turn.
+		emitCompaction := func() {
+			line := "context compacted: Codex summarized the earlier conversation to fit the model's context window"
+			if !thinking {
+				out <- AsyncChatResult{Final: false, StartToThink: true}
+				thinking = true
+				reasoningTail = 0
+			}
+			out <- AsyncChatResult{
+				Final:     false,
+				Reasoning: narrationChunk(reasoningTail, line),
+				ThinkEvent: &ThinkEvent{
+					Kind:    "context_compaction",
+					Stage:   "context",
+					Summary: line,
+				},
+			}
+			reasoningTail = '\n'
+		}
 
 		req := codexagent.TurnRequest{
 			TenantID:   chat.TenantID,
@@ -414,8 +446,13 @@ func (s *ChatPipelineService) codexAgent(
 			WebSearch:  useWebSearch,
 			Model:      target.ModelName,
 			ProviderID: target.Driver.Name(),
-			MCPURL:     mcpURL,
-			Ticket:     handle,
+			// The dialog model's window / output cap and the fixed reasoning effort are
+			// baked into the thread config so Codex knows the real limit (see above).
+			ModelContextWindow: contextWindow,
+			ModelMaxOutput:     maxOutput,
+			ReasoningEffort:    cfg.ReasoningEffort,
+			MCPURL:             mcpURL,
+			Ticket:             handle,
 			// The binding carries the conversation id and this turn's web-search
 			// decision; the bridge resolves the provider from them at request time,
 			// so the provider's credentials stay in the DB and never reach the
@@ -434,6 +471,7 @@ func (s *ChatPipelineService) codexAgent(
 			OnContent:    emitContent,
 			OnReasoning:  emitReasoning,
 			OnTool:       emitTool,
+			OnCompaction: emitCompaction,
 			// A thread is only resumed when its stored handle is still alive; otherwise
 			// its baked-in MCP URL would 401 (a restart lost the handle) and the
 			// retrieval path would silently break.
@@ -512,6 +550,7 @@ func (s *ChatPipelineService) codexAgent(
 			ShallowReadChunks:   outcome.ShallowReadChunks,
 			DeepReadChunkIDs:    outcome.DeepReadChunkIDs,
 			ShallowReadChunkIDs: outcome.ShallowReadChunkIDs,
+			Compactions:         outcome.Compactions,
 			ElapsedSeconds:      time.Since(started).Seconds(),
 		}
 	}()

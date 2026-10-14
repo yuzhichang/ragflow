@@ -467,6 +467,41 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 ---
 
+### 5.8 上下文压缩（compaction）、窗口与思考级别
+
+Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn 交给模型归纳成摘要，替换掉原文。mode 8 必须知道此事，但它**不改变 mode 8 如何重建 thread**。
+
+**两个信号面**（本机 codex 0.162.0 / 源码 tag `rust-v0.162.0-alpha.20`）：
+
+- **item** `contextCompaction`：以 `item/started` / `item/completed` 送达，`ThreadItem::ContextCompaction { id }` —— **只有 id**（`protocol/src/items.rs` 的 `ContextCompactionItem`）。
+- **通知** `thread/compacted`：`ContextCompactedNotification { thread_id, turn_id }` —— 同样**不带摘要**。
+
+**摘要拿不到（源码结论，已复核）**：
+
+- v2 历史构建器 `handle_compacted(&mut self, _payload)` **显式忽略 payload**；`thread_history_projection` 把 `RolloutItem::Compacted(_)` 归为空变更集；`EventMsg::ContextCompacted(..)` 是 deprecated 且**不转发**给 v2 客户端。
+- 远端压缩的摘要是 `encrypted_content`（不透明）；本地压缩虽有明文摘要，但它只注入 core 历史 + rollout 文件，**不经协议暴露**。
+
+**因此：不做截断（零损失）**。既然拿不到摘要，任何"重建时按压缩边界丢弃早期 turn"的做法都会**永久丢失信息**。所以 mode 8 的规则是：
+
+> **重建 thread 时永远重放完整的存储历史**（`createAndRun` → `MessagesToItems(HistoryWithoutCurrent(req.Messages))`，见 run.go）。压缩只影响 live thread 的模型侧上下文；一旦发生 rebuild，上下文反而恢复完整。RAGFlow 存储的会话历史（MySQL 消息）**不做任何改动**。
+
+**窗口与思考级别必须告知 Codex**（否则全量重放不安全）：
+
+- Codex 只用 `model_info.context_window` 推导窗口与自动压缩阈值（`full_context_window_limit`、`auto_compact_token_limit()`）。**不在 Codex 自带 manifest 里的模型**（如 MiniMax-M3）走 `model_info_from_slug` 回退：`context_window = None` → 既不知道窗口、**也不会自动压缩** → 全量重放可能超出供应商真实窗口并在供应商侧失败。
+- 共享 server 的全局 config 若设了 `model_context_window`（如宿主 `~/.codex/config.toml`）会经 `with_config_overrides` 套用到未知模型；但那多半是别的模型的数（Docker 镜像的 `CODEX_HOME` 更是**没有** config.toml）。
+- mode 8 因此**逐 thread 显式告知**（`threadOptions` 的 config overrides）：
+  - `model_context_window` ← 对话框模型的 `context_length`（`conf/all_models.json`，经 `dao.ResolveModelContentLength`）。
+  - `model_auto_compact_token_limit` ← `context_length - max_output`（输入预算；`dao.ResolveModelMaxOutput`）——同时覆盖共享 server 的全局默认，避免过早压缩。
+  - `model_reasoning_effort` ← 固定值（配置键 `codex.reasoning_effort`，默认 **`high`**）。
+- 三者都是 **thread 创建时烘焙、resume 不重载**，故折进 scope fingerprint（`ModelParamsFingerprint`）：窗口/级别变化会触发一次重建。
+
+**记账与可观测**：
+
+- `TurnOutcome.Compactions` 统计本轮压缩次数（0/1，两个信号面去重）；经 `AsyncChatResult.Compactions` → `sseAnswerChunk.Compactions` → benchmark 行 `compactions`，并在思考流播一行提示。
+- runner 读取 `thread/tokenUsage/updated` 的 `ThreadTokenUsage.ModelContextWindow` 记入 `TurnOutcome.ContextWindow`：为 0 即"Codex 不知道窗口"，可用于诊断。
+
+---
+
 ## 6. 依赖与版本固定
 
 - `github.com/zealbase/codex-app-server-go` 要求 **Go ≥ 1.25**；RAGFlow 当前 `go 1.27`，兼容。

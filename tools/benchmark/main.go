@@ -2218,7 +2218,7 @@ func extractRunStats(payload any) map[string]any {
 	if elapsed := asFloat(source["elapsed_seconds"]); elapsed != nil {
 		stats["server_elapsed_seconds"] = round3(*elapsed)
 	}
-	for _, key := range []string{"deep_read_chunks", "shallow_read_chunks"} {
+	for _, key := range []string{"deep_read_chunks", "shallow_read_chunks", "compactions"} {
 		if value := asInt(source[key]); value != nil {
 			stats[key] = *value
 		}
@@ -3080,6 +3080,7 @@ func usageRow(queryID string, row map[string]any, searchTools []string) map[stri
 		"unrecorded_locate_tools": unrecordedLocateTools(row),
 		"deep_read_chunks":        asInt(row["deep_read_chunks"]),
 		"shallow_read_chunks":     asInt(row["shallow_read_chunks"]),
+		"compactions":             asInt(row["compactions"]),
 	}
 }
 

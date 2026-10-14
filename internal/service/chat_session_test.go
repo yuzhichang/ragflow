@@ -1822,6 +1822,7 @@ func TestSSEMarshalChunkCarriesTurnAccounting(t *testing.T) {
 		"tool_call_counts": map[string]int{"search_bm25_chunks": 2},
 		"retrieved_docids": []string{"d1"},
 		"deep_read_chunks": 7,
+		"compactions":      1,
 	}
 	var wrapper struct {
 		Data map[string]interface{} `json:"data"`
@@ -1841,6 +1842,11 @@ func TestSSEMarshalChunkCarriesTurnAccounting(t *testing.T) {
 	}
 	if got, _ := d["deep_read_chunks"].(float64); got != 7 {
 		t.Errorf("deep_read_chunks = %v, want 7", d["deep_read_chunks"])
+	}
+	// Mode 8's context-compaction count rides the final chunk too; the fixed struct
+	// drops any field not copied here.
+	if got, _ := d["compactions"].(float64); got != 1 {
+		t.Errorf("compactions = %v, want 1", d["compactions"])
 	}
 	if got, _ := d["final"].(bool); !got {
 		t.Error("final flag lost")

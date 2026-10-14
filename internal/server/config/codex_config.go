@@ -54,11 +54,24 @@ type CodexConfig struct {
 	// A mode 8 turn whose dialog model resolves to a provider outside this list is
 	// refused and falls back to the regular pipeline (see the plan, decision U2).
 	ResponsesProviders []string
+	// ReasoningEffort is the fixed Codex reasoning effort mode 8 binds into every
+	// thread ("none" | "minimal" | "low" | "medium" | "high", plus the extended
+	// "xhigh" | "max" | "ultra" | "persistent"). It is fixed rather than
+	// per-conversation because Codex reads it at thread create and does not reload it on
+	// resume, so a change rebuilds the thread. Default "high" (the top of the standard
+	// ladder); empty leaves Codex's configured default.
+	ReasoningEffort string
 	// TurnTimeout bounds one turn's wall-clock time.
 	TurnTimeout time.Duration
 }
 
 const defaultCodexTurnTimeout = 30 * time.Minute
+
+// defaultCodexReasoningEffort is the fixed reasoning effort mode 8 binds into every thread.
+// The highest of the standard ladder; the extended values (xhigh/max/ultra/persistent) are
+// accepted if an operator sets them, but they are OpenAI-internal and a third-party
+// Responses provider may reject them.
+const defaultCodexReasoningEffort = "high"
 
 // defaultResponsesProviders are the providers known to speak the Responses API.
 var defaultResponsesProviders = []string{"openai", "azure-openai", "minimax"}
@@ -99,6 +112,13 @@ func (c *Config) parseCodexConfig(v *viper.Viper) error {
 		return fmt.Errorf("invalid codex turn_timeout: %s", value("turn_timeout", ""))
 	}
 
+	effort := strings.ToLower(strings.TrimSpace(value("reasoning_effort", defaultCodexReasoningEffort)))
+	switch effort {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent":
+	default:
+		return fmt.Errorf("invalid codex reasoning_effort: %s", effort)
+	}
+
 	c.apiServer.Codex = CodexConfig{
 		Endpoint:           endpoint,
 		BearerToken:        value("bearer_token", ""),
@@ -107,6 +127,7 @@ func (c *Config) parseCodexConfig(v *viper.Viper) error {
 		ApprovalPolicy:     approval,
 		SandboxMode:        sandbox,
 		ResponsesProviders: parseResponsesProviders(value("responses_providers", strings.Join(defaultResponsesProviders, ","))),
+		ReasoningEffort:    effort,
 		TurnTimeout:        time.Duration(timeoutSeconds) * time.Second,
 	}
 	return nil

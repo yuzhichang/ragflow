@@ -172,6 +172,12 @@ type AsyncChatResult struct {
 	// judgement, not the ledger's.
 	DeepReadChunkIDs    []string `json:"deep_read_chunk_ids,omitempty"`
 	ShallowReadChunkIDs []string `json:"shallow_read_chunk_ids,omitempty"`
+	// Compactions counts the context compactions the engine performed this turn
+	// (mode 8 only; 0 or 1). Codex only — an in-process engine sends its whole
+	// history every turn and has no server-side context to compact. It is
+	// observability: it says the model's own view of the conversation was
+	// summarized mid-turn, not that any stored turn was dropped.
+	Compactions int `json:"compactions,omitempty"`
 	// Usage is the turn's token accounting (agentic runs only). A benchmark
 	// reports cost per question, and only the pipeline sees every LLM call the
 	// ReAct loop and its delivery gate made — the response's own token counts

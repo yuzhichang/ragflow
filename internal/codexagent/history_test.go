@@ -149,3 +149,27 @@ func TestHistoryWithoutCurrent(t *testing.T) {
 		t.Fatalf("HistoryWithoutCurrent = %v", got)
 	}
 }
+
+// TestModelParamsFingerprintDistinguishesParams pins that the model window, the
+// auto-compaction limit and the reasoning effort are part of the thread's reuse key. They
+// are baked into the thread config at create and thread/resume does not reload them, so a
+// change (a corrected window, a different effort) must force a rebuild — otherwise the
+// thread keeps the old value forever.
+func TestModelParamsFingerprintDistinguishesParams(t *testing.T) {
+	base := ModelParamsFingerprint(1024000, 892928, "high")
+	if base == ModelParamsFingerprint(128000, 892928, "high") {
+		t.Fatal("a different context window must change the fingerprint")
+	}
+	if base == ModelParamsFingerprint(1024000, 400000, "high") {
+		t.Fatal("a different auto-compaction limit must change the fingerprint")
+	}
+	if base == ModelParamsFingerprint(1024000, 892928, "low") {
+		t.Fatal("a different reasoning effort must change the fingerprint")
+	}
+	if base == ModelParamsFingerprint(0, 0, "") {
+		t.Fatal("resolving a window where none existed must change the fingerprint")
+	}
+	if base != ModelParamsFingerprint(1024000, 892928, "high") {
+		t.Fatal("the fingerprint must be stable for identical params")
+	}
+}

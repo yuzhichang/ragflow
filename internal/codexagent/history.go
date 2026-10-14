@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -158,4 +159,18 @@ func HistoryWithoutCurrent(messages []map[string]interface{}) []map[string]inter
 func InstructionsFingerprint(instructions string) string {
 	sum := sha256.Sum256([]byte(instructions))
 	return hex.EncodeToString(sum[:])
+}
+
+// ModelParamsFingerprint is the scope-key component for the config mode 8 bakes into a
+// thread at create: the model context window and the auto-compaction limit (which decide
+// when Codex compacts) and the reasoning effort. Codex reads all of these from config at
+// thread create and does NOT reload them on thread/resume — the same reason the hosted-tool
+// policy and the base instructions are folded in — so a change must rebuild the thread.
+//
+// An unknown model gets Codex's fallback metadata (context_window = None, no auto-compaction);
+// passing the dialog model's real window is what makes a full-history rebuild safe over the
+// window. Zero means "not resolved, leave Codex's own value" and is part of the key so
+// gaining/losing a resolved value also rebuilds.
+func ModelParamsFingerprint(contextWindow, autoCompactLimit int, reasoningEffort string) string {
+	return fmt.Sprintf("ctx=%d;auto_compact=%d;effort=%s", contextWindow, autoCompactLimit, reasoningEffort)
 }
