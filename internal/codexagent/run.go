@@ -614,6 +614,22 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		// prompt's own `## Planning` / `## update_plan` guidance would describe a tool
 		// that does not exist. See the plan doc §5.9.
 		codexgo.WithThreadConfigOverride("tools.update_plan", map[string]interface{}{"enabled": true}),
+		// Enable Codex memory and its dedicated tools. The feature's canonical key is
+		// `memories` (Feature::MemoryTool defaults OFF; `memory_tool` is only the legacy
+		// alias), and the extension also requires memories.use_memories (default true).
+		// dedicated_tools (default false) is what actually exposes the memory tools
+		// (ad_hoc_note/list/read/search) — without it the model has none.
+		//
+		// !! CROSS-TENANT WARNING !! Codex memory has NO tenant scope: its root is
+		// codex_home/<memories|memories_v2> with no tenant/project/thread namespace, and
+		// codex_home is process-level (NOT a thread-overridable config key), so a thread
+		// cannot scope it. This app-server is SHARED across tenants, so enabling memory
+		// here makes one tenant's memories reachable in another tenant's thread. Enabled
+		// deliberately for a capability-ceiling test; production requires one CODEX_HOME
+		// (one app-server) per tenant — the same isolation the handle-leak residual risk
+		// already asks for (docs §5.5).
+		codexgo.WithThreadConfigOverride("features.memories", true),
+		codexgo.WithThreadConfigOverride("memories.dedicated_tools", true),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
 		// ApprovalNever: codex neither prompts nor refuses — exec_policy allows any

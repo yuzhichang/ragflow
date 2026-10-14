@@ -407,6 +407,29 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
   - **残余风险（诚实记录）**：共享 Codex 持有它每个 thread 的 `mcp_servers.url`（即 handle）。若它被攻陷，可在**受害者 turn 进行期间**用受害者的 handle 调桥（MCP 请求不带 thread 身份），读到受害者的 KB。per-turn binding 把窗口从 24h 收窄到 turn 时长，但**未消除**。缓解：**按租户隔离 Codex 实例**（每租户一个 app-server），或在 SDK 支持 `mcp_servers` 的 header 后加 per-request nonce。多副本另有中间态：binding 在 Kvrocks 中一致，但 turn 的跨实例串行化仍在本计划之外（§13 / P1-5）。binding 的 TTL（10 分钟）只需大于保活间隔（binder 每 1 分钟续期一次），**与 `codex.turn_timeout` 无关**——turn 再长也靠心跳在到期前续期，锁不会中途丢失。
 - 共享 Codex 若还开放 fs/命令能力，需与 MCP 检索能力解耦（靠上面的 sandbox + 审批 + 内置工具收敛约束，并以前置验证为准）。
 
+#### memory（跨会话记忆）与租户隔离 —— 无租户作用域
+
+Codex 的 memory **无法按租户/线程作用域隔离**，这是实现层的硬约束（codex 0.162.0 源码核实）：
+
+- **根路径只有两个维度**：`codex_home.join(version.directory_name())`（`core/src/config/mod.rs:3564-3565`；`directory_name()` 只返回 `"memories"` / `"memories_v2"`，`protocol/src/memory_version.rs:17-22`）。`ext/memories/src/local/*` 后端里**没有** tenant / project / thread 命名空间——文件按版本目录平铺。
+- **`codex_home` 不是可被 thread 覆盖的配置键**：`ConfigToml` 与它相关的只有 `allow_symlinked_codex_home`（`config/src/config_toml.rs:231`）；真正的 home 来自 `find_codex_home()`（`CODEX_HOME` 环境变量 / `~/.codex`），**只能在进程构造时**用 `ConfigOverrides::codex_home`（`core/src/config/mod.rs:1483-1550`）覆盖。因此 `thread/start` 的 config 覆盖表**触不到它**——`WithThreadConfigOverride` 对 memory 无效。
+- **协议上没有作用域字段**：`MemoryStatusParams` 无 scope；`ThreadMemoryMode` 只有 `enabled | disabled`（每线程 kill switch，不是命名空间）。
+- **唯一杠杆 = 每租户一个 `CODEX_HOME`**，即**每租户一个 app-server 进程**。当前部署是**单实例共享** → 一旦开启 memory，**A 租户的记忆会注入 B 租户 thread 的上下文**（比 §5.5 记录的 handle 泄漏更直接）。生产环境若要 memory，必须先做**按租户隔离 Codex**（同一条基础设施改动也能消除 handle 泄漏的残余风险）。
+
+**开关**（都可在 thread config override 下发）：
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `features.memories` | **false** | `Feature::MemoryTool` 的 canonical key 是 `memories`（`features/src/lib.rs:1269`；`memory_tool` 只是 legacy 别名）。**这是总开关**：`MemoriesExtensionConfig.enabled = features.enabled(MemoryTool) && memories.use_memories` |
+| `memories.use_memories` | true | 注入 memory 使用指令（关掉即不注入上下文） |
+| `memories.dedicated_tools` | **false** | 暴露 memory 工具（ad_hoc_note/list/read/search）；不开则模型**没有** memory 工具 |
+| `memories.generate_memories` | true | 新建 thread 的 `memory_mode`；false → 新 thread 记为 `disabled` |
+| `memories.disable_on_external_context` | false | **置 true 会自废 mode-8**：MCP 工具调用会把 thread 的 memory_mode 标为 polluted（`core/src/mcp_tool_call.rs:933`），而 mode-8 全程 MCP |
+
+memory 的写入由 app-server 进程内完成（`LocalMemoriesBackend` 用 `tokio::fs` 直接写 `CODEX_HOME`；startup extractor 同理），**不经过沙箱**——所以 §5.5 的 read-only 沙箱不阻碍 memory；反过来，memory 的隔离也不受 thread 配置影响，只能靠独立 `CODEX_HOME`。
+
+> 现状：mode 8 在 thread config 里开启 `features.memories` + `memories.dedicated_tools`（能力上限测试用）。**这是共享实例，故记忆跨租户**；若要上线必须改为按租户 endpoint 池（每租户独立 CODEX_HOME/volume）。
+
 ### 5.6 错误、超时、降级
 
 - 单 turn 墙钟预算 `codex.turn_timeout`（默认 30m），与 mode 5/6/7 对齐；超时 → 中断并写终局错误结果。
