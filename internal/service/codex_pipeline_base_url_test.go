@@ -183,3 +183,36 @@ func TestCommandNarration(t *testing.T) {
 		})
 	}
 }
+
+// agentNarration renders a sub-agent collaboration step (features.multi_agent_v2) so
+// delegation is visible in the panel; the namespaced tool key reads un-namespaced.
+func TestAgentNarration(t *testing.T) {
+	cases := []struct {
+		name string
+		rt   codexagent.RoundTrip
+		want string
+	}{
+		{
+			name: "running shows the delegated task",
+			rt:   codexagent.RoundTrip{Tool: "agent:spawnAgent", Kind: codexagent.RoundTripKindAgent, Args: "find the year", Status: codexagent.ToolStatusRunning},
+			want: "agent: spawnAgent find the year",
+		},
+		{
+			name: "completed appends the status",
+			rt:   codexagent.RoundTrip{Tool: "agent:spawnAgent", Kind: codexagent.RoundTripKindAgent, Args: "find the year", Status: codexagent.ToolStatusCompleted},
+			want: "agent: spawnAgent find the year (completed)",
+		},
+		{
+			name: "no args shows the tool alone",
+			rt:   codexagent.RoundTrip{Tool: "agent:listAgents", Kind: codexagent.RoundTripKindAgent, Status: codexagent.ToolStatusRunning},
+			want: "agent: listAgents",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentNarration(tc.rt); got != tc.want {
+				t.Fatalf("agentNarration(%+v) = %q, want %q", tc.rt, got, tc.want)
+			}
+		})
+	}
+}

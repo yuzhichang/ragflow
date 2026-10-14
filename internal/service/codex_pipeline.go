@@ -395,8 +395,11 @@ func (s *ChatPipelineService) codexAgent(
 			// stage and with exit-status wording: a command's outcome is a process exit,
 			// not a tool result.
 			stage, line := "MCP", toolNarration(rt)
-			if rt.Kind == codexagent.RoundTripKindCommand {
+			switch rt.Kind {
+			case codexagent.RoundTripKindCommand:
 				stage, line = "shell", commandNarration(rt)
+			case codexagent.RoundTripKindAgent:
+				stage, line = "agent", agentNarration(rt)
 			}
 			if line == "" {
 				return
@@ -655,6 +658,21 @@ func commandNarration(rt codexagent.RoundTrip) string {
 		return fmt.Sprintf("%s: %s (failed, %dms)", rt.Tool, rt.Args, rt.DurationMS)
 	default:
 		return fmt.Sprintf("%s: %s", rt.Tool, rt.Args)
+	}
+}
+
+// agentNarration renders one sub-agent collaboration step (features.multi_agent_v2) for the
+// thinking stream: the collaboration tool and the delegated task (or the targeted agents).
+// The tool arrives namespaced ("agent:spawnAgent"); the line reads better un-namespaced.
+func agentNarration(rt codexagent.RoundTrip) string {
+	name := strings.TrimPrefix(rt.Tool, "agent:")
+	switch {
+	case rt.Args == "":
+		return "agent: " + name
+	case rt.Status == codexagent.ToolStatusRunning:
+		return fmt.Sprintf("agent: %s %s", name, rt.Args)
+	default:
+		return fmt.Sprintf("agent: %s %s (%s)", name, rt.Args, rt.Status)
 	}
 }
 

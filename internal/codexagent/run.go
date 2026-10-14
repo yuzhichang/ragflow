@@ -164,10 +164,16 @@ const (
 	RoundTripKindMCP = "mcp"
 	// RoundTripKindCommand is a local shell command execution.
 	RoundTripKindCommand = "command"
+	// RoundTripKindAgent is a collaboration (sub-agent) tool call — spawnAgent,
+	// sendMessage, wait, listAgents, … Enabled by features.multi_agent_v2.
+	RoundTripKindAgent = "agent"
 	// commandToolName is the display name for a command execution in the thinking
 	// stream and in tool_call_counts (a distinct key, so a shell call never inflates the
 	// benchmark's retrieval "Search Calls", which sums only the configured search tools).
 	commandToolName = "shell"
+	// agentToolPrefix namespaces a collaboration tool in tool_call_counts (e.g.
+	// "agent:spawnAgent"), so a sub-agent call is never mistaken for an MCP tool.
+	agentToolPrefix = "agent:"
 )
 
 // RoundTrip statuses (the v2 McpToolCallStatus values).
@@ -847,6 +853,16 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 						}
 					}
 				}
+				if e.Item != nil && e.Item.Kind == codexgo.ItemKindCollabAgentToolCall {
+					// The call half of a sub-agent collaboration step (multi_agent_v2).
+					if rt, ok := collabRoundTrip(*e.Item); ok {
+						toolCallsSeen[e.Item.ID] = true
+						tally.call(rt.Tool)
+						if req.OnTool != nil {
+							req.OnTool(rt)
+						}
+					}
+				}
 				if e.Item != nil && e.Item.Kind == codexgo.ItemKindContextCompaction {
 					noteCompaction()
 				}
@@ -901,6 +917,25 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 								call.Status = ToolStatusRunning
 								call.DurationMS = 0
 								call.ExitCode = nil
+								tally.call(rt.Tool)
+								if req.OnTool != nil {
+									req.OnTool(call)
+								}
+							}
+							tally.outcome(rt)
+							if req.OnTool != nil {
+								req.OnTool(rt)
+							}
+						}
+					}
+					// The outcome half of a sub-agent collaboration step. No retrieval
+					// accounting either: it is not a corpus tool.
+					if e.Item.Kind == codexgo.ItemKindCollabAgentToolCall {
+						if rt, ok := collabRoundTrip(*e.Item); ok {
+							if !toolCallsSeen[e.Item.ID] {
+								toolCallsSeen[e.Item.ID] = true
+								call := rt
+								call.Status = ToolStatusRunning
 								tally.call(rt.Tool)
 								if req.OnTool != nil {
 									req.OnTool(call)
@@ -1089,6 +1124,45 @@ func compactString(s string) string {
 		return s[:cap-3] + "..."
 	}
 	return s
+}
+
+// collabRoundTrip reads a v2 `collabAgentToolCall` item — the sub-agent collaboration tools
+// enabled by features.multi_agent_v2 — into a RoundTrip for the thinking stream. `tool` is
+// the CollabAgentTool enum (spawnAgent, sendInput, resumeAgent, wait, closeAgent,
+// sendMessage, followupTask, interruptAgent, listAgents) and `status` is
+// CollabAgentToolCallStatus. It is reported under the "agent:" namespace so a sub-agent call
+// is never mistaken for an MCP retrieval tool, and counted under the same key.
+func collabRoundTrip(item codexgo.Item) (RoundTrip, bool) {
+	var payload struct {
+		Tool              string   `json:"tool"`
+		Status            string   `json:"status"`
+		Prompt            string   `json:"prompt"`
+		ReceiverThreadIDs []string `json:"receiverThreadIds"`
+	}
+	if err := item.Decode(&payload); err != nil || strings.TrimSpace(payload.Tool) == "" {
+		return RoundTrip{}, false
+	}
+	status := payload.Status
+	switch status {
+	case "", "inProgress":
+		status = ToolStatusRunning
+	case "completed":
+		status = ToolStatusCompleted
+	case "failed", "interrupted":
+		status = ToolStatusFailed
+	}
+	// wait/listAgents/interrupt carry no prompt; show how many agents were targeted so the
+	// line is still informative.
+	args := compactString(payload.Prompt)
+	if args == "" && len(payload.ReceiverThreadIDs) > 0 {
+		args = fmt.Sprintf("%d agent(s)", len(payload.ReceiverThreadIDs))
+	}
+	return RoundTrip{
+		Tool:   agentToolPrefix + payload.Tool,
+		Kind:   RoundTripKindAgent,
+		Args:   args,
+		Status: status,
+	}, true
 }
 
 // mcpToolOutput returns the text of an MCP tool call's result — what the bridge returned

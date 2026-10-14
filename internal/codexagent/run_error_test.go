@@ -196,6 +196,52 @@ func TestCommandRoundTrip(t *testing.T) {
 	}
 }
 
+// collabRoundTrip reads a sub-agent collaboration step (features.multi_agent_v2) so the
+// thinking stream shows delegation — otherwise enabling the feature is invisible. The tool
+// is namespaced into the "agent:" counts key so it can never pass for a retrieval tool.
+func TestCollabRoundTrip(t *testing.T) {
+	item := func(payload map[string]any) codexgo.Item {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return codexgo.Item{ID: "a1", Kind: codexgo.ItemKindCollabAgentToolCall, Payload: raw}
+	}
+
+	got, ok := collabRoundTrip(item(map[string]any{
+		"tool":              "spawnAgent",
+		"status":            "completed",
+		"prompt":            "find the   founding year",
+		"receiverThreadIds": []string{"t1"},
+	}))
+	if !ok {
+		t.Fatal("a well-formed collabAgentToolCall must parse")
+	}
+	if got.Tool != "agent:spawnAgent" || got.Kind != RoundTripKindAgent || got.Status != ToolStatusCompleted {
+		t.Fatalf("round trip = %+v", got)
+	}
+	if got.Args != "find the founding year" {
+		t.Fatalf("args must be one collapsed line: %q", got.Args)
+	}
+
+	// wait/interrupt carry no prompt — report the target count instead of an empty line.
+	if wait, ok := collabRoundTrip(item(map[string]any{"tool": "wait", "status": "inProgress", "receiverThreadIds": []string{"t1", "t2"}})); !ok || wait.Args != "2 agent(s)" || wait.Status != ToolStatusRunning {
+		t.Fatalf("wait = %+v ok=%v", wait, ok)
+	}
+	// interrupted reads as failed; a missing status reads as running.
+	if bad, ok := collabRoundTrip(item(map[string]any{"tool": "sendMessage", "status": "interrupted"})); !ok || bad.Status != ToolStatusFailed {
+		t.Fatalf("interrupted = %+v ok=%v", bad, ok)
+	}
+	if running, ok := collabRoundTrip(item(map[string]any{"tool": "listAgents"})); !ok || running.Status != ToolStatusRunning {
+		t.Fatalf("missing status = %+v ok=%v", running, ok)
+	}
+	// An item with no collaboration tool is not a step.
+	if _, ok := collabRoundTrip(item(map[string]any{"status": "completed"})); ok {
+		t.Fatal("an item without a tool must not parse")
+	}
+}
+
 // compactArgs keeps the thinking line on one line and bounded, so a long query list
 // cannot flood the panel.
 func TestCompactArgs(t *testing.T) {
