@@ -541,6 +541,8 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 **命令执行的叙事与计数**：runner 现在也读 `commandExecution` item（`commandRoundTrip`），把每条本地命令作为 `RoundTrip{Kind:"command", Tool:"shell", Args:<命令行>, ExitCode}` 交给 `OnTool`；服务层用 `commandNarration` 在思考流里渲染成 `shell: python3 -c '…' (exit 0, 42ms)`（`stage:"shell"`），与 MCP 步骤区分。命令计入 `tool_call_counts["shell"]`（**独立键**，不影响 benchmark 的 Search Calls——后者只累加配置里的检索工具），但**不进入** retrieved/served 检索台账。
 
+**额外开启的能力开关**（能力上限测试）：`features.token_budget`（加 `get_context_remaining` + `new_context_window`；并把自动压缩切到 inline token-budget 任务）、`features.current_time_reminder`（加 `current_time` 工具）、`features.sleep_tool`（默认已开但 mode 默认 `model_driven`，仅在时钟提醒开启时才注册 —— 这里显式设 `{enabled:true, mode:"always_on"}`）、`features.multi_agent_v2` + `features.multi_agent_v2_dynamic_tools`（V2 协作工具：spawn/send_message/followup_task/list_agents/wait_agent；子智能体会额外开 thread，token 与并发都会上升）。
+
 ---
 
 ## 6. 依赖与版本固定

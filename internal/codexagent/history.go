@@ -170,11 +170,14 @@ func InstructionsFingerprint(instructions string) string {
 //     network-isolated sandbox is the boundary that still blocks writes and the web);
 //   - Codex memory + its dedicated tools are enabled (`features.memories`,
 //     `memories.dedicated_tools`) — note memory is a single store per CODEX_HOME, so on a
-//     shared app-server this is cross-tenant (see docs §5.5).
+//     shared app-server this is cross-tenant (see docs §5.5);
+//   - extra default-off capabilities are on: `features.token_budget`,
+//     `features.current_time_reminder`, `features.sleep_tool` (mode always_on) and
+//     `features.multi_agent_v2` (+ dynamic tools).
 //
 // Bump the suffix whenever any of these changes, so threads built under the old policy
 // rebuild exactly once (the same device as hostedToolsPolicy).
-const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=never-v1;memory=on-v1"
+const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=never-v1;memory=on-v1;extras=budget,clock,sleep,agents-v1"
 
 // InstructionsPolicyFingerprint returns the current instruction/tool policy marker (see
 // instructionsPolicy).

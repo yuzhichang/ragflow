@@ -630,6 +630,26 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		// already asks for (docs §5.5).
 		codexgo.WithThreadConfigOverride("features.memories", true),
 		codexgo.WithThreadConfigOverride("memories.dedicated_tools", true),
+		// Additional default-off capabilities, enabled deliberately for the same
+		// capability-ceiling test:
+		//  - token_budget: registers `get_context_remaining` + `new_context_window`, so the
+		//    model can see how much context is left. It also switches auto-compaction to the
+		//    inline token-budget task (core/src/session/turn.rs).
+		//  - current_time_reminder: registers the `current_time` tool (clock questions).
+		//  - sleep_tool: the feature is already on by default, but its mode defaults to
+		//    `model_driven`, which registers the tool only when the clock reminder is on.
+		//    `always_on` registers it outright (SleepToolConfigToml.mode).
+		//  - multi_agent_v2 (+ multi_agent_v2_dynamic_tools): the V2 collaboration tools
+		//    (spawn/send_message/followup_task/list_agents/wait_agent). Sub-agents mean
+		//    additional threads per turn — more tokens and concurrency.
+		codexgo.WithThreadConfigOverride("features.token_budget", true),
+		codexgo.WithThreadConfigOverride("features.current_time_reminder", true),
+		codexgo.WithThreadConfigOverride("features.sleep_tool", map[string]interface{}{
+			"enabled": true,
+			"mode":    "always_on",
+		}),
+		codexgo.WithThreadConfigOverride("features.multi_agent_v2", true),
+		codexgo.WithThreadConfigOverride("features.multi_agent_v2_dynamic_tools", true),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
 		// ApprovalNever: codex neither prompts nor refuses — exec_policy allows any
