@@ -580,7 +580,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 **线程**：provider 是 thread 创建时烘焙的，**换 provider 必然重建 thread**。首次尝试走正常复用路径；重试带 `TurnRequest.ForceRebuild`——**既不复用、也不写回** ThreadRecord。不写回是刻意的：provider 身份不在复用键里，写回会让下一轮的主模型指纹命中这条记录、静默续用指向备用端点的 thread；不写回则保持"每轮仍先试主模型"。
 
-**可见性**：转移时向思考流写一条模型级事件 `ThinkEvent{Kind:"provider_failover", Stage:"provider"}`（形如 `provider failover: <m1> failed (<kind>, http N); retrying on <m2>`），并 `WarnCtx` 记一条日志（含 chat_id / from / to / kind / http_status）。全部候选失败 → 仍走既有的 `**ERROR**` 终局（busy 文案不变）。
+**可见性**：转移时向思考流写一条模型级事件 `ThinkEvent{Kind:"provider_failover", Stage:"provider"}`，行文为 `provider failover: <model1>(<instance1>) failed (<kind>[, http N]); retrying on <model2>(<instance2>)`——**必须带 instance 名**：候选之间往往 provider 与 model 相同、只有 instance（即 base_url/凭据）不同，不写 instance 就会退化成"<model> 失败，改用 <model>"。并 `WarnCtx` 记一条日志（含 chat_id / from / to / kind / http_status，from/to 用同样的带 instance 标签）。全部候选失败 → 仍走既有的 `**ERROR**` 终局（busy 文案不变）。
 
 **未做**：候选冷却（eino 的 30s `failoverCooldown` 短路）。主模型每轮都会先被尝试，若它持续故障则每轮多一次快速失败 + 一次重建；后续可按需补上。
 
@@ -591,7 +591,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 - 错误已类型化：终局/日志从 `code="\"internalServerError\""` 变为 `kind=internalServerError`；
 - 触发转移并落 `codex: provider failover` 告警（含 from/to/kind/http_status）；
 - 重试**确实重建了 thread**（codex 侧出现两条独立 rollout）；
-- 思考流出现 `think_event{kind:"provider_failover", stage:"provider"}` 及其文本行（`provider failover: <m1> failed (<kind>); retrying on <m2>`）；
+- 思考流出现 `think_event{kind:"provider_failover", stage:"provider"}` 及其文本行。实测原文（主模型 = `MiniMax-M3` 实例 `sim500` 指向死端点，成员 = `MiniMax-M3` 实例 `xjx`）：`provider failover: MiniMax-M3(sim500) failed (internalServerError); retrying on MiniMax-M3(xjx)`；日志同形（`from` / `to` 用同一标签）；
 - 把成员换成 SiliconFlow 时被正确跳过：`reason: provider "SILICONFLOW" is outside codex.responses_providers`（best-effort 语义生效）。
 - **未演示"备用成功"**：白名单内只有 MiniMax，而当时它自身也在返回 500；要演示成功路径，需把某个健康 provider 加入白名单。
 

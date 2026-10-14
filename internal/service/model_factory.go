@@ -1096,6 +1096,10 @@ func modelTypesFromBitmask(modelType entity.ModelType) []entity.ModelType {
 type ResolvedModelTarget struct {
 	ProviderName string
 	ModelName    string
+	// InstanceName is the provider instance the model is served by (e.g. "zyf"). Two
+	// candidates routinely share provider and model and differ only here — the endpoint and
+	// credentials come from the instance — so it is what distinguishes them to a human.
+	InstanceName string
 	Driver       modelModule.ModelDriver
 	BaseURL      string
 	APIKey       string
@@ -1120,7 +1124,12 @@ func (f *ModelFactory) ResolveDefaultChatTarget(ctx context.Context, access Mode
 }
 
 func resolvedTargetFrom(t *modelTarget) *ResolvedModelTarget {
-	r := &ResolvedModelTarget{ProviderName: t.ProviderName, ModelName: t.ModelName, Driver: t.Driver}
+	r := &ResolvedModelTarget{
+		ProviderName: t.ProviderName,
+		ModelName:    t.ModelName,
+		InstanceName: t.InstanceName,
+		Driver:       t.Driver,
+	}
 	if t.APIConfig != nil {
 		if t.APIConfig.BaseURL != nil {
 			r.BaseURL = *t.APIConfig.BaseURL

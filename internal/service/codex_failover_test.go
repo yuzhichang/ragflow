@@ -121,3 +121,25 @@ func TestCandidateKey(t *testing.T) {
 		t.Fatal("a different model is a different candidate")
 	}
 }
+
+// TestCodexTargetLabel pins the human label the failover narration uses. Candidates routinely
+// share provider and model and differ only by instance, so the instance must qualify the model —
+// otherwise the line reads "<model> failed; retrying on <model>".
+func TestCodexTargetLabel(t *testing.T) {
+	cases := []struct {
+		name   string
+		target *ResolvedModelTarget
+		want   string
+	}{
+		{"instance qualified", &ResolvedModelTarget{ModelName: "MiniMax-M3", InstanceName: "zyf"}, "MiniMax-M3(zyf)"},
+		{"no instance name", &ResolvedModelTarget{ModelName: "MiniMax-M3"}, "MiniMax-M3"},
+		{"nil target", nil, "unknown model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexTargetLabel(tc.target); got != tc.want {
+				t.Fatalf("codexTargetLabel() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

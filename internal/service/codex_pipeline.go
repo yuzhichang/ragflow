@@ -413,6 +413,20 @@ func failoverReason(turnErr *codexagent.TurnError) string {
 	}
 }
 
+// codexTargetLabel names a candidate for humans: the model, qualified by the instance serving
+// it. Two failover candidates routinely share provider and model and differ only by instance —
+// that IS the situation a failover exists for — so without the qualification the narration
+// degenerates to "<model> failed; retrying on <model>".
+func codexTargetLabel(target *ResolvedModelTarget) string {
+	if target == nil {
+		return "unknown model"
+	}
+	if target.InstanceName == "" {
+		return target.ModelName
+	}
+	return fmt.Sprintf("%s(%s)", target.ModelName, target.InstanceName)
+}
+
 // codexAgent runs one mode 8 (Codex) turn: it brokers the session's Codex thread (via
 // internal/codexagent) and lets Codex call the agent_rag retrieval tools through this
 // process's MCP bridge.
@@ -588,12 +602,12 @@ func (s *ChatPipelineService) codexAgent(
 		// on another model rather than staring at a gap.
 		emitFailover := func(from, to *ResolvedModelTarget, turnErr *codexagent.TurnError) {
 			line := fmt.Sprintf("provider failover: %s failed (%s); retrying on %s",
-				from.ModelName, failoverReason(turnErr), to.ModelName)
+				codexTargetLabel(from), failoverReason(turnErr), codexTargetLabel(to))
 			common.WarnCtx(ctx, "codex: provider failover",
 				zap.String("chat_id", chat.ID),
-				zap.String("from_model", from.ModelName),
+				zap.String("from", codexTargetLabel(from)),
 				zap.String("from_provider", from.Driver.Name()),
-				zap.String("to_model", to.ModelName),
+				zap.String("to", codexTargetLabel(to)),
 				zap.String("kind", string(turnErr.Kind)),
 				zap.Int("http_status", turnErr.HTTPStatus),
 				zap.Error(turnErr))
