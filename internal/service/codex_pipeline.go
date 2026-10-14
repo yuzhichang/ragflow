@@ -475,14 +475,17 @@ func (s *ChatPipelineService) codexAgent(
 				ChatID:     chat.ID,
 				WebSearch:  useWebSearch,
 			},
-			WorkDir:      cfg.WorkDir,
-			Instructions: codexCitationContract(quote),
-			TurnTimeout:  cfg.TurnTimeout,
-			Messages:     messages,
-			OnContent:    emitContent,
-			OnReasoning:  emitReasoning,
-			OnTool:       emitTool,
-			OnCompaction: emitCompaction,
+			WorkDir: cfg.WorkDir,
+			// The root thread's contract; a delegated sub-agent gets the child-scoped one
+			// through Codex's subagent_developer_instructions seam (see codexSubagentContract).
+			Instructions:         codexRootContract(quote),
+			SubagentInstructions: codexSubagentContract(quote),
+			TurnTimeout:          cfg.TurnTimeout,
+			Messages:             messages,
+			OnContent:            emitContent,
+			OnReasoning:          emitReasoning,
+			OnTool:               emitTool,
+			OnCompaction:         emitCompaction,
 			// A thread is only resumed when its stored handle is still alive; otherwise
 			// its baked-in MCP URL would 401 (a restart lost the handle) and the
 			// retrieval path would silently break.
@@ -568,11 +571,11 @@ func (s *ChatPipelineService) codexAgent(
 	return out, nil
 }
 
-// codexCitationContract is the thread's citation contract (see the plan, D5/§4.7). It is
+// codexRootContract is the ROOT thread's citation contract (see the plan, D5/§4.7). It is
 // delivered as DEVELOPER instructions — additive to Codex's own prompt — and covers the
-// provenance format (the model ENDS each sourced line with that passage's tuple, and the
-// backend, not the model, assigns [ID:N]) plus the tool split the model would otherwise get
-// wrong.
+// tool split the model would otherwise get wrong plus the provenance format (the model ENDS
+// each sourced line with that passage's tuple, and the backend, not the model, assigns
+// [ID:N]).
 //
 // It is DELIBERATELY generic about web search. The contract is baked into a thread at
 // create and thread/resume does not reload it, while web search is a per-turn decision;
@@ -582,34 +585,75 @@ func (s *ChatPipelineService) codexAgent(
 // prompt points at that list ("use exactly the retrieval tools it contains"). The prompt
 // therefore never goes stale: it is the same whether web search is on or off.
 //
-// The shell is a LOCAL COMPUTATION channel, not a retrieval one. mode 8 runs with
-// ApprovalNever + a read-only sandbox whose network_access is false, so a short script
-// (e.g. `python3 -c ...`) runs for arithmetic but cannot reach the network — enabling Codex
-// to compute exactly without giving the model a way around the conversation's web-search
-// setting. The prompt therefore ALLOWS the shell for calculation and forbids it for the
-// web: left unsaid, the model either refuses to compute, or burns the turn on `curl`.
-func codexCitationContract(quote bool) string {
+// The shell is a LOCAL COMPUTATION channel, not a retrieval one (see codexShellPolicy).
+//
+// It carries NO instruction about the answer's prose shape: Codex's own agentic prompt
+// already produces prose, so a "answer the user in prose" line earns nothing here and is
+// exactly the root-oriented phrasing that mis-fits a sub-agent.
+func codexRootContract(quote bool) string {
 	var b strings.Builder
-	b.WriteString("Answer the user in prose. Your RETRIEVAL tools are the MCP tools provided for this conversation: " +
-		"the knowledge-base retrieval tools, and — when this conversation enables web search — a web search tool. " +
-		"The tool list you are given is authoritative: use exactly the retrieval tools it contains, and never assume " +
-		"a retrieval capability it does not list. ")
-	b.WriteString("You also have a shell for LOCAL computation only: when a question needs arithmetic, counting or a " +
-		"short script, run it (e.g. python3 or node) instead of guessing. The shell has NO network access, so never " +
-		"use it to fetch or search the web (curl and the like) — such attempts are blocked by the sandbox and only " +
-		"waste the turn. All retrieval therefore comes from the tools above: if the web search tool is available and " +
-		"the knowledge base does not cover the question, use that tool; otherwise answer from the retrieved passages " +
-		"and say plainly what they do not cover. ")
+	b.WriteString("If the web search tool is available and the knowledge base does not cover the question, use that tool; " +
+		"otherwise answer from the retrieved passages and say plainly what they do not cover. ")
+	b.WriteString(codexRetrievalToolsLine())
+	b.WriteString(codexShellPolicy())
+	b.WriteString(codexProvenanceContract(quote))
+	return b.String()
+}
+
+// codexSubagentContract is the MINIMAL developer fragment a delegated sub-agent gets in
+// place of the root contract (delivered via features.multi_agent_v2.subagent_developer_instructions).
+//
+// Codex OWNS a sub-agent's identity/role prompt (its <multi_agent_role> / <multi_agent_mode>
+// fragments, chosen from the fork mode, depth and role) AND owns where a developer fragment
+// comes from: by default it copies the parent thread's developer instructions into every
+// child, which would hand a worker a prompt written for the end-user-facing root. So mode 8
+// supplies the two things Codex cannot know — which tools may retrieve, and the citation
+// tuple format — and nothing else. Anything Codex's own prompts or the sandbox already
+// cover stays out: the worker framing is Codex's role prompt, and the shell/network policy
+// is enforced by the sandbox.
+func codexSubagentContract(quote bool) string {
+	return codexRetrievalToolsLine() + codexProvenanceContract(quote)
+}
+
+// codexRetrievalToolsLine is the part both the root agent and a sub-agent get: which tools
+// may retrieve, and that the tool list (not the prompt) is authoritative — so neither
+// invents a capability it does not have.
+func codexRetrievalToolsLine() string {
+	return "Your RETRIEVAL tools are the MCP tools provided for this conversation: the knowledge-base retrieval tools, " +
+		"and — when this conversation enables web search — a web search tool. The tool list you are given is " +
+		"authoritative: use exactly the retrieval tools it contains, and never assume a retrieval capability it does " +
+		"not list. "
+}
+
+// codexShellPolicy scopes the shell, and is ROOT-only: a delegated sub-agent is a bounded
+// retrieval task, and the sandbox already enforces the same boundary.
+//
+// It matters for the root because mode 8 runs with a read-only sandbox whose network_access
+// is false, so a short script (e.g. `python3 -c ...`) runs for arithmetic but cannot reach
+// the network — enabling exact computation without giving the model a way around the
+// conversation's web-search setting. Left unsaid, the model either refuses to compute, or
+// burns the turn on `curl`.
+func codexShellPolicy() string {
+	return "You also have a shell for LOCAL computation only: when a task needs arithmetic, counting or a short script, " +
+		"run it (e.g. python3 or node) instead of guessing. The shell has NO network access, so never use it to fetch " +
+		"or search the web (curl and the like) — such attempts are blocked by the sandbox and only waste the turn. " +
+		"All retrieval therefore comes from the tools above. "
+}
+
+// codexProvenanceContract is the citation tuple format, present only when the conversation
+// asks for citations (quote). It is role-neutral on purpose: the root agent and a sub-agent
+// emit the same tuples, so a sub-agent's findings carry provenance the root can reuse
+// verbatim instead of re-deriving ids.
+func codexProvenanceContract(quote bool) string {
 	if !quote {
-		return b.String()
+		return ""
 	}
-	b.WriteString("Every line that states a fact backed by a retrieved passage must END with that passage's provenance, in exactly this form:\n" +
+	return "Every line that states a fact backed by a retrieved passage must END with that passage's provenance, in exactly this form:\n" +
 		"(doc: <doc_name>, doc_id: <doc_id>, chunk_id: <chunk_id>, snippet: \"<short verbatim excerpt>\")\n" +
 		"A passage returned by the web search tool uses this form instead:\n" +
-		"(source: web, url: <url>, title: <title>, snippet: \"<short verbatim excerpt>\")\n")
-	b.WriteString("Copy every value verbatim from that passage's tool output; never invent ids, urls or titles. " +
-		"Do not write [ID:N] markers - the system assigns them.")
-	return b.String()
+		"(source: web, url: <url>, title: <title>, snippet: \"<short verbatim excerpt>\")\n" +
+		"Copy every value verbatim from that passage's tool output; never invent ids, urls or titles. " +
+		"Do not write [ID:N] markers - the system assigns them."
 }
 
 // chatKBIDs extracts the dialog's knowledge-base ids as strings.

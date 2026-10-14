@@ -99,6 +99,13 @@ type TurnRequest struct {
 	WorkDir string
 	// Instructions is the citation contract (see the plan, D5).
 	Instructions string
+	// SubagentInstructions is the developer fragment a DELEGATED sub-agent gets, in place
+	// of Instructions. Codex otherwise copies the parent thread's developer instructions
+	// into every child, so without this a sub-agent would be handed a prompt written for
+	// the end-user-facing root. It is delivered through Codex's seam
+	// features.multi_agent_v2.subagent_developer_instructions; Codex still layers its own
+	// sub-agent role prompt on top. Empty means "let Codex inherit the parent's".
+	SubagentInstructions string
 
 	TurnTimeout time.Duration
 	// Messages is the full history with the current user message LAST.
@@ -453,10 +460,15 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// rebuild once, instead of keeping a server-side tool we have since disabled.
 	scopeFP = CombineFingerprints(scopeFP, HostedToolsFingerprint())
 	// The citation contract is baked into the thread at create and not reloaded on
-	// resume, so it is part of the reuse key too. Fold it in as ONE further hash: two
-	// 64-char hex strings joined would exceed the size:64 column.
+	// resume, so it is part of the reuse key too. The sub-agent contract rides the same
+	// create-time config (features.multi_agent_v2.subagent_developer_instructions), so it
+	// is folded in as well. Each is folded in as ONE further hash: concatenating 64-char
+	// hex strings would exceed the size:64 column.
 	if req.Instructions != "" {
 		scopeFP = CombineFingerprints(scopeFP, InstructionsFingerprint(req.Instructions))
+	}
+	if req.SubagentInstructions != "" {
+		scopeFP = CombineFingerprints(scopeFP, InstructionsFingerprint(req.SubagentInstructions))
 	}
 	// HOW the contract is delivered and which tools we enable are also baked at create,
 	// so the policy marker is part of the reuse key — it also forces a one-time rebuild
@@ -469,7 +481,7 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	if req.ModelContextWindow > 0 && req.ModelContextWindow > req.ModelMaxOutput {
 		autoCompactLimit = req.ModelContextWindow - req.ModelMaxOutput
 	}
-	scopeFP = CombineFingerprints(scopeFP, ModelParamsFingerprint(req.ModelContextWindow, autoCompactLimit, req.ReasoningEffort))
+	scopeFP = CombineFingerprints(scopeFP, ModelParamsFingerprint(req.Model, req.ModelContextWindow, autoCompactLimit, req.ReasoningEffort))
 	// The history the thread must ALREADY have is everything before the current user
 	// message. Normal growth (the previous answer + this question) is not drift; a
 	// deletion or edit makes this differ from what we recorded after the last turn.
@@ -649,16 +661,15 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		//  - sleep_tool: the feature is already on by default, but its mode defaults to
 		//    `model_driven`, which registers the tool only when the clock reminder is on.
 		//    `always_on` registers it outright (SleepToolConfigToml.mode).
-		//  - multi_agent_v2 (+ multi_agent_v2_dynamic_tools): the V2 collaboration tools
-		//    (spawn/send_message/followup_task/list_agents/wait_agent). Sub-agents mean
-		//    additional threads per turn — more tokens and concurrency.
+		//  - multi_agent_v2_dynamic_tools: the V2 collaboration tools' dynamic-tool
+		//    surface. features.multi_agent_v2 itself is added below, as a TABLE, so it can
+		//    also carry the sub-agent developer contract.
 		codexgo.WithThreadConfigOverride("features.token_budget", true),
 		codexgo.WithThreadConfigOverride("features.current_time_reminder", true),
 		codexgo.WithThreadConfigOverride("features.sleep_tool", map[string]interface{}{
 			"enabled": true,
 			"mode":    "always_on",
 		}),
-		codexgo.WithThreadConfigOverride("features.multi_agent_v2", true),
 		codexgo.WithThreadConfigOverride("features.multi_agent_v2_dynamic_tools", true),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
@@ -673,8 +684,35 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		// including sandbox-escalation requests, so the sandbox still bounds what runs).
 		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalOnRequest()),
 	}
+	// features.multi_agent_v2 is passed as a TABLE, not the bare `true` shorthand the config
+	// schema also accepts, so the thread can carry the SUB-AGENT developer contract too.
+	// Codex applies subagent_developer_instructions to a spawned child in place of the
+	// parent's own developer instructions (core/src/agent/child_config.rs) and still adds
+	// its own sub-agent role prompt — this is the delivery seam for
+	// codexSubagentContract. The V2 collaboration tools (spawn/send_message/followup_task/
+	// list_agents/wait_agent) come with it; sub-agents mean extra threads per turn, so more
+	// tokens and concurrency.
+	multiAgent := map[string]interface{}{"enabled": true}
+	if req.SubagentInstructions != "" {
+		multiAgent["subagent_developer_instructions"] = req.SubagentInstructions
+	}
+	opts = append(opts, codexgo.WithThreadConfigOverride("features.multi_agent_v2", multiAgent))
 	if req.Model != "" {
-		opts = append(opts, codexgo.WithThreadModel(req.Model))
+		// The dialog model goes in TWICE, on purpose:
+		//   - thread/start's top-level `model` param selects it for this thread;
+		//   - the `model` config entry bakes it into the thread's config, which is what a
+		//     FRESH (non-forked, `fork_turns:"none"`) sub-agent inherits. A full-history
+		//     fork carries the parent's model through the forked context, but a fresh child
+		//     builds its config from the thread config — and without this entry that config
+		//     still holds the shared app-server's DEFAULT model. The provider IS inherited,
+		//     so the child then calls the dialog provider with the app-server's model name
+		//     (e.g. `gpt-6.1-sol`, not in the provider's catalog) and every request is
+		//     rejected with "unknown model"; the child dies before it can call any tool and
+		//     the parent's `wait_agent` times out, stalling the whole turn.
+		opts = append(opts,
+			codexgo.WithThreadModel(req.Model),
+			codexgo.WithThreadConfigOverride("model", req.Model),
+		)
 	}
 	// Tell Codex the dialog model's REAL window. Codex resolves any model outside its own
 	// manifest to fallback metadata (context_window = None), and with no window it neither

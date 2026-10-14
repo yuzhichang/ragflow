@@ -150,26 +150,29 @@ func TestHistoryWithoutCurrent(t *testing.T) {
 	}
 }
 
-// TestModelParamsFingerprintDistinguishesParams pins that the model window, the
-// auto-compaction limit and the reasoning effort are part of the thread's reuse key. They
-// are baked into the thread config at create and thread/resume does not reload them, so a
-// change (a corrected window, a different effort) must force a rebuild — otherwise the
-// thread keeps the old value forever.
+// TestModelParamsFingerprintDistinguishesParams pins that the model name, the model window,
+// the auto-compaction limit and the reasoning effort are part of the thread's reuse key.
+// They are baked into the thread config at create and thread/resume does not reload them, so
+// a change (a different dialog model, a corrected window, a different effort) must force a
+// rebuild — otherwise the thread keeps the old value forever.
 func TestModelParamsFingerprintDistinguishesParams(t *testing.T) {
-	base := ModelParamsFingerprint(1024000, 892928, "high")
-	if base == ModelParamsFingerprint(128000, 892928, "high") {
+	base := ModelParamsFingerprint("MiniMax-M3", 1024000, 892928, "high")
+	if base == ModelParamsFingerprint("other-model", 1024000, 892928, "high") {
+		t.Fatal("a different model name must change the fingerprint")
+	}
+	if base == ModelParamsFingerprint("MiniMax-M3", 128000, 892928, "high") {
 		t.Fatal("a different context window must change the fingerprint")
 	}
-	if base == ModelParamsFingerprint(1024000, 400000, "high") {
+	if base == ModelParamsFingerprint("MiniMax-M3", 1024000, 400000, "high") {
 		t.Fatal("a different auto-compaction limit must change the fingerprint")
 	}
-	if base == ModelParamsFingerprint(1024000, 892928, "low") {
+	if base == ModelParamsFingerprint("MiniMax-M3", 1024000, 892928, "low") {
 		t.Fatal("a different reasoning effort must change the fingerprint")
 	}
-	if base == ModelParamsFingerprint(0, 0, "") {
+	if base == ModelParamsFingerprint("", 0, 0, "") {
 		t.Fatal("resolving a window where none existed must change the fingerprint")
 	}
-	if base != ModelParamsFingerprint(1024000, 892928, "high") {
+	if base != ModelParamsFingerprint("MiniMax-M3", 1024000, 892928, "high") {
 		t.Fatal("the fingerprint must be stable for identical params")
 	}
 }

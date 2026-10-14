@@ -174,26 +174,34 @@ func InstructionsFingerprint(instructions string) string {
 //     shared app-server this is cross-tenant (see docs §5.5);
 //   - extra default-off capabilities are on: `features.token_budget`,
 //     `features.current_time_reminder`, `features.sleep_tool` (mode always_on) and
-//     `features.multi_agent_v2` (+ dynamic tools).
+//     `features.multi_agent_v2` (+ dynamic tools);
+//   - a delegated sub-agent gets its own developer fragment
+//     (`features.multi_agent_v2.subagent_developer_instructions`) instead of inheriting the
+//     root's contract — a create-time config value, so a change rebuilds the thread.
 //
 // Bump the suffix whenever any of these changes, so threads built under the old policy
 // rebuild exactly once (the same device as hostedToolsPolicy).
-const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=on-request-v1;memory=on-v1;extras=budget,clock,sleep,agents-v1"
+const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=on-request-v1;memory=on-v1;extras=budget,clock,sleep,agents-v2"
 
 // InstructionsPolicyFingerprint returns the current instruction/tool policy marker (see
 // instructionsPolicy).
 func InstructionsPolicyFingerprint() string { return instructionsPolicy }
 
 // ModelParamsFingerprint is the scope-key component for the config mode 8 bakes into a
-// thread at create: the model context window and the auto-compaction limit (which decide
-// when Codex compacts) and the reasoning effort. Codex reads all of these from config at
-// thread create and does NOT reload them on thread/resume — the same reason the hosted-tool
-// policy and the base instructions are folded in — so a change must rebuild the thread.
+// thread at create: the dialog model name, the model context window and the
+// auto-compaction limit (which decide when Codex compacts) and the reasoning effort. Codex
+// reads all of these from config at thread create and does NOT reload them on
+// thread/resume — the same reason the hosted-tool policy and the base instructions are
+// folded in — so a change must rebuild the thread.
+//
+// The model name is here because it is baked into the thread config (to seed fresh
+// sub-agents, see Runner.threadOptions): switching a conversation's dialog model must
+// rebuild the thread so the new name reaches a fresh child.
 //
 // An unknown model gets Codex's fallback metadata (context_window = None, no auto-compaction);
 // passing the dialog model's real window is what makes a full-history rebuild safe over the
 // window. Zero means "not resolved, leave Codex's own value" and is part of the key so
 // gaining/losing a resolved value also rebuilds.
-func ModelParamsFingerprint(contextWindow, autoCompactLimit int, reasoningEffort string) string {
-	return fmt.Sprintf("ctx=%d;auto_compact=%d;effort=%s", contextWindow, autoCompactLimit, reasoningEffort)
+func ModelParamsFingerprint(model string, contextWindow, autoCompactLimit int, reasoningEffort string) string {
+	return fmt.Sprintf("model=%s;ctx=%d;auto_compact=%d;effort=%s", model, contextWindow, autoCompactLimit, reasoningEffort)
 }

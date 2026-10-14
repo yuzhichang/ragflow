@@ -55,12 +55,12 @@ func TestNormalizeResponsesBaseURL(t *testing.T) {
 //     truth for whether web search exists, so the prompt must not claim either way, and must
 //     stay identical across a web-search toggle (otherwise prompt and tool list are two
 //     copies of one fact that can disagree);
-//   - it scopes the shell: LOCAL computation is wanted (mode 8 runs ApprovalNever so a short
-//     script resolves arithmetic exactly), but the shell has no network, so it must never be
-//     used as a path to the web — otherwise the model either refuses to compute, or burns
-//     the turn on `curl`.
+//   - it scopes the shell: LOCAL computation is wanted (mode 8 runs a read-only, network-
+//     isolated sandbox so a short script resolves arithmetic exactly), but the shell has no
+//     network, so it must never be used as a path to the web — otherwise the model either
+//     refuses to compute, or burns the turn on `curl`.
 func TestCodexCitationContractDefersCapabilityAndScopesTheShell(t *testing.T) {
-	quoted := codexCitationContract(true)
+	quoted := codexRootContract(true)
 
 	// Capability comes from the tool list, not the prompt: conditional everywhere.
 	if !strings.Contains(quoted, "authoritative") || !strings.Contains(quoted, "tool list") {
@@ -94,12 +94,58 @@ func TestCodexCitationContractDefersCapabilityAndScopesTheShell(t *testing.T) {
 	}
 
 	// Quote off still scopes the shell and defers capability; it only drops the format.
-	plain := codexCitationContract(false)
+	plain := codexRootContract(false)
 	if !strings.Contains(plain, "NO network access") || !strings.Contains(plain, "curl") {
 		t.Errorf("quote-off contract dropped the shell scope:\n%s", plain)
 	}
 	if strings.Contains(plain, "(doc: <doc_name>") {
 		t.Errorf("quote-off contract should not prescribe a provenance format:\n%s", plain)
+	}
+
+	// The root contract carries no prose-shape instruction: Codex's own agentic prompt
+	// already answers in prose, and the line is exactly the root-oriented phrasing that
+	// mis-fits a sub-agent.
+	if strings.Contains(quoted, "Answer the user in prose") {
+		t.Errorf("contract still carries the redundant prose instruction:\n%s", quoted)
+	}
+}
+
+// TestCodexSubagentContractIsMinimal pins that a delegated sub-agent gets the MINIMAL
+// developer fragment — the retrieval-tools authority line and the provenance format, and
+// nothing Codex already supplies. In particular it must NOT carry the root's shell policy
+// or any worker framing: those are the sandbox's and Codex's own job. This is what keeps a
+// fresh child from inheriting the end-user-facing root contract while still returning
+// findings the root can cite verbatim.
+func TestCodexSubagentContractIsMinimal(t *testing.T) {
+	quoted := codexSubagentContract(true)
+
+	// Kept: tool authority (shared with the root) + the provenance format.
+	for _, must := range []string{"authoritative", "tool list", "(doc: <doc_name>", "(source: web"} {
+		if !strings.Contains(quoted, must) {
+			t.Errorf("sub-agent contract dropped a required clause (%q missing):\n%s", must, quoted)
+		}
+	}
+	// Dropped: the root's shell policy...
+	for _, mustNot := range []string{"LOCAL computation", "NO network access", "curl"} {
+		if strings.Contains(quoted, mustNot) {
+			t.Errorf("sub-agent contract still carries the root-only shell policy (%q):\n%s", mustNot, quoted)
+		}
+	}
+	// ...and worker framing Codex's own role prompt already provides, and the root's
+	// answer-shaping fallback.
+	for _, mustNot := range []string{"delegated subtask", "say plainly what they do not cover"} {
+		if strings.Contains(quoted, mustNot) {
+			t.Errorf("sub-agent contract still carries root/role framing (%q):\n%s", mustNot, quoted)
+		}
+	}
+
+	// Quote off drops the format but keeps the tool-authority line.
+	plain := codexSubagentContract(false)
+	if !strings.Contains(plain, "authoritative") {
+		t.Errorf("quote-off sub-agent contract dropped the tool-authority line:\n%s", plain)
+	}
+	if strings.Contains(plain, "(doc: <doc_name>") {
+		t.Errorf("quote-off sub-agent contract should not prescribe a provenance format:\n%s", plain)
 	}
 }
 

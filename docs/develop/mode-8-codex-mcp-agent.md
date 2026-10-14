@@ -360,7 +360,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 (source: web, url: <url>, title: <title>, snippet: "<短逐字片段>")
 ```
 
-⚠️ **契约对「本会话是否启用联网」保持 generic**（`codexCitationContract(quote)`，**不接收** webSearch）。原因：
+⚠️ **契约对「本会话是否启用联网」保持 generic**（`codexRootContract(quote)`，**不接收** webSearch）。原因：
 
 - **提示词与工具列表必须是同一事实的单一来源**。base instructions 在建 thread 时写入、**thread/resume 不会重载**；而 web_search 是**逐轮**决定。若把该决定编进提示词，就会出现「提示词说 A、工具列表是 B」的两份状态，二者必须永远一致才安全——一旦某条路径（resume、指纹未命中、重建失败）只更新其一，模型就会被告知一个不存在的工具，或被告知没有它实际拥有的工具。
 - **因此能力声明交给 MCP 工具列表**：桥只在会话启用时才广告 `web_search`，契约则写明「**你的工具是本次会话提供的 MCP 工具；工具列表本身是权威——只用列表里真实存在的工具，不要假设未列出的能力**」。于是提示词在开关两种情况下**逐字相同**，永远不会过期。
@@ -368,6 +368,14 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 - `source: web` 出处形**无条件写进**契约，但措辞是**条件式**的（「若该段落由 web search 工具返回，则用 …」）——与「只用列表里的工具」一致，不会主动勾引没有联网的会话去搜索。
 - 以上都**不改变安全边界**（审批层/沙箱照旧兜底），只让模型把 turn 花在正确的工具上。
 - 附注：联网开关**仍**折进 `ScopeFingerprint`（`WebSearchFingerprint`）——不是因为提示词，而是因为 Codex 按 thread 缓存 MCP 工具目录，warm resume 不重列，**必须重建 thread** 工具列表才会更新（见 §5.7③）。
+
+**契约按 root / sub-agent 拆分**（`codex_pipeline.go`）：
+
+- 共用两段：`codexRetrievalToolsLine()`（能力以 MCP 工具列表为准，不自称有无某能力）与 `codexProvenanceContract(quote)`（provenance tuple 格式，quote 关时为空）。二者对 root 与子智能体**逐字相同**——因此子智能体产出的 tuple 可以被 root 直接复用、无需重新推导 id。
+- `codexRootContract(quote)` = 联网兜底句（"知识库覆盖不到再考虑 web search；否则据检索段落作答并如实说明缺口"）+ 工具行 + `codexShellPolicy()` + provenance。**不再包含 `Answer the user in prose`**：Codex 自带 agentic 提示词本就产出 prose，这句是冗余。
+- `codexSubagentContract(quote)` = **最小集**：`codexRetrievalToolsLine()` + `codexProvenanceContract(quote)`。只保留 Codex **无法**知道的领域内容（工具权威性、引用 tuple）。**不含** shell 策略（沙箱已强制同一边界）、**不含** worker 口吻（Codex 的 `<multi_agent_role>` 已经给了）。
+
+**归属与投递**（承接 §5.9）：子智能体的**身份/角色/模式**提示由 **Codex 自己**生成（`<multi_agent_role>` / `<multi_agent_mode>`，按 fork 模式、depth、role 选择），RAGFlow 不写这一层。RAGFlow 只提供**领域内容**，经 Codex 的专用接缝 `features.multi_agent_v2.subagent_developer_instructions` 下发。该键的语义（`core/src/agent/control/spawn.rs`）：**键不存在**时子线程**继承父线程的 developer instructions**（即 root 契约，正是要避免的错位）；**键存在**时用其值**替换**继承（空串即"抑制继承"，只剩 Codex 自身提示）。该键与 root 契约一样是 create 时烘焙，故一并折进复用键（`InstructionsFingerprint`）。
 
 **后端（`buildCodexReference`）**：
 - `ExtractCitedChunkIDs` 取语料 id，`ExtractCitedWebSources` 取 web 条目（url/title/snippet）。
@@ -539,13 +547,13 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 1. **引用契约改走 developer instructions**（`WithThreadDeveloperInstructions`）。developer instructions 是 **追加** 的 developer-role world-state fragment（`core/src/context/developer_instructions.rs`），**不替换** `instructions` 字段 → Codex 保住默认提示词，契约同时生效。
 2. **打开计划工具**：thread config override `tools.update_plan.enabled = true`，使默认提示词里的 `## Planning` / `## update_plan` 与真实工具对齐。
 
-两者都是 **create 时烘焙、resume 不重载**，故折进 scope fingerprint：`InstructionsFingerprint(契约文本)` + `InstructionsPolicyFingerprint()`（策略标记 `instructions=developer-v1;update_plan=on-v1`）。后者是**无条件**折入的，因此旧策略下建的 thread 会**重建一次**。
+两者都是 **create 时烘焙、resume 不重载**，故折进 scope fingerprint：`InstructionsFingerprint(根契约)` + `InstructionsFingerprint(子智能体契约)` + `InstructionsPolicyFingerprint()`（策略标记 `instructions=developer-v1;update_plan=on-v1;approval=on-request-v1;memory=on-v1;extras=budget,clock,sleep,agents-v2`）。策略标记是**无条件**折入的，因此旧策略下建的 thread 会**重建一次**。
 
 其余工具面：provider 托管 `web_search` 仍关闭（计费）；**shell 现在被允许用于本地计算**（审批改为 `never`，见 §5.5）——契约改成"可用 shell 做本地算术/短脚本，但 shell 无网络、不得用它抓网页"，沙箱的 read-only + `network_access=false` 是唯一的边界（写文件、联网仍被拒）。
 
 **命令执行的叙事与计数**：runner 现在也读 `commandExecution` item（`commandRoundTrip`），把每条本地命令作为 `RoundTrip{Kind:"command", Tool:"shell", Args:<命令行>, ExitCode}` 交给 `OnTool`；服务层用 `commandNarration` 在思考流里渲染成 `shell: python3 -c '…' (exit 0, 42ms)`（`stage:"shell"`），与 MCP 步骤区分。命令计入 `tool_call_counts["shell"]`（**独立键**，不影响 benchmark 的 Search Calls——后者只累加配置里的检索工具），但**不进入** retrieved/served 检索台账。**子智能体同理**：`collabAgentToolCall` item（`collabRoundTrip`）作为 `RoundTrip{Kind:"agent", Tool:"agent:<spawnAgent|sendMessage|wait|listAgents|…>"}` 叙事成 `agent: spawnAgent <任务>`（`stage:"agent"`），计入 `tool_call_counts["agent:<tool>"]`。
 
-**额外开启的能力开关**（能力上限测试）：`features.token_budget`（加 `get_context_remaining` + `new_context_window`；并把自动压缩切到 inline token-budget 任务）、`features.current_time_reminder`（加 `current_time` 工具）、`features.sleep_tool`（默认已开但 mode 默认 `model_driven`，仅在时钟提醒开启时才注册 —— 这里显式设 `{enabled:true, mode:"always_on"}`）、`features.multi_agent_v2` + `features.multi_agent_v2_dynamic_tools`（V2 协作工具：spawn/send_message/followup_task/list_agents/wait_agent；子智能体会额外开 thread，token 与并发都会上升）。
+**额外开启的能力开关**（能力上限测试）：`features.token_budget`（加 `get_context_remaining` + `new_context_window`；并把自动压缩切到 inline token-budget 任务）、`features.current_time_reminder`（加 `current_time` 工具）、`features.sleep_tool`（默认已开但 mode 默认 `model_driven`，仅在时钟提醒开启时才注册 —— 这里显式设 `{enabled:true, mode:"always_on"}`）、`features.multi_agent_v2` + `features.multi_agent_v2_dynamic_tools`（V2 协作工具：spawn/send_message/followup_task/list_agents/wait_agent；子智能体会额外开 thread，token 与并发都会上升）。`features.multi_agent_v2` 以**表**（而非简写 `true`）传入，以便同时携带 `subagent_developer_instructions`（子智能体契约，见 §5.4）。
 
 ---
 
