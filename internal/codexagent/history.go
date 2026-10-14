@@ -152,14 +152,28 @@ func HistoryWithoutCurrent(messages []map[string]interface{}) []map[string]inter
 	return messages[:len(messages)-1]
 }
 
-// InstructionsFingerprint is a stable hash of a thread's base instructions. It is folded
-// into the scope fingerprint because the instructions are baked into the thread at create
-// time and thread/resume does not reload them: a change (e.g. toggling the citation
-// contract) must force a rebuild.
+// InstructionsFingerprint is a stable hash of a thread's citation contract. It is folded
+// into the scope fingerprint because the contract is baked into the thread at create time
+// and thread/resume does not reload it: a change (e.g. toggling the citation contract) must
+// force a rebuild.
 func InstructionsFingerprint(instructions string) string {
 	sum := sha256.Sum256([]byte(instructions))
 	return hex.EncodeToString(sum[:])
 }
+
+// instructionsPolicy marks HOW the citation contract is delivered and which Codex tools
+// mode 8 enables — both baked into a thread at create and not reloaded on resume:
+//   - the contract rides DEVELOPER instructions (additive), never base instructions, so
+//     Codex keeps its own agentic prompt (planning / verification / answer shape);
+//   - the plan tool (`tools.update_plan`) is enabled.
+//
+// Bump the suffix whenever either changes, so threads built under the old policy rebuild
+// exactly once (the same device as hostedToolsPolicy).
+const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1"
+
+// InstructionsPolicyFingerprint returns the current instruction/tool policy marker (see
+// instructionsPolicy).
+func InstructionsPolicyFingerprint() string { return instructionsPolicy }
 
 // ModelParamsFingerprint is the scope-key component for the config mode 8 bakes into a
 // thread at create: the model context window and the auto-compaction limit (which decide

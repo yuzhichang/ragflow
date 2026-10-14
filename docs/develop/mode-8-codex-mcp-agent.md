@@ -502,6 +502,21 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 ---
 
+### 5.9 提示词承载位置与计划工具（2026-10-14 修正）
+
+**问题**：`threadOptions` 曾用 `WithThreadBaseInstructions` 承载引用契约。Codex 的 base instructions 优先级是 *config > history > 模型默认*（`core/src/session/mod.rs`），即 **config 一旦提供就完全替换** `instructions` 字段——而 Codex 自带的默认 base prompt（`models-manager/prompt.md`，275 行 / 3389 词）里含 `## Planning`、`## update_plan`、验证纪律、答案形态等 agentic 指导。替换后 mode-8 只剩 ~200 词的引用契约，且 `tools.update_plan`（计划工具）**默认关闭**（`UpdatePlanToolConfig.enabled` 默认 false；`resolve_update_plan_enabled` 对缺失的 `tools` 表按 false 处理）→ 模型既无规划指导也无规划工具，是准确率下降的一个可疑来源。
+
+**修正**：
+
+1. **引用契约改走 developer instructions**（`WithThreadDeveloperInstructions`）。developer instructions 是 **追加** 的 developer-role world-state fragment（`core/src/context/developer_instructions.rs`），**不替换** `instructions` 字段 → Codex 保住默认提示词，契约同时生效。
+2. **打开计划工具**：thread config override `tools.update_plan.enabled = true`，使默认提示词里的 `## Planning` / `## update_plan` 与真实工具对齐。
+
+两者都是 **create 时烘焙、resume 不重载**，故折进 scope fingerprint：`InstructionsFingerprint(契约文本)` + `InstructionsPolicyFingerprint()`（策略标记 `instructions=developer-v1;update_plan=on-v1`）。后者是**无条件**折入的，因此旧策略下建的 thread 会**重建一次**。
+
+其余工具面不变：provider 托管 `web_search` 仍关闭（计费）；shell 仍被广告但提示词禁止使用、sandbox read-only + 审批拒绝——mode-8 工作目录为空临时目录、语料只能经 MCP 触达，shell 无实际用途。
+
+---
+
 ## 6. 依赖与版本固定
 
 - `github.com/zealbase/codex-app-server-go` 要求 **Go ≥ 1.25**；RAGFlow 当前 `go 1.27`，兼容。

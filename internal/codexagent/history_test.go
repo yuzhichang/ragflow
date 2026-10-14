@@ -173,3 +173,17 @@ func TestModelParamsFingerprintDistinguishesParams(t *testing.T) {
 		t.Fatal("the fingerprint must be stable for identical params")
 	}
 }
+
+// TestInstructionsPolicyFingerprintIsStable pins that the instruction/tool policy marker is
+// a stable, non-empty component of the reuse key. It is folded unconditionally so that a
+// policy change (delivering the contract as developer instructions, enabling the plan tool)
+// rebuilds threads built under the previous policy exactly once.
+func TestInstructionsPolicyFingerprintIsStable(t *testing.T) {
+	policy := InstructionsPolicyFingerprint()
+	if policy == "" {
+		t.Fatal("the instructions policy marker must not be empty")
+	}
+	if policy != InstructionsPolicyFingerprint() {
+		t.Fatal("the policy marker must be stable")
+	}
+}

@@ -422,12 +422,16 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// web_search tool). Fold the policy marker in so threads built under an older policy
 	// rebuild once, instead of keeping a server-side tool we have since disabled.
 	scopeFP = CombineFingerprints(scopeFP, HostedToolsFingerprint())
-	// The base instructions (citation contract) are baked into the thread at create and
-	// not reloaded on resume, so they are part of the reuse key too. Fold them in as ONE
-	// further hash: two 64-char hex strings joined would exceed the size:64 column.
+	// The citation contract is baked into the thread at create and not reloaded on
+	// resume, so it is part of the reuse key too. Fold it in as ONE further hash: two
+	// 64-char hex strings joined would exceed the size:64 column.
 	if req.Instructions != "" {
 		scopeFP = CombineFingerprints(scopeFP, InstructionsFingerprint(req.Instructions))
 	}
+	// HOW the contract is delivered and which tools we enable are also baked at create,
+	// so the policy marker is part of the reuse key — it also forces a one-time rebuild
+	// of threads built under the old policy (see instructionsPolicy).
+	scopeFP = CombineFingerprints(scopeFP, InstructionsPolicyFingerprint())
 	// The model window / auto-compaction limit / reasoning effort are baked into the
 	// thread's config at create and not reloaded on resume, so they are part of the reuse
 	// key too: a corrected window or a changed effort must rebuild the thread.
@@ -583,6 +587,13 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		// provider (it requires OpenAI-issued auth), so this single switch closes every
 		// server-side tool Codex could expose here.
 		codexgo.WithThreadConfigOverride("web_search", "disabled"),
+		// Enable Codex's plan tool. It is OFF by default (config_toml's
+		// UpdatePlanToolConfig.enabled defaults to false, and resolve_update_plan_enabled
+		// treats an absent `tools` table as disabled), so without this a mode-8 thread
+		// advertises no plan tool AND — with the default prompt back in play — the
+		// prompt's own `## Planning` / `## update_plan` guidance would describe a tool
+		// that does not exist. See the plan doc §5.9.
+		codexgo.WithThreadConfigOverride("tools.update_plan", map[string]interface{}{"enabled": true}),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
 		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalUntrusted()),
@@ -621,7 +632,15 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		)
 	}
 	if req.Instructions != "" {
-		opts = append(opts, codexgo.WithThreadBaseInstructions(req.Instructions))
+		// Deliver the citation contract as DEVELOPER instructions, not as base
+		// instructions. Base instructions REPLACE Codex's own agentic prompt (the
+		// Responses `instructions` field; see session/mod.rs's precedence: config >
+		// history > model default), so overriding it threw away the model's default
+		// prompt — planning, verification discipline, answer shape — and left a thin
+		// contract in its place. Developer instructions are an ADDITIVE developer-role
+		// fragment in the world state (context/developer_instructions.rs), so Codex keeps
+		// its default prompt and also gets the citation rules.
+		opts = append(opts, codexgo.WithThreadDeveloperInstructions(req.Instructions))
 	}
 	// Keep Codex inside the empty, process-private directory created for this turn.
 	if workDir != "" {
