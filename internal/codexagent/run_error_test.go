@@ -242,6 +242,40 @@ func TestCollabRoundTrip(t *testing.T) {
 	}
 }
 
+// subAgentRoundTrip reads the sub-agent spawn/complete markers — the only signal that a
+// sub-agent actually ran, since `spawn_agent` itself arrives as a plain function call the
+// app-server does not surface as a thread item. start and completion are DIFFERENT keys so
+// the tally counts agents started, not each agent twice.
+func TestSubAgentRoundTrip(t *testing.T) {
+	activity := func(payload map[string]any) codexgo.Item {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return codexgo.Item{ID: "s1", Kind: codexgo.ItemKindSubAgentActivity, Payload: raw}
+	}
+
+	started, ok := subAgentRoundTrip(activity(map[string]any{"kind": "started", "agentPath": "/root/quantum_core", "model": "MiniMax-M3"}))
+	if !ok {
+		t.Fatal("a started activity must parse")
+	}
+	if started.Tool != "agent:spawn" || started.Kind != RoundTripKindAgent || started.Status != ToolStatusRunning || started.Args != "/root/quantum_core" {
+		t.Fatalf("started = %+v", started)
+	}
+	done, ok := subAgentRoundTrip(activity(map[string]any{"kind": "completed", "agentPath": "/root/quantum_core"}))
+	if !ok || done.Tool != "agent:done" || done.Status != ToolStatusCompleted {
+		t.Fatalf("completed = %+v ok=%v", done, ok)
+	}
+	if failed, ok := subAgentRoundTrip(activity(map[string]any{"kind": "failed", "agentPath": "/root/x"})); !ok || failed.Status != ToolStatusFailed {
+		t.Fatalf("failed = %+v ok=%v", failed, ok)
+	}
+	// An activity without an agent path names nothing to report.
+	if _, ok := subAgentRoundTrip(activity(map[string]any{"kind": "started"})); ok {
+		t.Fatal("an activity without an agent path must not parse")
+	}
+}
+
 // compactArgs keeps the thinking line on one line and bounded, so a long query list
 // cannot flood the panel.
 func TestCompactArgs(t *testing.T) {

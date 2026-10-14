@@ -166,8 +166,9 @@ func InstructionsFingerprint(instructions string) string {
 //   - the contract rides DEVELOPER instructions (additive), never base instructions, so
 //     Codex keeps its own agentic prompt (planning / verification / answer shape);
 //   - the plan tool (`tools.update_plan`) is enabled;
-//   - the approval policy is `never` (shell allowed for LOCAL computation; the read-only,
-//     network-isolated sandbox is the boundary that still blocks writes and the web);
+//   - the approval policy is `on-request`: a restricted (read-only) sandbox lets codex run
+//     a non-escalated, non-dangerous command without prompting (local computation works),
+//     while the elicitation path stays alive for MCP tool calls (which `never` would deny);
 //   - Codex memory + its dedicated tools are enabled (`features.memories`,
 //     `memories.dedicated_tools`) — note memory is a single store per CODEX_HOME, so on a
 //     shared app-server this is cross-tenant (see docs §5.5);
@@ -177,7 +178,7 @@ func InstructionsFingerprint(instructions string) string {
 //
 // Bump the suffix whenever any of these changes, so threads built under the old policy
 // rebuild exactly once (the same device as hostedToolsPolicy).
-const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=never-v1;memory=on-v1;extras=budget,clock,sleep,agents-v1"
+const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=on-request-v1;memory=on-v1;extras=budget,clock,sleep,agents-v1"
 
 // InstructionsPolicyFingerprint returns the current instruction/tool policy marker (see
 // instructionsPolicy).

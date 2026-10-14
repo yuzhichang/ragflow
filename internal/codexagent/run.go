@@ -167,6 +167,10 @@ const (
 	// RoundTripKindAgent is a collaboration (sub-agent) tool call — spawnAgent,
 	// sendMessage, wait, listAgents, … Enabled by features.multi_agent_v2.
 	RoundTripKindAgent = "agent"
+	// RoundTripKindBuiltin is any other Codex built-in action item (plan, fileChange,
+	// dynamicToolCall, webSearch, imageView, sleep, review mode, image generation), reported
+	// briefly so the thinking stream shows every tool the model used, not only MCP ones.
+	RoundTripKindBuiltin = "builtin"
 	// commandToolName is the display name for a command execution in the thinking
 	// stream and in tool_call_counts (a distinct key, so a shell call never inflates the
 	// benchmark's retrieval "Search Calls", which sums only the configured search tools).
@@ -658,15 +662,16 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		codexgo.WithThreadConfigOverride("features.multi_agent_v2_dynamic_tools", true),
 		// Capability isolation (see the plan, §5.5): reason + call MCP only.
 		codexgo.WithThreadSandbox(codexgo.SandboxReadOnly),
-		// ApprovalNever: codex neither prompts nor refuses — exec_policy allows any
-		// non-dangerous command and relies on the SANDBOX for protection (read-only
-		// filesystem, network_access=false). Deliberate: it lets the model run a short
-		// local script for arithmetic (there is no other way to compute exactly), while
-		// the sandbox still denies writes AND network, so the shell cannot become a way
-		// around the conversation's web-search setting or touch the host. Dangerous
-		// commands remain Forbidden regardless. Paired with the citation contract, which
-		// permits local computation and forbids using the shell for the web.
-		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalNever()),
+		// OnRequest, NOT never. Under a RESTRICTED (read-only) sandbox, exec_policy allows
+		// any non-escalated, non-dangerous command without prompting (it lets the sandbox
+		// enforce the restrictions), so a short local script for arithmetic still runs —
+		// while `Never` would DENY every MCP tool call that requires approval
+		// ("MCP tool call requires approval, but approval policy is never",
+		// core/src/mcp_tool_call.rs) and kill the retrieval path outright. OnRequest keeps
+		// the elicitation path alive, and our Dispatcher accepts exactly the
+		// `mcp_tool_call` elicitation for the ragflow server (and refuses everything else,
+		// including sandbox-escalation requests, so the sandbox still bounds what runs).
+		codexgo.WithThreadApprovalPolicy(codexgo.ApprovalOnRequest()),
 	}
 	if req.Model != "" {
 		opts = append(opts, codexgo.WithThreadModel(req.Model))
@@ -797,6 +802,41 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 			req.OnCompaction()
 		}
 	}
+	// A sub-agent activity item is the only signal that a sub-agent was actually spawned
+	// (see subAgentRoundTrip). Only the "spawn" marker counts as a call, so the tally reads
+	// "N agents started" rather than counting each agent twice.
+	noteSubAgent := func(item codexgo.Item) {
+		if toolCallsSeen[item.ID] {
+			return
+		}
+		rt, ok := subAgentRoundTrip(item)
+		if !ok {
+			return
+		}
+		toolCallsSeen[item.ID] = true
+		if rt.Status == ToolStatusRunning {
+			tally.call(rt.Tool)
+		}
+		if req.OnTool != nil {
+			req.OnTool(rt)
+		}
+	}
+	// Any other Codex built-in action item, narrated briefly (see builtinRoundTrip). These
+	// are completion-only items, so one line each.
+	noteBuiltin := func(item codexgo.Item) {
+		if toolCallsSeen[item.ID] {
+			return
+		}
+		rt, ok := builtinRoundTrip(item)
+		if !ok {
+			return
+		}
+		toolCallsSeen[item.ID] = true
+		tally.call(rt.Tool)
+		if req.OnTool != nil {
+			req.OnTool(rt)
+		}
+	}
 
 	for {
 		select {
@@ -862,6 +902,9 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 							req.OnTool(rt)
 						}
 					}
+				}
+				if e.Item != nil && e.Item.Kind == codexgo.ItemKindSubAgentActivity {
+					noteSubAgent(*e.Item)
 				}
 				if e.Item != nil && e.Item.Kind == codexgo.ItemKindContextCompaction {
 					noteCompaction()
@@ -946,6 +989,18 @@ func (r *Runner) consume(ctx context.Context, th *codexgo.SessionThread, req Tur
 								req.OnTool(rt)
 							}
 						}
+					}
+					// A sub-agent spawn/complete marker (see noteSubAgent).
+					if e.Item.Kind == codexgo.ItemKindSubAgentActivity {
+						noteSubAgent(*e.Item)
+					}
+					// Every other built-in action item, briefly (see noteBuiltin).
+					switch e.Item.Kind {
+					case codexgo.ItemKindPlan, codexgo.ItemKindFileChange, codexgo.ItemKindDynamicToolCall,
+						codexgo.ItemKindWebSearch, codexgo.ItemKindImageView, codexgo.ItemKindSleep,
+						codexgo.ItemKindEnteredReviewMode, codexgo.ItemKindExitedReviewMode,
+						codexgo.ItemKindImageGeneration:
+						noteBuiltin(*e.Item)
 					}
 				}
 			case codexgo.ItemAgentMessageDeltaEvent:
@@ -1115,6 +1170,37 @@ func commandRoundTrip(item codexgo.Item) (RoundTrip, bool) {
 	}, true
 }
 
+// builtinRoundTrip reports any OTHER Codex built-in action item briefly: plan (update_plan),
+// fileChange (apply_patch), dynamicToolCall, webSearch, imageView, sleep, review mode,
+// imageGeneration. These are narrated for visibility — the thinking stream should show every
+// tool the model reached for, not only the MCP retrieval ones — so the detail is a
+// best-effort one-liner rather than a typed model. The tool carries the one field that names
+// what happened; failing that, a count of changes.
+func builtinRoundTrip(item codexgo.Item) (RoundTrip, bool) {
+	var payload map[string]any
+	if err := item.Decode(&payload); err != nil {
+		return RoundTrip{}, false
+	}
+	detail := ""
+	for _, key := range []string{"prompt", "query", "command", "path", "tool", "name", "text", "review"} {
+		if v, ok := payload[key].(string); ok && strings.TrimSpace(v) != "" {
+			detail = v
+			break
+		}
+	}
+	if detail == "" {
+		if changes, ok := payload["changes"].([]any); ok && len(changes) > 0 {
+			detail = fmt.Sprintf("%d change(s)", len(changes))
+		}
+	}
+	return RoundTrip{
+		Tool:   "builtin:" + string(item.Kind),
+		Kind:   RoundTripKindBuiltin,
+		Args:   compactString(detail),
+		Status: ToolStatusCompleted,
+	}, true
+}
+
 // compactString renders a command line on one line and caps its length, the same display
 // treatment compactArgs gives tool arguments.
 func compactString(s string) string {
@@ -1126,7 +1212,39 @@ func compactString(s string) string {
 	return s
 }
 
-// collabRoundTrip reads a v2 `collabAgentToolCall` item — the sub-agent collaboration tools
+// subAgentRoundTrip reads a v2 `subAgentActivity` item — the STARTED/COMPLETED marker for a
+// sub-agent thread (features.multi_agent_v2). It is the only signal that a sub-agent was
+// actually spawned: `spawn_agent` itself arrives as a plain Responses function call, which
+// the app-server does not surface as a thread item, so without this a delegated run shows
+// its `wait` steps but never the agents themselves. `agentPath` is the model's own name for
+// the sub-agent (e.g. "/root/quantum_core").
+//
+// The two markers are DIFFERENT tools ("agent:spawn" / "agent:done") so the call tally reads
+// "N agents started" rather than counting each agent twice.
+func subAgentRoundTrip(item codexgo.Item) (RoundTrip, bool) {
+	var payload struct {
+		Kind      string `json:"kind"`
+		AgentPath string `json:"agentPath"`
+		Model     string `json:"model"`
+	}
+	if err := item.Decode(&payload); err != nil || strings.TrimSpace(payload.AgentPath) == "" {
+		return RoundTrip{}, false
+	}
+	name, status := "spawn", ToolStatusRunning
+	switch payload.Kind {
+	case "completed":
+		name, status = "done", ToolStatusCompleted
+	case "failed", "interrupted":
+		name, status = "done", ToolStatusFailed
+	}
+	return RoundTrip{
+		Tool:   agentToolPrefix + name,
+		Kind:   RoundTripKindAgent,
+		Args:   compactString(payload.AgentPath),
+		Status: status,
+	}, true
+}
+
 // enabled by features.multi_agent_v2 — into a RoundTrip for the thinking stream. `tool` is
 // the CollabAgentTool enum (spawnAgent, sendInput, resumeAgent, wait, closeAgent,
 // sendMessage, followupTask, interruptAgent, listAgents) and `status` is

@@ -386,10 +386,14 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 - **只读 sandbox**：建 thread 时 `WithThreadSandbox(codexgo.SandboxReadOnly)`（或称 `read-only`）。禁止写文件、改变工作目录。
 - **工作目录隔离**：`WithThreadCWD` 指向一个空的、无敏感的目录（不暴露 RAGFlow 代码/配置/密钥）。
-- **审批策略：`never`（2026-10-14 起，见下）。** 这是**有意放宽**：模式 8 需要一个**本地计算**通道（算术/计数/短脚本），否则多跳数值题只能靠模型心算。`ApprovalNever` 下 codex 不为 exec/file 请求审批，`exec_policy` 对**非危险**命令直接 `Allow`（"relying on the sandbox for protection"），因此 `python3 -c ...` 之类可以运行。隔离从此**只由沙箱承担**（见下条）。
+- **审批策略：`on-request`（2026-10-14 实测修正）。** 目标是既要**本地计算**、又不能碰坏检索。两点都已核对（codex 0.162.0）：
+  - **`never` 会杀死 MCP 检索**：`core/src/mcp_tool_call.rs` 里，当一条 MCP 工具调用需要审批而策略为 `Never` 时，codex **直接拒绝**——`ReviewDecision::denied("MCP tool call requires approval, but approval policy is never")`。实测：`ApprovalNever` 下 `search_bm25_chunks` 全部 `failed in 0ms`，模型在答案里报告"检索工具被拒绝"。**这是不能用的档位。**
+  - **`on-request` + 只读沙箱 = 计算可用、检索可用**：`core/src/exec_policy.rs` 中 `OnRequest` 对 **Restricted**（只读）沙箱里"非提权、非危险"的命令直接 `Decision::Allow`（注释原话：*do not prompt … let the sandbox enforce restrictions without a user prompt*），所以 `python3 -c ...` 照跑；而 `OnRequest ≠ Never`，MCP 的 elicitation 路径保持活跃 → `Dispatcher()` accept `ragflow` 的 `mcp_tool_call` → 检索正常。危险命令仍 `Prompt` → 我们拒绝；提权请求（`requests_sandbox_override`）也 `Prompt` → 拒绝。
+  - 净效果：**计算能力来自沙箱档位（Restricted）而非审批豁免**；沙箱是唯一的边界（写文件、联网仍被拒）。
+- **审批策略的历史值（均已弃用）**：① `untrusted`（`UnlessTrusted`）——"每个未被 exec policy 显式允许的命令都要审批"，配合我们的 `Dispatcher()`（只 accept `mcp_tool_call`、未配置 `Exec`/`File`）会把**所有命令**拒掉，因此挡住了我们想要的本地计算。② `never`——见上，会拒掉 MCP 检索。
 - **审批策略的历史值 `untrusted`**：曾用 `AskForApproval::UnlessTrusted`，其语义是「**未在 exec policy 规则里显式允许的每个命令**都要审批」（`core/src/exec_policy.rs`），而 `codexagent.Dispatcher()`（`internal/codexagent/approval.go`）只 accept `mcp_tool_call` elicitation、未配置 `Exec`/`File` handler → SDK 对 `execCommandApproval` 返回 `DenyReview()`，对 v2 `item/commandExecution/requestApproval` 因 `Exec==nil` 同样拒绝。实测：某 session 的 rollout 里模型尝试 `exec_command: curl https://en.wikipedia.org/…`，输出为 `exec_command failed: … Rejected("rejected by user")`——命令没有执行。**该档位现已弃用**（它同时挡住了我们想要的本地计算）。
 - **内置命令执行工具（`shell` / `exec_command`）：保留、且现在可运行，只由沙箱约束**（不通过 config 禁用）。曾考虑 `features.shell_tool=false` 整个摘掉，**判定为过度**（堵网络不需要牺牲工具）；现在则更进一步——**主动允许本地计算**：
-  1. **审批关：已不适用**（策略为 `never`，codex 不发起 exec 审批）。`Dispatcher()` 仍只 accept `mcp_tool_call`，`Exec`/`File` 为 nil → 若有请求仍是拒绝（`interaction.go`），但这现在是**纵深防御**，不是活跃闸门。
+  1. **审批关：`on-request` 下仍然活跃，且必须保持 accept 的只有 `mcp_tool_call`。** `Dispatcher()` 只 accept `mcp_tool_call`，`Exec`/`File` 为 nil → 命令的**提权请求**、文件变更、权限申请仍被拒（`interaction.go`）。但普通命令**不再经过审批**——`OnRequest` + 只读沙箱直接 `Allow`（见上条），所以本关不再承担"挡住命令"的职责。
   2. **沙箱关：唯一且必须成立的一道。** 只读 sandbox 对应 `PermissionProfile::read_only()`，其 `NetworkSandboxPolicy` 为 **`Restricted`**（`protocol/src/permissions.rs`，默认即 Restricted）；Linux 上由 seccomp 拒绝 socket 系统调用（`linux-sandbox/src/seccomp.rs:114`）并由 bubblewrap 隔离网络命名空间（`bwrap.rs` 的 `BwrapNetworkMode::Isolated`）兜底。且 `SandboxPolicy::ReadOnly{ network_access }` 的 `network_access` 默认 **false**（宿主 `~/.codex/config.toml` 无 `sandbox_workspace_write` 覆盖，已核）。
   - **因此**：命令**可以执行**（本地计算），但**写文件被拒、网络出不去**；危险命令（`dangerous_command_match`）即便 `Never` 仍是 `Decision::Forbidden`。
   - **副作用/代价（已接受）**：命令的执行面从"两道关"收窄为"一道关（沙箱）"。沙箱若在某平台失效或存在逃逸，模型即获得宿主命令执行能力——这正是 §5.5 前置验证与"按租户隔离 Codex"该覆盖的场景。

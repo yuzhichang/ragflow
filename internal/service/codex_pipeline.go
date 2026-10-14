@@ -400,6 +400,8 @@ func (s *ChatPipelineService) codexAgent(
 				stage, line = "shell", commandNarration(rt)
 			case codexagent.RoundTripKindAgent:
 				stage, line = "agent", agentNarration(rt)
+			case codexagent.RoundTripKindBuiltin:
+				stage, line = "builtin", builtinNarration(rt)
 			}
 			if line == "" {
 				return
@@ -674,6 +676,17 @@ func agentNarration(rt codexagent.RoundTrip) string {
 	default:
 		return fmt.Sprintf("agent: %s %s (%s)", name, rt.Args, rt.Status)
 	}
+}
+
+// builtinNarration renders any other Codex built-in action (plan, fileChange,
+// dynamicToolCall, webSearch, imageView, sleep, review mode, image generation) as one brief
+// line, so the thinking stream shows every tool the model used, not only MCP ones.
+func builtinNarration(rt codexagent.RoundTrip) string {
+	name := strings.TrimPrefix(rt.Tool, "builtin:")
+	if rt.Args == "" {
+		return "builtin: " + name
+	}
+	return fmt.Sprintf("builtin: %s %s", name, rt.Args)
 }
 
 // toolThinkKind maps a round trip's status onto the shared ThinkEvent kinds
