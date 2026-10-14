@@ -584,6 +584,17 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 **未做**：候选冷却（eino 的 30s `failoverCooldown` 短路）。主模型每轮都会先被尝试，若它持续故障则每轮多一次快速失败 + 一次重建；后续可按需补上。
 
+**运维注意**：候选成员必须与主模型一样落在 `codex.responses_providers` 白名单内（默认 `openai,azure-openai,minimax`，见 §5.5），否则会被跳过（日志带 `reason`）——**跨 provider 的故障转移需要把备用 provider 一并加入白名单**。
+
+**实测（2026-10-14，本机）**：让对话框主模型指向一个固定返回 HTTP 500 的本地端点、成员指向 MiniMax-M3，跑一轮 mode 8：
+
+- 错误已类型化：终局/日志从 `code="\"internalServerError\""` 变为 `kind=internalServerError`；
+- 触发转移并落 `codex: provider failover` 告警（含 from/to/kind/http_status）；
+- 重试**确实重建了 thread**（codex 侧出现两条独立 rollout）；
+- 思考流出现 `think_event{kind:"provider_failover", stage:"provider"}` 及其文本行（`provider failover: <m1> failed (<kind>); retrying on <m2>`）；
+- 把成员换成 SiliconFlow 时被正确跳过：`reason: provider "SILICONFLOW" is outside codex.responses_providers`（best-effort 语义生效）。
+- **未演示"备用成功"**：白名单内只有 MiniMax，而当时它自身也在返回 500；要演示成功路径，需把某个健康 provider 加入白名单。
+
 ## 6. 依赖与版本固定
 
 - `github.com/zealbase/codex-app-server-go` 要求 **Go ≥ 1.25**；RAGFlow 当前 `go 1.27`，兼容。
