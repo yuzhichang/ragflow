@@ -78,8 +78,12 @@ func TestCodexCitationContractDefersCapabilityAndScopesTheShell(t *testing.T) {
 			t.Errorf("contract does not permit local computation (%q missing):\n%s", must, quoted)
 		}
 	}
-	// ...but the shell is never a path to the web.
-	for _, must := range []string{"NO network access", "curl", "blocked by the sandbox"} {
+	// ...but the shell is never a path to the web, and asking to be let out is not a path
+	// either. Naming the request channel matters: a q11 run read "no network access" as a
+	// condition to be lifted and passed `sandbox_permissions: require_escalated`.
+	for _, must := range []string{
+		"NO network access", "curl/wget", "urllib", "fetch", "sandbox_permissions", "require_escalated",
+	} {
 		if !strings.Contains(quoted, must) {
 			t.Errorf("contract does not forbid the shell as a web path (%q missing):\n%s", must, quoted)
 		}
@@ -95,7 +99,7 @@ func TestCodexCitationContractDefersCapabilityAndScopesTheShell(t *testing.T) {
 
 	// Quote off still scopes the shell and defers capability; it only drops the format.
 	plain := codexRootContract(false)
-	if !strings.Contains(plain, "NO network access") || !strings.Contains(plain, "curl") {
+	if !strings.Contains(plain, "NO network access") || !strings.Contains(plain, "curl/wget") {
 		t.Errorf("quote-off contract dropped the shell scope:\n%s", plain)
 	}
 	if strings.Contains(plain, "(doc: <doc_name>") {
@@ -110,28 +114,25 @@ func TestCodexCitationContractDefersCapabilityAndScopesTheShell(t *testing.T) {
 	}
 }
 
-// TestCodexSubagentContractIsMinimal pins that a delegated sub-agent gets the MINIMAL
-// developer fragment — the retrieval-tools authority line and the provenance format, and
-// nothing Codex already supplies. In particular it must NOT carry the root's shell policy
-// or any worker framing: those are the sandbox's and Codex's own job. This is what keeps a
-// fresh child from inheriting the end-user-facing root contract while still returning
-// findings the root can cite verbatim.
-func TestCodexSubagentContractIsMinimal(t *testing.T) {
+// TestCodexSubagentContractIsScoped pins what a delegated sub-agent gets: the retrieval-tools
+// authority line, the shell/network policy, and the provenance format — and nothing that is the
+// root's end-user framing. The shell policy is deliberately INCLUDED: it was once root-only on
+// the theory that the sandbox enforces the boundary by itself, but a child has the same shell,
+// the same sandbox and the same `require_escalated` request channel, and a q11 run showed the
+// boundary is askable-around.
+func TestCodexSubagentContractIsScoped(t *testing.T) {
 	quoted := codexSubagentContract(true)
 
-	// Kept: tool authority (shared with the root) + the provenance format.
-	for _, must := range []string{"authoritative", "tool list", "(doc: <doc_name>", "(source: web"} {
+	// Kept: tool authority + the shell/network policy + the provenance format.
+	for _, must := range []string{
+		"authoritative", "tool list", "NO network access", "require_escalated",
+		"(doc: <doc_name>", "(source: web",
+	} {
 		if !strings.Contains(quoted, must) {
 			t.Errorf("sub-agent contract dropped a required clause (%q missing):\n%s", must, quoted)
 		}
 	}
-	// Dropped: the root's shell policy...
-	for _, mustNot := range []string{"LOCAL computation", "NO network access", "curl"} {
-		if strings.Contains(quoted, mustNot) {
-			t.Errorf("sub-agent contract still carries the root-only shell policy (%q):\n%s", mustNot, quoted)
-		}
-	}
-	// ...and worker framing Codex's own role prompt already provides, and the root's
+	// Dropped: worker framing Codex's own role prompt already provides, and the root's
 	// answer-shaping fallback.
 	for _, mustNot := range []string{"delegated subtask", "say plainly what they do not cover"} {
 		if strings.Contains(quoted, mustNot) {

@@ -798,19 +798,24 @@ func codexRootContract(quote bool) string {
 	return b.String()
 }
 
-// codexSubagentContract is the MINIMAL developer fragment a delegated sub-agent gets in
-// place of the root contract (delivered via features.multi_agent_v2.subagent_developer_instructions).
+// codexSubagentContract is the developer fragment a delegated sub-agent gets in place of the
+// root contract (delivered via features.multi_agent_v2.subagent_developer_instructions).
 //
 // Codex OWNS a sub-agent's identity/role prompt (its <multi_agent_role> / <multi_agent_mode>
 // fragments, chosen from the fork mode, depth and role) AND owns where a developer fragment
 // comes from: by default it copies the parent thread's developer instructions into every
 // child, which would hand a worker a prompt written for the end-user-facing root. So mode 8
-// supplies the two things Codex cannot know — which tools may retrieve, and the citation
-// tuple format — and nothing else. Anything Codex's own prompts or the sandbox already
-// cover stays out: the worker framing is Codex's role prompt, and the shell/network policy
-// is enforced by the sandbox.
+// supplies what Codex cannot know — which tools may retrieve, the shell/network policy, and the
+// citation tuple format. It stays free of the root's end-user framing (the fallback-and-answer
+// line): that is Codex's role prompt's business, and a worker reports findings rather than
+// answering the user.
+//
+// The shell policy IS included, deliberately reversing an earlier "root-only" choice: it was
+// dropped on the theory that the sandbox enforces the boundary by itself, and a q11 root run
+// then showed the boundary is askable-around (`sandbox_permissions: require_escalated`). A child
+// has the same shell, the same sandbox and the same ask, so it gets the same sentence.
 func codexSubagentContract(quote bool) string {
-	return codexRetrievalToolsLine() + codexProvenanceContract(quote)
+	return codexRetrievalToolsLine() + codexShellPolicy() + codexProvenanceContract(quote)
 }
 
 // codexRetrievalToolsLine is the part both the root agent and a sub-agent get: which tools
@@ -823,19 +828,29 @@ func codexRetrievalToolsLine() string {
 		"not list. "
 }
 
-// codexShellPolicy scopes the shell, and is ROOT-only: a delegated sub-agent is a bounded
-// retrieval task, and the sandbox already enforces the same boundary.
+// codexShellPolicy scopes the shell for BOTH the root agent and a sub-agent.
 //
-// It matters for the root because mode 8 runs with a read-only sandbox whose network_access
-// is false, so a short script (e.g. `python3 -c ...`) runs for arithmetic but cannot reach
-// the network — enabling exact computation without giving the model a way around the
-// conversation's web-search setting. Left unsaid, the model either refuses to compute, or
-// burns the turn on `curl`.
+// It matters because mode 8 runs with a read-only sandbox whose network_access is false, so a
+// short script (e.g. `python3 -c ...`) runs for arithmetic but cannot reach the network —
+// enabling exact computation without giving the model a way around the conversation's
+// web-search setting. Left unsaid, the model either refuses to compute, or burns the turn on
+// `curl`.
+//
+// It must name BOTH halves of the rule, because the sandbox does not enforce the boundary on
+// its own. A delegated child has the same shell and the same sandbox, so it needs the same
+// sentence — dropping it (on the theory that the sandbox suffices) is what let a q11 run try
+// `curl` twice. Observed: the model read "no network access" as a condition to be LIFTED, and
+// passed `sandbox_permissions: require_escalated` with a justification ("the exec_command
+// requires user approval for network access"), which the harness's own tool schema invites.
+// So the policy has to say "no network by any means" AND "do not ask to be let out".
 func codexShellPolicy() string {
-	return "You also have a shell for LOCAL computation only: when a task needs arithmetic, counting or a short script, " +
-		"run it (e.g. python3 or node) instead of guessing. The shell has NO network access, so never use it to fetch " +
-		"or search the web (curl and the like) — such attempts are blocked by the sandbox and only waste the turn. " +
-		"All retrieval therefore comes from the tools above. "
+	return "You also have a shell for LOCAL computation only: when a task needs arithmetic, counting or a short " +
+		"script, run it (e.g. python3 or node) instead of guessing — but only to compute on what you already have. " +
+		"The shell has NO network access: never fetch, download or search the web from it, by any means — no " +
+		"curl/wget, and no HTTP call from a script either (python `urllib`/`requests`/`http.client`/`socket`, node " +
+		"`fetch`/`http`, or any equivalent). Never ask to be let out to the network either: do not set " +
+		"`sandbox_permissions`/`require_escalated` and do not request approval to reach the network — such requests " +
+		"are declined. All retrieval therefore comes from the tools above. "
 }
 
 // codexProvenanceContract is the citation tuple format, present only when the conversation

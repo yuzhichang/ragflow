@@ -364,16 +364,19 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 - **提示词与工具列表必须是同一事实的单一来源**。base instructions 在建 thread 时写入、**thread/resume 不会重载**；而 web_search 是**逐轮**决定。若把该决定编进提示词，就会出现「提示词说 A、工具列表是 B」的两份状态，二者必须永远一致才安全——一旦某条路径（resume、指纹未命中、重建失败）只更新其一，模型就会被告知一个不存在的工具，或被告知没有它实际拥有的工具。
 - **因此能力声明交给 MCP 工具列表**：桥只在会话启用时才广告 `web_search`，契约则写明「**你的工具是本次会话提供的 MCP 工具；工具列表本身是权威——只用列表里真实存在的工具，不要假设未列出的能力**」。于是提示词在开关两种情况下**逐字相同**，永远不会过期。
-- **另一条恒定项：禁止用 shell 联网**。Codex 会给模型一个 `<environment_context>`（含 `<shell>bash</shell>` 与工作目录），模型据此以为 shell 可用、去试 `curl`；每次被审批层拒绝后还会再试，白耗 turn 而不去读已检索到的语料。故契约明确写：「本环境**无 shell、无互联网**；不要调用 `exec_command`/shell、不要直接 fetch URL（curl 等）——shell **不是**访问网络的途径，这类尝试一律被拒；若工具列表里有 web search 工具且知识库覆盖不到，就用它」。（shell 在**开关两种情况下都是关的**，这条与联网开关无关。）
+- **另一条恒定项：shell 只做本地计算，且不得以任何方式联网、也不得申请解除沙箱**。Codex 会给模型 `<environment_context>`（含 `<shell>bash</shell>` 与工作目录），模型据此会去试 `curl`。故契约写明：「shell 仅用于**本地计算**（算术/计数/短脚本，python3/node 皆可，但只对已有数据计算）；**无网络**——不得用 `curl`/`wget`，**也不得在脚本里发 HTTP**（python `urllib`/`requests`/`http.client`/`socket`、node `fetch`/`http` 等一律是死路）；**同样不得申请联网**：不要传 `sandbox_permissions`/`require_escalated`、不要为访问网络请求审批（一律被拒）；检索一律走上方的工具」。（shell 在联网开关两种情况下都无网络，这条与开关无关。）
+- ⚠️ **实测教训（2026-10-14，q11）**：旧措辞只写"无网络、会被沙箱挡住"，模型把它读成**"可申请解除"**——两次传 `sandbox_permissions: require_escalated` 去 curl（自述 *"The exec_command requires user approval for network access"*），两次均被拒（Dispatcher 只接受 ragflow 的 MCP elicitation，防线守住了，只白耗两步）。**结论：边界要同时封住"做"和"申请"两条路**；且不能只靠沙箱默认——审批从 `never` 改为 `on-request` 后，"申请"这条路是**活的**。触发场景是 KB 无覆盖 + 会话没有 web_search 工具（模型没有正当出口）。
 - `source: web` 出处形**无条件写进**契约，但措辞是**条件式**的（「若该段落由 web search 工具返回，则用 …」）——与「只用列表里的工具」一致，不会主动勾引没有联网的会话去搜索。
 - 以上都**不改变安全边界**（审批层/沙箱照旧兜底），只让模型把 turn 花在正确的工具上。
 - 附注：联网开关**仍**折进 `ScopeFingerprint`（`WebSearchFingerprint`）——不是因为提示词，而是因为 Codex 按 thread 缓存 MCP 工具目录，warm resume 不重列，**必须重建 thread** 工具列表才会更新（见 §5.7③）。
 
 **契约按 root / sub-agent 拆分**（`codex_pipeline.go`）：
 
-- 共用两段：`codexRetrievalToolsLine()`（能力以 MCP 工具列表为准，不自称有无某能力）与 `codexProvenanceContract(quote)`（provenance tuple 格式，quote 关时为空）。二者对 root 与子智能体**逐字相同**——因此子智能体产出的 tuple 可以被 root 直接复用、无需重新推导 id。
+- 共用三段：`codexRetrievalToolsLine()`（能力以 MCP 工具列表为准，不自称有无某能力）、`codexShellPolicy()`（shell 仅用于本地计算；**任何方式**都不得联网，也不得申请解除沙箱）与 `codexProvenanceContract(quote)`（provenance tuple 格式，quote 关时为空）。三者对 root 与子智能体**逐字相同**——因此子智能体产出的 tuple 可以被 root 直接复用、无需重新推导 id。
 - `codexRootContract(quote)` = 联网兜底句（"知识库覆盖不到再考虑 web search；否则据检索段落作答并如实说明缺口"）+ 工具行 + `codexShellPolicy()` + provenance。**不再包含 `Answer the user in prose`**：Codex 自带 agentic 提示词本就产出 prose，这句是冗余。
-- `codexSubagentContract(quote)` = **最小集**：`codexRetrievalToolsLine()` + `codexProvenanceContract(quote)`。只保留 Codex **无法**知道的领域内容（工具权威性、引用 tuple）。**不含** shell 策略（沙箱已强制同一边界）、**不含** worker 口吻（Codex 的 `<multi_agent_role>` 已经给了）。
+- `codexSubagentContract(quote)` = `codexRetrievalToolsLine()` + `codexShellPolicy()` + `codexProvenanceContract(quote)`。只保留 Codex **无法**知道的领域内容（工具权威性、**shell/网络策略**、引用 tuple）。**不含** worker 口吻与 root 的收尾句（Codex 的 `<multi_agent_role>` 已经给了）。
+
+  ⚠️ **shell 策略曾一度从子契约里删掉（"沙箱已强制同一边界"），2026-10-14 撤销**：q11 的 root 实测表明这条边界**可以被申请绕开**（模型传了 `sandbox_permissions: require_escalated`），而子线程拥有同一个 shell、同一个沙箱、同一个申请通道，所以子契约必须带上同一句。
 
 **归属与投递**（承接 §5.9）：子智能体的**身份/角色/模式**提示由 **Codex 自己**生成（`<multi_agent_role>` / `<multi_agent_mode>`，按 fork 模式、depth、role 选择），RAGFlow 不写这一层。RAGFlow 只提供**领域内容**，经 Codex 的专用接缝 `features.multi_agent_v2.subagent_developer_instructions` 下发。该键的语义（`core/src/agent/control/spawn.rs`）：**键不存在**时子线程**继承父线程的 developer instructions**（即 root 契约，正是要避免的错位）；**键存在**时用其值**替换**继承（空串即"抑制继承"，只剩 Codex 自身提示）。该键与 root 契约一样是 create 时烘焙，故一并折进复用键（`InstructionsFingerprint`）。
 
