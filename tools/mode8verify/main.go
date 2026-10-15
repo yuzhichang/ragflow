@@ -218,7 +218,17 @@ type thread struct {
 	AgentPath string
 	Sub       bool
 	Model     string
-	Tools     map[string]int
+	// ReasoningEffort is the model_reasoning_effort this thread actually ran with — the
+	// turn_context's `effort`. A sub-agent must carry the ROOT's value: a spawned child
+	// inherits the parent's effort unless the spawn call overrides it.
+	ReasoningEffort string
+	// Spawns are the spawn_agent calls this (root) thread issued, with the delegate
+	// arguments the model chose. A child's own rollout records neither fork_turns nor a
+	// requested model/effort — its session source carries only the spawn edge
+	// (parent_thread_id + agent_path) — so the delegated parameters are read here, off the
+	// parent's function call.
+	Spawns []spawnArgs
+	Tools  map[string]int
 	// ShellCmds are the command lines this thread actually executed locally, so a probe
 	// can check WHAT ran (e.g. that the model generated and ran Python), not merely that
 	// the shell was used.
@@ -232,6 +242,16 @@ type thread struct {
 	TaskAgentMessage bool
 	TaskOpaque       bool
 	Errors           []string
+}
+
+// spawnArgs is the argument set of one spawn_agent call, reduced to the fields a probe
+// inspects: the fork choice and the model/reasoning overrides (which must be omitted so the
+// child inherits the root's). An omitted fork_turns means "all" (full-history fork).
+type spawnArgs struct {
+	TaskName        string
+	ForkTurns       string
+	Model           string
+	ReasoningEffort string
 }
 
 // retrievalTools are the agent_rag tools mode 8 exposes over MCP.
@@ -383,10 +403,16 @@ func loadThread(path string) (*thread, error) {
 			}
 		case "turn_context":
 			var tc struct {
-				Model string `json:"model"`
+				Model  string `json:"model"`
+				Effort string `json:"effort"`
 			}
-			if json.Unmarshal(entry.Payload, &tc) == nil && tc.Model != "" {
-				t.Model = tc.Model
+			if json.Unmarshal(entry.Payload, &tc) == nil {
+				if tc.Model != "" {
+					t.Model = tc.Model
+				}
+				if tc.Effort != "" {
+					t.ReasoningEffort = tc.Effort
+				}
 			}
 		case "response_item":
 			t.parseResponseItem(entry.Payload)
@@ -417,6 +443,25 @@ func (t *thread) parseSource(raw json.RawMessage) {
 	}
 }
 
+// recordSpawn captures the override arguments of one spawn_agent call. It records an entry
+// even when the arguments are unparseable/empty, so a probe reads an omitted fork_turns as
+// "not requested" rather than as "no call at all".
+func (t *thread) recordSpawn(arguments string) {
+	var args struct {
+		TaskName        string `json:"task_name"`
+		ForkTurns       string `json:"fork_turns"`
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	_ = json.Unmarshal([]byte(arguments), &args)
+	t.Spawns = append(t.Spawns, spawnArgs{
+		TaskName:        args.TaskName,
+		ForkTurns:       args.ForkTurns,
+		Model:           args.Model,
+		ReasoningEffort: args.ReasoningEffort,
+	})
+}
+
 func (t *thread) parseResponseItem(raw json.RawMessage) {
 	var item struct {
 		Type      string `json:"type"`
@@ -436,6 +481,9 @@ func (t *thread) parseResponseItem(raw json.RawMessage) {
 	case "function_call":
 		if item.Name != "" {
 			t.Tools[item.Name]++
+		}
+		if item.Name == "spawn_agent" {
+			t.recordSpawn(item.Arguments)
 		}
 		if command, ok := commandFromExecArgs(item.Name, item.Arguments); ok {
 			t.ShellCmds = append(t.ShellCmds, command)
@@ -495,7 +543,7 @@ func (t *thread) describe() string {
 		tools = append(tools, fmt.Sprintf("%s=%d", name, count))
 	}
 	sort.Strings(tools)
-	line := fmt.Sprintf("  [%s] %s model=%s tools={%s}", kind, label, t.Model, strings.Join(tools, ", "))
+	line := fmt.Sprintf("  [%s] %s model=%s effort=%s tools={%s}", kind, label, t.Model, t.ReasoningEffort, strings.Join(tools, ", "))
 	if cmd, ok := t.pythonExecution(); ok {
 		line += fmt.Sprintf(" python=%q", truncate(cmd, 70))
 	}
@@ -660,37 +708,7 @@ func cmdVerify(args []string) error {
 			name: "agent",
 			question: "请使用 spawn_agent 派一个子智能体（显式传入 fork_turns=\"none\"），让它用知识库检索工具调研「量子纠错」" +
 				"并给出两个要点；等它返回后再把结果汇总成最终回答。",
-			check: func(threads []*thread, _ string) error {
-				// The delegated task is a retrieval task, so the only proof the handoff
-				// actually worked is the CHILD running a retrieval tool. A child that
-				// idles, or only pokes around the sandbox with exec_command, means the
-				// task never reached it (or was unreadable) — the upstream
-				// third-party-provider failure this probe exists to catch.
-				sawSub := false
-				for _, t := range threads {
-					if !t.Sub {
-						continue
-					}
-					sawSub = true
-					delivery := "user-message"
-					switch {
-					case t.TaskOpaque:
-						delivery = "encrypted payload"
-					case t.TaskAgentMessage && !t.TaskAsUser:
-						delivery = "agent_message item (not provider-neutral)"
-					}
-					tool, ok := t.callsAny(retrievalTools)
-					if !ok {
-						return fmt.Errorf("sub-agent %s (task via %s) called no retrieval tool; it did not receive/act on its task",
-							t.ID, delivery)
-					}
-					return fmt.Errorf("ok: sub-agent %s (task via %s) ran %s", t.ID, delivery, tool)
-				}
-				if !sawSub {
-					return errors.New("no sub-agent thread was created")
-				}
-				return errors.New("sub-agent inspection failed")
-			},
+			check: agentProbeCheck,
 		},
 	}
 
@@ -733,6 +751,80 @@ func cmdVerify(args []string) error {
 		return fmt.Errorf("%d of %d probes failed", failures, len(probes))
 	}
 	return nil
+}
+
+// agentProbeCheck asserts how the delegated sub-agent was spawned and what it inherited.
+//
+// A sub-agent must be spawned FRESH (fork_turns="none") with no model/effort override, so
+// it inherits the root's model and reasoning effort. The fork/override arguments live in
+// the PARENT's spawn_agent call — a child rollout records only the spawn edge plus the
+// model/effort it ENDED UP with — so the request is asserted from the parent and the
+// inheritance is confirmed on the child's own turn_context. The child must also actually
+// run a retrieval tool, which is the only proof the delegated task reached it.
+func agentProbeCheck(threads []*thread, _ string) error {
+	var root *thread
+	for _, t := range threads {
+		if !t.Sub && len(t.Spawns) > 0 {
+			root = t
+			break
+		}
+	}
+	if root == nil {
+		return errors.New("no root thread recorded a spawn_agent call")
+	}
+	spawn := root.Spawns[0]
+	// An omitted fork_turns defaults to "all" (a full-history fork that drags the parent's
+	// context in) — not the fresh child this probe asks for.
+	if !strings.EqualFold(spawn.ForkTurns, "none") {
+		got := spawn.ForkTurns
+		if got == "" {
+			got = "(omitted -> defaults to all)"
+		}
+		return fmt.Errorf("spawn_agent fork_turns=%s, want none", got)
+	}
+	// The model/effort override arguments must be OMITTED: the child inherits the root's
+	// baked thread model. A present value means the spawn tool still advertised them (the
+	// bug where a child fails on an unknown model).
+	if spawn.Model != "" {
+		return fmt.Errorf("spawn_agent passed model=%q; it must be omitted so the child inherits the root model", spawn.Model)
+	}
+	if spawn.ReasoningEffort != "" {
+		return fmt.Errorf("spawn_agent passed reasoning_effort=%q; it must be omitted so the child inherits the root effort", spawn.ReasoningEffort)
+	}
+
+	sawSub := false
+	for _, t := range threads {
+		if !t.Sub {
+			continue
+		}
+		sawSub = true
+		// Inheritance, confirmed on the child's own turn_context.
+		if t.Model != root.Model {
+			return fmt.Errorf("sub-agent %s ran model=%q, want the root's %q", t.ID, t.Model, root.Model)
+		}
+		if t.ReasoningEffort != root.ReasoningEffort {
+			return fmt.Errorf("sub-agent %s ran reasoning_effort=%q, want the root's %q",
+				t.ID, t.ReasoningEffort, root.ReasoningEffort)
+		}
+		delivery := "user-message"
+		switch {
+		case t.TaskOpaque:
+			delivery = "encrypted payload"
+		case t.TaskAgentMessage && !t.TaskAsUser:
+			delivery = "agent_message item (not provider-neutral)"
+		}
+		tool, ok := t.callsAny(retrievalTools)
+		if !ok {
+			return fmt.Errorf("sub-agent %s (task via %s) called no retrieval tool; it did not receive/act on its task",
+				t.ID, delivery)
+		}
+		return fmt.Errorf("ok: sub-agent %s (task via %s) ran %s; fork_turns=none, model=%s, effort=%s inherited from the root",
+			t.ID, delivery, tool, t.Model, t.ReasoningEffort)
+	}
+	if !sawSub {
+		return errors.New("no sub-agent thread was created")
+	}
+	return errors.New("sub-agent inspection failed")
 }
 
 func newThreadsSince(codexHome string, before map[string]bool) ([]*thread, error) {

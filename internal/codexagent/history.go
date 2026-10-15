@@ -174,14 +174,15 @@ func InstructionsFingerprint(instructions string) string {
 //     shared app-server this is cross-tenant (see docs §5.5);
 //   - extra default-off capabilities are on: `features.token_budget`,
 //     `features.current_time_reminder`, `features.sleep_tool` (mode always_on) and
-//     `features.multi_agent_v2` (+ dynamic tools);
+//     `features.multi_agent_v2` (+ dynamic tools), with the spawn tool's model/reasoning
+//     overrides hidden so a child inherits the thread's model;
 //   - a delegated sub-agent gets its own developer fragment
 //     (`features.multi_agent_v2.subagent_developer_instructions`) instead of inheriting the
 //     root's contract — a create-time config value, so a change rebuilds the thread.
 //
 // Bump the suffix whenever any of these changes, so threads built under the old policy
 // rebuild exactly once (the same device as hostedToolsPolicy).
-const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=on-request-v1;memory=on-v1;extras=budget,clock,sleep,agents-v2"
+const instructionsPolicy = "instructions=developer-v1;update_plan=on-v1;approval=on-request-v1;memory=on-v1;extras=budget,clock,sleep,agents-v3"
 
 // InstructionsPolicyFingerprint returns the current instruction/tool policy marker (see
 // instructionsPolicy).

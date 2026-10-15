@@ -715,7 +715,19 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 	// codexSubagentContract. The V2 collaboration tools (spawn/send_message/followup_task/
 	// list_agents/wait_agent) come with it; sub-agents mean extra threads per turn, so more
 	// tokens and concurrency.
-	multiAgent := map[string]interface{}{"enabled": true}
+	multiAgent := map[string]interface{}{
+		"enabled": true,
+		// Hide the spawn tool's `model`/`reasoning_effort` parameters. They default to
+		// EXPOSED, and their catalog comes from Codex's OWN model manifest
+		// (core/src/tools/handlers/multi_agents_spec.rs), which does NOT list the dialog
+		// model. The root then fills `model` with either a manifest name the provider
+		// cannot serve, or a name Codex cannot resolve at all — the latter aborts the
+		// spawn outright ("Unknown model `X` for spawn_agent", core/src/agent/
+		// child_config.rs) and stalls the turn on the parent's `wait_agent`. With the
+		// parameters gone a spawned child inherits this thread's model, which is the
+		// dialog model we bake below for exactly that reason.
+		"expose_spawn_agent_model_overrides": false,
+	}
 	if req.SubagentInstructions != "" {
 		multiAgent["subagent_developer_instructions"] = req.SubagentInstructions
 	}
