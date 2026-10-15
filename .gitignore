@@ -286,3 +286,8 @@ docker/codex/*.tar.gz
 # local benchmark run artifacts (mode-8 config + results; never committed)
 outputs/
 tools/benchmark/qa_benchmark_conf_mode8_10.json
+
+# Tools built with `go build ./tools/<x>/` land in the repo root; never commit them.
+/benchmark
+/strategy_rsi
+/mode8verify
