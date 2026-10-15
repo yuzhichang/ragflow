@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -695,6 +696,35 @@ func TestEqualScoreDuplicateUsesStableID(t *testing.T) {
 	got, _ := dedupePool([]strategyItem{{ID: "s0002", Text: "Verify clues", TotalScore: 5}, {ID: "s0001", Text: "Verify clues", TotalScore: 5}})
 	if len(got) != 1 || got[0].ID != "s0001" {
 		t.Fatalf("tie resolved by iteration order: %+v", got)
+	}
+}
+
+// Model-side temporary failures wait a FLAT 10 min (sliding-window allowance); transport
+// hiccups keep the fast exponential backoff.
+func TestRetryDelayByClass(t *testing.T) {
+	p := retryPolicy{initial: time.Second, max: 60 * time.Second, quota: 600 * time.Second}
+	if got := p.delayFor(failQuota, 0); got != 600*time.Second {
+		t.Fatalf("quota wait = %s, want 10m", got)
+	}
+	if got := p.delayFor(failQuota, 7); got != 600*time.Second {
+		t.Fatalf("quota wait must stay flat, got %s", got)
+	}
+	if got := p.delayFor(failNetwork, 0); got != time.Second {
+		t.Fatalf("network initial = %s, want 1s", got)
+	}
+	if got := p.delayFor(failNetwork, 9); got != 60*time.Second {
+		t.Fatalf("network cap = %s, want 60s", got)
+	}
+	if got := (retryPolicy{}).delayFor(failQuota, 0); got != 10*time.Minute {
+		t.Fatalf("default quota wait = %s, want 10m", got)
+	}
+	// The exact real-world provider string must classify as quota.
+	const highDemand = "**ERROR**: codexagent: turn failed (kind=internalServerError): We’re currently experiencing high demand, which may cause temporary errors."
+	if !answerLooksLikeError(highDemand) {
+		t.Fatal("the real high-demand error text must be detected")
+	}
+	if classify(errorsNew(highDemand)) != failQuota {
+		t.Fatal("high demand must classify as quota")
 	}
 }
 

@@ -240,7 +240,7 @@ func (e *executor) askIsolated(ctx context.Context, session, question string) (s
 					return ans, cur, nil
 				}
 			}
-			if serr := e.retry.sleep(ctx, attempt); serr != nil {
+			if serr := e.retry.sleepClass(ctx, classify(err), attempt); serr != nil {
 				return "", cur, serr
 			}
 			ns, cerr := e.client.createSession(ctx, e.cfg.ChatID)
@@ -307,7 +307,7 @@ func (e *executor) reflect(ctx context.Context, session string, rec trainsetReco
 			} else {
 				return nil, nil, fmt.Errorf("reflection outcome unknown (no history); abandoning lessons")
 			}
-			if serr := e.retry.sleep(ctx, attempt); serr != nil {
+			if serr := e.retry.sleepClass(ctx, classify(err), attempt); serr != nil {
 				return nil, nil, serr
 			}
 			continue

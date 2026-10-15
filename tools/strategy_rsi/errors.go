@@ -130,14 +130,30 @@ func containsAny(s string, subs []string) bool {
 	return false
 }
 
-// retryPolicy is the exponential backoff used for quota/network failures (§6.4).
+// retryPolicy controls waits between retries. Transport hiccups (failNetwork) use an
+// exponential backoff; MODEL-side temporary failures (failQuota: high demand / allowance
+// exhausted) wait a flat `quota` interval, because the provider resets its allowance on a
+// sliding window and a long park only wastes wall clock (default 10 min).
 type retryPolicy struct {
 	initial time.Duration
 	max     time.Duration
 	jitter  float64
+	quota   time.Duration
 }
 
-func (p retryPolicy) delay(attempt int) time.Duration {
+// delayFor returns the wait before retry `attempt` for a given failure class.
+func (p retryPolicy) delayFor(class failClass, attempt int) time.Duration {
+	if class == failQuota {
+		q := p.quota
+		if q <= 0 {
+			q = 10 * time.Minute
+		}
+		return jittered(q, p.jitter)
+	}
+	return jittered(p.backoff(attempt), p.jitter)
+}
+
+func (p retryPolicy) backoff(attempt int) time.Duration {
 	if p.initial <= 0 {
 		p.initial = time.Second
 	}
@@ -151,9 +167,12 @@ func (p retryPolicy) delay(attempt int) time.Duration {
 	if d > p.max {
 		d = p.max
 	}
-	if p.jitter > 0 {
-		// jitter in [1-jitter, 1+jitter]
-		factor := 1 + (rand.Float64()*2-1)*p.jitter
+	return d
+}
+
+func jittered(d time.Duration, jitter float64) time.Duration {
+	if jitter > 0 {
+		factor := 1 + (rand.Float64()*2-1)*jitter
 		d = time.Duration(float64(d) * factor)
 	}
 	if d < 0 {
@@ -162,8 +181,9 @@ func (p retryPolicy) delay(attempt int) time.Duration {
 	return d
 }
 
-func (p retryPolicy) sleep(ctx context.Context, attempt int) error {
-	t := time.NewTimer(p.delay(attempt))
+// sleepClass waits (cancellably) before the next retry of `class`.
+func (p retryPolicy) sleepClass(ctx context.Context, class failClass, attempt int) error {
+	t := time.NewTimer(p.delayFor(class, attempt))
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
@@ -175,7 +195,7 @@ func (p retryPolicy) sleep(ctx context.Context, attempt int) error {
 
 // callWithRetry repeatedly runs fn until it succeeds. A timeout or permanent failure is
 // returned immediately (the caller decides skip/abandon); quota/network failures are
-// retried endlessly after an exponential backoff, as required by the plan.
+// retried endlessly after a class-appropriate wait, as required by the plan.
 //
 // NOTE: the caller must make fn side-effect-safe across retries -- resending a chat turn
 // duplicates it (the server persists the user turn before calling the model), so fn is
@@ -186,9 +206,10 @@ func callWithRetry(ctx context.Context, p retryPolicy, fn func(attempt int) erro
 		if err == nil {
 			return nil
 		}
-		switch classify(err) {
+		class := classify(err)
+		switch class {
 		case failQuota, failNetwork:
-			if serr := p.sleep(ctx, attempt); serr != nil {
+			if serr := p.sleepClass(ctx, class, attempt); serr != nil {
 				return serr
 			}
 			continue

@@ -291,7 +291,10 @@ The lessons array must contain at most 2 items.
 - **自省失败 ≠ 整题失败**：判分结果已拿到，务必保留；只是这题不贡献教训。
 - **归并没有「可跳过的题」**：超时/永久失败只能放弃**本批更新**——与 §8「失败不修改集合」一致，解决此前「网络报错就丢弃教训」与「endless 重试」的冲突。
 - **识别依据**：额度 = HTTP 429 / rate limit / quota / “token 用量上限” / provider “high demand/overloaded”；网络 = connection reset/refused、EOF、DNS、TLS、5xx；超时 = `request_timeout` 到期 / 服务端 turn 超时 / `context deadline exceeded`。
-- **endless 重试**：默认**无次数上限**；退避 `retry_initial`(1s)→`retry_max`(60s) + `retry_jitter`(0.3)。会占据批屏障（同步批语义），期间持续打日志；`--retry-wall`（默认关）仅作耗时观测。
+- **endless 重试**：默认**无次数上限**，按失败类别等待：
+  - **模型侧临时错误**（额度 / high demand / 用量耗光，`failQuota`）→ **固定 10 分钟**间隔（`retry_quota_seconds`，默认 600）。MiniMax 已把 5 小时额度的重置改成**滑动窗口**，槽位更早释放，30 分钟的 park 只会白等。
+  - **传输类网络错误**（`failNetwork`）→ 指数退避 `retry_initial`(1s)→`retry_max`(60s) + `retry_jitter`(0.3)。
+  - 重试会占据批屏障（同步批语义），期间持续打日志。
 - **跳过的题**：本 pass 计入 `skipped`、**不计入准确率分母、也不计入覆盖率分子**；下一 pass 重试；最终仍失败则 `leaderboard` 单列。
 - **批完整性**：某题被跳过只是少一条教训，更新逻辑不变（§6.2）。
 
@@ -440,9 +443,10 @@ The lessons array must contain at most 2 items.
   "seed": 20261015,                           // 抽样种子（决定 samplePass，§12）
 
   "request_timeout": 900,                     // 秒；单次调用超时 → 按阶段 §6.4 分流
-  "retry_initial_seconds": 1,                 // 额度/网络失败：退避起点
-  "retry_max_seconds": 60,                    // 退避上限
+  "retry_initial_seconds": 1,                 // 网络类失败：退避起点
+  "retry_max_seconds": 60,                    // 网络类退避上限
   "retry_jitter": 0.3,                        // 退避抖动比例
+  "retry_quota_seconds": 600,                 // 模型侧临时错误（额度/high demand）固定间隔 10 分钟
   "require_mode8": true,                      // 前置检查：引擎降级则终止实验（见下注）
 
   "max_strategies": 10,                       // 生效上限；候选池可超过此数

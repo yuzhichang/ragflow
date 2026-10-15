@@ -60,7 +60,11 @@ type config struct {
 	RetryInitialSec   float64 `json:"retry_initial_seconds"`
 	RetryMaxSec       float64 `json:"retry_max_seconds"`
 	RetryJitter       float64 `json:"retry_jitter"`
-	RequireMode8      bool    `json:"require_mode8"`
+	// RetryQuotaSec is the FLAT wait before retrying a MODEL-side temporary failure
+	// (high demand / allowance exhausted). MiniMax resets its 5-hour allowance on a
+	// sliding window, so 10 min (not 30) reopens a slot sooner.
+	RetryQuotaSec int  `json:"retry_quota_seconds"`
+	RequireMode8  bool `json:"require_mode8"`
 
 	MaxStrategies    int `json:"max_strategies"`
 	MaxLessons       int `json:"max_lessons"`
@@ -96,6 +100,7 @@ func defaultConfig() config {
 		RetryInitialSec:   1,
 		RetryMaxSec:       60,
 		RetryJitter:       0.3,
+		RetryQuotaSec:     600,
 		RequireMode8:      true,
 		MaxStrategies:     10,
 		MaxLessons:        2,

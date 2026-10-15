@@ -39,8 +39,10 @@ import (
 //     ragflow_error, OR when its error is PERSISTENT (the provider refused the
 //     input itself - content policy, e.g. minimax's "input new_sensitive"; a
 //     retry reproduces the refusal). Transient errors never write a damaged
-//     row: the question parks ERROR_RETRY_WAIT_SEC (30 min) in process and
-//     retries until it succeeds, so no external watcher is needed.
+//     row: the question parks ERROR_RETRY_WAIT_SEC (10 min) in process and
+//     retries until it succeeds, so no external watcher is needed. (10 min, not
+//     30: MiniMax now resets its 5-hour allowance on a SLIDING window, so a
+//     slot reopens sooner and a long park only wastes wall clock.)
 //   - A provider quota wall is ridden out in process: the phase stops
 //     dispatching, waits --wall-wait seconds, then re-enters itself and
 //     retries exactly the work still missing. Unbounded unless
@@ -1467,11 +1469,11 @@ const (
 	quotaBurstWindowSec = 120
 	quotaBurstPauseSec  = 90
 	quotaAbortTotal     = 12
-	wallRetryWaitSec    = 1800
+	wallRetryWaitSec    = 600
 	wallMaxWaits        = 0
 	wallWaitSliceSec    = 30
 	wallWaitLogEverySec = 300
-	errorRetryWaitSec   = 1800
+	errorRetryWaitSec   = 600
 )
 
 type quotaBreaker struct {
