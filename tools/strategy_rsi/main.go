@@ -143,6 +143,7 @@ func run(args []string) error {
 			initial: time.Duration(cfg.RetryInitialSec * float64(time.Second)),
 			max:     time.Duration(cfg.RetryMaxSec * float64(time.Second)),
 			jitter:  cfg.RetryJitter,
+			quota:   time.Duration(cfg.RetryQuotaSec) * time.Second,
 		},
 	}
 
