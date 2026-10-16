@@ -201,6 +201,15 @@ func (e *executor) runTraining(ctx context.Context, recs []trainsetRecord, meta 
 	}
 	set.rank(e.cfg.MaxStrategies)
 
+	// Backfill the strategies.jsonl snapshot for the resumed version: idempotent, and it
+	// covers a run that predates the snapshot (or one whose snapshot write raced a crash).
+	if !fresh && cp.Version > 0 {
+		origin := fmt.Sprintf("backfill pass=%d batch=%d", cp.Pass, cp.NextBatchIndex)
+		if err := e.appendStrategySnapshot(set, origin, cp.StrategiesFile); err != nil {
+			return err
+		}
+	}
+
 	n := len(recs)
 
 	// Mid-evaluation resume.
@@ -428,11 +437,17 @@ func scoresChanged(a, b *strategySet) bool {
 func (e *executor) persist(cp *checkpoint, set *strategySet, att attemptID, pass, nextBatch int, phase string) error {
 	if set.Version != cp.Version || cp.StrategiesFile == "" {
 		sfile := e.cfg.strategiesFileFor(set.Version)
-		if err := writeStrategyFile(e.out.path(sfile), set.renderFile(fmt.Sprintf("pass=%d batch=%d", pass, nextBatch))); err != nil {
+		origin := fmt.Sprintf("pass=%d batch=%d", pass, nextBatch)
+		if err := writeStrategyFile(e.out.path(sfile), set.renderFile(origin)); err != nil {
 			return err
 		}
 		sha, err := fileSHA256(e.out.path(sfile))
 		if err != nil {
+			return err
+		}
+		// The strategies.jsonl snapshot is the human-readable trace of the pool; it is
+		// written with the versioned file, before the checkpoint cursor moves.
+		if err := e.appendStrategySnapshot(set, origin, sfile); err != nil {
 			return err
 		}
 		cp.StrategiesFile = sfile

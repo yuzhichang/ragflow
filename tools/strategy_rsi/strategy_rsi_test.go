@@ -753,6 +753,60 @@ func TestProbeRetryClass(t *testing.T) {
 	}
 }
 
+// TestStrategySnapshotAppend pins the strategies.jsonl export: one line per version with
+// scores and active flags, and idempotent so a crash-and-repersist cannot duplicate it.
+func TestStrategySnapshotAppend(t *testing.T) {
+	o, err := openOutputDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.release()
+	e := &executor{cfg: defaultConfig(), out: o}
+
+	set := &strategySet{Version: 1, NextID: 3, ActiveIDs: []string{"s0001"},
+		Items: []strategyItem{
+			{ID: "s0001", Text: "search broadly across genres", TotalScore: 2, RatingCount: 1, CreatedBy: "merge"},
+			{ID: "s0002", Text: "verify each clue independently", TotalScore: -1, RatingCount: 2, CreatedBy: "merge"},
+		}}
+	if err := e.appendStrategySnapshot(set, "pass=1 batch=1", "strategies.v0001.txt"); err != nil {
+		t.Fatal(err)
+	}
+	// The same version must not be recorded twice.
+	if err := e.appendStrategySnapshot(set, "pass=1 batch=1", "strategies.v0001.txt"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readJSONLStrict(o.path("strategies.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("snapshot lines = %d, want 1 (idempotent by version)", len(rows))
+	}
+	if rows[0]["version"].(float64) != 1 || rows[0]["origin"] != "pass=1 batch=1" {
+		t.Fatalf("bad header: %v", rows[0])
+	}
+	items, _ := rows[0]["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	first, _ := items[0].(map[string]any)
+	if first["id"] != "s0001" || first["total_score"].(float64) != 2 || first["active"] != true {
+		t.Fatalf("bad item 0: %v", first)
+	}
+	second, _ := items[1].(map[string]any)
+	if second["active"] != false || second["rating_count"].(float64) != 2 {
+		t.Fatalf("bad item 1: %v", second)
+	}
+	// A newer version appends a second line.
+	set.Version = 2
+	if err := e.appendStrategySnapshot(set, "pass=1 batch=2", "strategies.v0002.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ = readJSONLStrict(o.path("strategies.jsonl")); len(rows) != 2 {
+		t.Fatalf("after v2: lines = %d, want 2", len(rows))
+	}
+}
+
 // ---------------------------------------------------------------- helpers
 
 func errorsNew(s string) error { return fmt.Errorf("%s", s) }

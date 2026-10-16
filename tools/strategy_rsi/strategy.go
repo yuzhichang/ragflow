@@ -200,3 +200,64 @@ func writeStrategyFile(path, content string) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// appendStrategySnapshot records one line per strategy VERSION in strategies.jsonl: the
+// whole pool with each item's accumulated score, rating count and active flag. The
+// versioned strategies.vNNNN.txt files carry only the rendered text (what the model is
+// given) and the checkpoint is a single mutable state file, so this is the append-only
+// trace of how the pool evolved.
+//
+// Idempotent by version: a re-persist after a crash between the file write and the
+// checkpoint commit must not duplicate the line.
+func (e *executor) appendStrategySnapshot(set *strategySet, origin, sfile string) error {
+	if e.out == nil {
+		return nil
+	}
+	seen, err := snapshotVersions(e.out.path("strategies.jsonl"))
+	if err != nil {
+		return err
+	}
+	if seen[set.Version] {
+		return nil
+	}
+	active := make(map[string]bool, len(set.ActiveIDs))
+	for _, id := range set.ActiveIDs {
+		active[id] = true
+	}
+	items := make([]map[string]any, 0, len(set.Items))
+	for _, it := range set.Items {
+		items = append(items, map[string]any{
+			"id":           it.ID,
+			"text":         it.Text,
+			"total_score":  it.TotalScore,
+			"rating_count": it.RatingCount,
+			"active":       active[it.ID],
+			"created_by":   it.CreatedBy,
+			"source_ids":   it.SourceIDs,
+		})
+	}
+	return e.out.appendJSONL("strategies.jsonl", map[string]any{
+		"version":         set.Version,
+		"ts":              nowISO(),
+		"origin":          origin,
+		"strategies_file": sfile,
+		"next_id":         set.NextID,
+		"active_ids":      append([]string(nil), set.ActiveIDs...),
+		"items":           items,
+	})
+}
+
+// snapshotVersions returns the versions already present in a strategies.jsonl snapshot.
+func snapshotVersions(path string) (map[int]bool, error) {
+	rows, err := readJSONLStrict(path)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if v, ok := r["version"].(float64); ok {
+			out[int(v)] = true
+		}
+	}
+	return out, nil
+}
