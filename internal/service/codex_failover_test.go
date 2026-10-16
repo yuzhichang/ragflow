@@ -74,19 +74,24 @@ func TestCodexFailoverEligible(t *testing.T) {
 // TestCodexResponsesUsable (moved to codex_responses_probe_test.go) pins the bar a mode-8
 // target must clear; it now covers both the known-capable fast path and the dynamic probe.
 
-// TestCandidateKey pins the dedup key: two candidates are the same only when they share both the
-// endpoint and the model, so the same model on another endpoint is still a distinct failover
-// member.
+// TestCandidateKey pins the dedup key: two candidates are the same only when they share the
+// endpoint, the model AND the credential, so a sibling instance of one vendor (same endpoint,
+// different key) is still a distinct failover member.
 func TestCandidateKey(t *testing.T) {
-	base := &ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m1"}
-	if candidateKey(base) != candidateKey(&ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m1"}) {
-		t.Fatal("same endpoint and model must share a key")
+	base := &ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m1", APIKey: "key-1"}
+	if candidateKey(base) != candidateKey(&ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m1", APIKey: "key-1"}) {
+		t.Fatal("the same endpoint, model and credential must share a key")
 	}
-	if candidateKey(base) == candidateKey(&ResolvedModelTarget{BaseURL: "https://b/v1", ModelName: "m1"}) {
+	if candidateKey(base) == candidateKey(&ResolvedModelTarget{BaseURL: "https://b/v1", ModelName: "m1", APIKey: "key-1"}) {
 		t.Fatal("a different endpoint is a different candidate")
 	}
-	if candidateKey(base) == candidateKey(&ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m2"}) {
+	if candidateKey(base) == candidateKey(&ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m2", APIKey: "key-1"}) {
 		t.Fatal("a different model is a different candidate")
+	}
+	// The failover group this exists for: one vendor, one endpoint, several keys (a per-key
+	// rate limit). Keying on (endpoint, model) alone collapsed these into the primary.
+	if candidateKey(base) == candidateKey(&ResolvedModelTarget{BaseURL: "https://a/v1", ModelName: "m1", APIKey: "key-2"}) {
+		t.Fatal("a different credential on the same endpoint and model is a distinct failover member")
 	}
 }
 

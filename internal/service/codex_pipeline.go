@@ -501,9 +501,23 @@ func (s *ChatPipelineService) codexTurnTargetFor(ctx context.Context, tenantID, 
 	return t
 }
 
-// candidateKey identifies a candidate for dedup: the endpoint plus the model it serves.
+// candidateKey identifies a candidate for dedup: the endpoint, the model it serves, and the
+// CREDENTIAL that serves it.
+//
+// The credential is part of the identity because the failover group this exists for is
+// exactly "one vendor, several keys": instances of a provider routinely share the base_url
+// and differ only by API key (a per-key rate limit is what such a roster works around).
+// Keying on (base_url, model) alone made every such roster member a duplicate of the
+// primary, so a configured failover_llm_ids silently collapsed to a one-candidate chain.
 func candidateKey(target *ResolvedModelTarget) string {
-	return target.BaseURL + "\x00" + target.ModelName
+	return target.BaseURL + "\x00" + target.ModelName + "\x00" + credentialFingerprint(target.APIKey)
+}
+
+// credentialFingerprint identifies a credential without keeping the secret itself in the
+// dedup key. An empty key hashes like any other, so keyless targets still compare equal.
+func credentialFingerprint(apiKey string) string {
+	sum := sha256.Sum256([]byte(apiKey))
+	return hex.EncodeToString(sum[:8])
 }
 
 // codexFailoverEligible reports whether a failed turn should be retried on the next provider,
