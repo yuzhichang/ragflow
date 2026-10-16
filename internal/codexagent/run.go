@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -94,9 +93,6 @@ type TurnRequest struct {
 	// this turn, and removed when the turn ends. Its concrete type is owned by the
 	// injected TurnBinder; opaque here (nil skips binding).
 	Binding any
-	// WorkDir is the empty directory Codex runs in. It must exist on the machine the
-	// shared Codex runs on (see codex.work_dir); empty means a fresh local temp dir.
-	WorkDir string
 	// Instructions is the citation contract (see the plan, D5).
 	Instructions string
 	// SubagentInstructions is the developer fragment a DELEGATED sub-agent gets, in place
@@ -433,14 +429,6 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	}
 	current := req.Messages[len(req.Messages)-1]
 
-	// The directory Codex runs in (see newWorkDir). Failure is fatal: running in the
-	// shared Codex's default cwd would expose that host's tree.
-	workDir, cleanupDir, err := newWorkDir(req.WorkDir)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanupDir()
-
 	// Bind BEFORE any thread work: the binding IS the per-session turn lock (one atomically
 	// acquired KV value), so if another turn already holds it, Bind returns
 	// mcp.ErrCodexTurnBusy and this turn must not proceed. It stays held until the turn's
@@ -452,7 +440,7 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 
 	// Ephemeral: no session id or no store => one-shot thread, never persisted.
 	if req.SessionID == "" || r.store == nil {
-		return r.runOnThread(ctx, req, current, req.Messages, workDir)
+		return r.runOnThread(ctx, req, current, req.Messages)
 	}
 
 	scopeFP := ScopeFingerprint(req.TenantID, req.DatasetIDs)
@@ -507,7 +495,7 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// the reuse key, so the retry must never resume it.
 	handleAlive := req.HandleAlive == nil || rec.Ticket == "" || req.HandleAlive(rec.Ticket)
 	if shouldReuseThread(found, rec, scopeFP, seenFP, handleAlive, req.ForceRebuild) {
-		if th, err := r.client.ResumeThread(ctx, rec.ThreadID, r.threadOptions(req, workDir)...); err == nil {
+		if th, err := r.client.ResumeThread(ctx, rec.ThreadID, r.threadOptions(req)...); err == nil {
 			defer th.Close()
 			out, err := r.consume(ctx, th, req, current)
 			if err != nil {
@@ -538,7 +526,7 @@ func (r *Runner) RunTurn(ctx context.Context, req TurnRequest) (*TurnOutcome, er
 	// (Re)build: first turn, scope/history drift, or resume failure. The handle is
 	// per-session and stable, so the rebuilt thread reuses the same MCP URL — there is
 	// nothing to revoke.
-	out, threadID, err := r.createAndRun(ctx, req, current, workDir)
+	out, threadID, err := r.createAndRun(ctx, req, current)
 	if err != nil {
 		return nil, err
 	}
@@ -596,8 +584,8 @@ func appendAssistant(msgs []map[string]interface{}, content string) []map[string
 
 // createAndRun starts a fresh thread, replays the history (minus the current message),
 // then runs the current turn.
-func (r *Runner) createAndRun(ctx context.Context, req TurnRequest, current map[string]interface{}, workDir string) (*TurnOutcome, string, error) {
-	th, err := r.client.StartThread(ctx, r.threadOptions(req, workDir)...)
+func (r *Runner) createAndRun(ctx context.Context, req TurnRequest, current map[string]interface{}) (*TurnOutcome, string, error) {
+	th, err := r.client.StartThread(ctx, r.threadOptions(req)...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -614,8 +602,8 @@ func (r *Runner) createAndRun(ctx context.Context, req TurnRequest, current map[
 }
 
 // runOnThread is the ephemeral path: a one-shot thread with the whole history replayed.
-func (r *Runner) runOnThread(ctx context.Context, req TurnRequest, current map[string]interface{}, all []map[string]interface{}, workDir string) (*TurnOutcome, error) {
-	th, err := r.client.StartThread(ctx, r.threadOptions(req, workDir)...)
+func (r *Runner) runOnThread(ctx context.Context, req TurnRequest, current map[string]interface{}, all []map[string]interface{}) (*TurnOutcome, error) {
+	th, err := r.client.StartThread(ctx, r.threadOptions(req)...)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +623,7 @@ func (r *Runner) runOnThread(ctx context.Context, req TurnRequest, current map[s
 	return out, nil
 }
 
-func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.ThreadOption {
+func (r *Runner) threadOptions(req TurnRequest) []codexgo.ThreadOption {
 	opts := []codexgo.ThreadOption{
 		codexgo.WithThreadConfigOverride("mcp_servers.ragflow", map[string]interface{}{
 			"url": req.MCPURL,
@@ -790,29 +778,19 @@ func (r *Runner) threadOptions(req TurnRequest, workDir string) []codexgo.Thread
 		// its default prompt and also gets the citation rules.
 		opts = append(opts, codexgo.WithThreadDeveloperInstructions(req.Instructions))
 	}
-	// Keep Codex inside the empty, process-private directory created for this turn.
-	if workDir != "" {
-		opts = append(opts, codexgo.WithThreadCWD(workDir))
-	}
+	// Deliberately NO WithThreadCWD. Codex resolves a thread's cwd on the APP-SERVER host,
+	// so a directory RAGFlow creates locally is meaningless once the two run as separate
+	// pods — and a cwd that does not exist there makes EVERY shell command fail ("No such
+	// file or directory"), spinning the turn on retries instead of failing fast. The
+	// mechanism this replaced claimed to isolate the host, but the read-only sandbox never
+	// confined READS in the first place (it forbids writes and network only), so cwd bought
+	// no isolation and merely broke local computation off-host. Omitting it lets Codex use
+	// the app-server's own working directory, which exists.
+	//
+	// Both facts are reproducible: see cwd_missing_integration_test.go (a non-existent cwd
+	// fails every command; omitting cwd works) and read_barrier_integration_test.go (the
+	// shell reads outside cwd regardless).
 	return opts
-}
-
-// newWorkDir returns the directory Codex runs in for one turn. A configured dir is
-// operator-managed (created if absent, never removed); otherwise a fresh local temp dir
-// is created and removed at turn end. Either way, failure is an error — silently falling
-// back to the shared Codex's default cwd would expose that host's tree.
-func newWorkDir(configured string) (string, func(), error) {
-	if configured != "" {
-		if err := os.MkdirAll(configured, 0o700); err != nil {
-			return "", func() {}, fmt.Errorf("codexagent: work dir %q: %w", configured, err)
-		}
-		return configured, func() {}, nil
-	}
-	dir, err := os.MkdirTemp("", "codex-m7-*")
-	if err != nil {
-		return "", func() {}, fmt.Errorf("codexagent: create work dir: %w", err)
-	}
-	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // consume runs one turn on an already-connected thread via RunStreamed (the sync Run

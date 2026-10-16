@@ -40,9 +40,6 @@ type CodexConfig struct {
 	// MCP bridge, e.g. https://ragflow.internal. When empty it is derived from the
 	// API server config at request time.
 	MCPPublicBase string
-	// WorkDir is the empty directory Codex runs in. It must exist on the machine the
-	// shared Codex runs on; empty means RAGFlow creates a local temp dir per turn.
-	WorkDir string
 	// ApprovalPolicy is the Codex approval policy. Default "untrusted" — the most
 	// restrictive usable value. Note "never" means "never ask", not "never run".
 	ApprovalPolicy string
@@ -139,7 +136,6 @@ func (c *Config) parseCodexConfig(v *viper.Viper) error {
 		Endpoint:           endpoint,
 		BearerToken:        value("bearer_token", ""),
 		MCPPublicBase:      strings.TrimRight(value("mcp_public_base", ""), "/"),
-		WorkDir:            strings.TrimSpace(value("work_dir", "")),
 		ApprovalPolicy:     approval,
 		SandboxMode:        sandbox,
 		ResponsesProviders: parseResponsesProviders(value("responses_providers", strings.Join(defaultResponsesProviders, ","))),

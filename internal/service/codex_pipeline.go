@@ -796,7 +796,6 @@ func (s *ChatPipelineService) codexAgent(
 				ChatID:     chat.ID,
 				WebSearch:  useWebSearch,
 			},
-			WorkDir: cfg.WorkDir,
 			// The root thread's contract; a delegated sub-agent gets the child-scoped one
 			// through Codex's subagent_developer_instructions seam (see codexSubagentContract).
 			Instructions:         codexRootContract(quote),

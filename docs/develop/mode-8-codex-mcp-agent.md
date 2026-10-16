@@ -395,8 +395,12 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
 
 ⚠️ **`ApprovalNever()` 不是「拒绝执行」**：SDK 定义它为「**从不请求审批**」（`types.go:488`）——即 agent 会**直接执行**而不询问，是更宽松、不是更严格。mode 8 只应让 Codex 做「推理 + 调 MCP 检索」，绝不能执行命令/改文件。因此隔离必须靠**沙箱 + 禁用内置执行能力**，而不是靠审批策略：
 
-- **只读 sandbox**：建 thread 时 `WithThreadSandbox(codexgo.SandboxReadOnly)`（或称 `read-only`）。禁止写文件、改变工作目录。
-- **工作目录隔离**：`WithThreadCWD` 指向一个空的、无敏感的目录（不暴露 RAGFlow 代码/配置/密钥）。
+- **只读 sandbox**：建 thread 时 `WithThreadSandbox(codexgo.SandboxReadOnly)`（或称 `read-only`）。禁止写文件、联网**与改变工作目录**。
+- **不设 `WithThreadCWD`（2026-10-16 实测修正；`WithThreadCWD` / `codex.work_dir` / `newWorkDir` 机制已删除）**。曾把「`WithThreadCWD` 指向一个空的、无敏感的目录」当作隔离手段，实测证伪了三点：
+  1. **只读沙箱不限制「读」**——它只禁写与联网。cwd 只决定"站在哪"，不决定"能看到什么"：cwd 指向空目录时，shell 仍能 `cat $HOME/...`（模型驱动的普通 turn，以及显式 `{"type":"readOnly"}` 的 `command/exec`，均实测成功），`~/.codex/config.toml` 可读。**cwd 因此买不到任何隔离。**
+  2. **cwd 在 app-server 宿主上不存在时，每条 shell 命令都失败**（`Failed to create unified exec process: No such file or directory`，`exitCode=-1`），turn 在重试里空转。而旧 `newWorkDir` 的默认分支是 `os.MkdirTemp`——在 **RAGFlow 宿主**建目录，分 pod 部署时对 Codex 毫无意义。
+  3. **不设 cwd 完全可用**：Codex 回退到 app-server 自己的工作目录（存在），本地计算照常运行。
+  删掉它之后 `internal/codexagent/run.go` 的 `threadOptions` 留了一条说明注释。要点是：**读集合无法靠 thread config 收窄**（Codex 的 `readOnly` 策略只有 `writable_roots`，没有只读根），唯一真正的边界是**环境级**的（每租户一个 app-server + 最小文件系统容器，见下"多租户隔离"）。复现：`internal/codexagent/cwd_missing_integration_test.go`（cwd 不存在 vs 不设 cwd 的对照）与 `read_barrier_integration_test.go`（读屏障）。
 - **审批策略：`on-request`（2026-10-14 实测修正）。** 目标是既要**本地计算**、又不能碰坏检索。两点都已核对（codex 0.162.0）：
   - **`never` 会杀死 MCP 检索**：`core/src/mcp_tool_call.rs` 里，当一条 MCP 工具调用需要审批而策略为 `Never` 时，codex **直接拒绝**——`ReviewDecision::denied("MCP tool call requires approval, but approval policy is never")`。实测：`ApprovalNever` 下 `search_bm25_chunks` 全部 `failed in 0ms`，模型在答案里报告"检索工具被拒绝"。**这是不能用的档位。**
   - **`on-request` + 只读沙箱 = 计算可用、检索可用**：`core/src/exec_policy.rs` 中 `OnRequest` 对 **Restricted**（只读）沙箱里"非提权、非危险"的命令直接 `Decision::Allow`（注释原话：*do not prompt … let the sandbox enforce restrictions without a user prompt*），所以 `python3 -c ...` 照跑；而 `OnRequest ≠ Never`，MCP 的 elicitation 路径保持活跃 → `Dispatcher()` accept `ragflow` 的 `mcp_tool_call` → 检索正常。危险命令仍 `Prompt` → 我们拒绝；提权请求（`requests_sandbox_override`）也 `Prompt` → 拒绝。
@@ -420,7 +424,7 @@ think 边界：mode 8 的 reasoning 与 content 可能交错，必须像 `agenti
   - **binding `DatasetIDs` 为空时，检索类工具返回错误**（§4.4 第 6 点），而不是用空作用域检索——这既保证无 KB 对话可用，也杜绝“空 scope 泄漏到任意 KB”。
   - tenantID 一律取 `chat.TenantID`。
   - **残余风险（诚实记录）**：共享 Codex 持有它每个 thread 的 `mcp_servers.url`（即 handle）。若它被攻陷，可在**受害者 turn 进行期间**用受害者的 handle 调桥（MCP 请求不带 thread 身份），读到受害者的 KB。per-turn binding 把窗口从 24h 收窄到 turn 时长，但**未消除**。缓解：**按租户隔离 Codex 实例**（每租户一个 app-server），或在 SDK 支持 `mcp_servers` 的 header 后加 per-request nonce。多副本另有中间态：binding 在 Kvrocks 中一致，但 turn 的跨实例串行化仍在本计划之外（§13 / P1-5）。binding 的 TTL（10 分钟）只需大于保活间隔（binder 每 1 分钟续期一次），**与 `codex.turn_timeout` 无关**——turn 再长也靠心跳在到期前续期，锁不会中途丢失。
-- 共享 Codex 若还开放 fs/命令能力，需与 MCP 检索能力解耦（靠上面的 sandbox + 审批 + 内置工具收敛约束，并以前置验证为准）。
+- 共享 Codex 若还开放 fs/命令能力，需与 MCP 检索能力解耦（靠上面的 sandbox + 审批 + 内置工具收敛约束，并以前置验证为准）。⚠️ **但 2026-10-16 实测表明「读」这一面并未被收敛**：只读沙箱下 shell 可读宿主任意路径（含运维的 `~/.codex/`），见上方「不设 `WithThreadCWD`」条。共享实例上这意味着任一租户的 turn 都可能读到其它租户与运维留在宿主上的文件——**因此"按租户隔离 Codex 实例"从 memory 隔离的前提升级为安全前提**。
 
 #### memory（跨会话记忆）与租户隔离 —— 无租户作用域
 
