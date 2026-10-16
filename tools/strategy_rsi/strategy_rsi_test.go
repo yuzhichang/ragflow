@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -804,6 +805,65 @@ func TestStrategySnapshotAppend(t *testing.T) {
 	}
 	if rows, _ = readJSONLStrict(o.path("strategies.jsonl")); len(rows) != 2 {
 		t.Fatalf("after v2: lines = %d, want 2", len(rows))
+	}
+}
+
+const transportRefusedErr = `create session: Post "http://127.0.0.1:9380/api/v1/chats/x/sessions": dial tcp 127.0.0.1:9380: connect: connection refused`
+
+// Opening a session is infrastructure: a transport failure must be retried rather than
+// turning the question into a skip (a 30s API restart once "completed" ten passes this way).
+func TestCreateSessionRetriesTransportFailure(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable) // transport-class (5xx)
+			return
+		}
+		fmt.Fprint(w, `{"code":0,"data":{"id":"sess-1"}}`)
+	}))
+	defer srv.Close()
+
+	e := &executor{
+		cfg:    defaultConfig(),
+		client: &httpClient{base: srv.URL, hc: srv.Client()},
+		retry:  retryPolicy{initial: time.Millisecond, max: 2 * time.Millisecond, quota: time.Millisecond},
+		quiet:  true,
+	}
+	sid, err := e.createSession(context.Background())
+	if err != nil {
+		t.Fatalf("createSession must retry a transport failure, got %v", err)
+	}
+	if sid != "sess-1" {
+		t.Fatalf("session = %q, want sess-1", sid)
+	}
+	if atomic.LoadInt32(&calls) < 2 {
+		t.Fatalf("expected a retry, calls = %d", calls)
+	}
+}
+
+// TestBatchAbortedByTransport pins the guard: a batch that failed wholesale on transport
+// errors must not be banked, while a batch of individual timeouts commits as usual.
+func TestBatchAbortedByTransport(t *testing.T) {
+	if !batchAbortedByTransport([]questionOutcome{
+		{Skipped: true, Err: transportRefusedErr},
+		{Skipped: true, Err: transportRefusedErr},
+	}) {
+		t.Fatal("a wholesale connection-refused batch is an infrastructure abort")
+	}
+	if batchAbortedByTransport([]questionOutcome{
+		{Skipped: true, Err: transportRefusedErr},
+		{Correct: true},
+	}) {
+		t.Fatal("a batch with a scored question is a measurement, not an abort")
+	}
+	if batchAbortedByTransport([]questionOutcome{
+		{Skipped: true, Err: "timeout (skip): context deadline exceeded"},
+		{Skipped: true, Err: "timeout (skip): context deadline exceeded"},
+	}) {
+		t.Fatal("individual timeouts are a normal outcome (per §6.4), not an abort")
+	}
+	if batchAbortedByTransport(nil) {
+		t.Fatal("an empty batch is not a transport abort")
 	}
 }
 

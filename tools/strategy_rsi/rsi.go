@@ -168,7 +168,7 @@ func (e *executor) runQuestion(ctx context.Context, snap batchSnapshot, rec trai
 	question += rec.Question
 	out.SentQuestion = question
 
-	session, err := e.client.createSession(ctx, e.cfg.ChatID)
+	session, err := e.createSession(ctx)
 	if err != nil {
 		out.Skipped = true
 		out.Err = "create session: " + err.Error()
@@ -204,6 +204,26 @@ func (e *executor) runQuestion(ctx context.Context, snap batchSnapshot, rec trai
 	out.Lessons = lessons
 	out.Ratings = ratings
 	return out
+}
+
+// createSession opens a session, retrying transport-class failures the way the ask path
+// does. Opening a session is infrastructure, not a question outcome: a bare
+// "connection refused" used to mark the question skipped, so a brief API outage "completed"
+// whole batches with zero scored questions and advanced the cursor past them.
+func (e *executor) createSession(ctx context.Context) (string, error) {
+	var sid string
+	err := callWithRetry(ctx, e.retry, func(int) error {
+		id, err := e.client.createSession(ctx, e.cfg.ChatID)
+		if err != nil {
+			return err
+		}
+		sid = id
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return sid, nil
 }
 
 // askIsolated sends one test turn, starting a NEW session before any quota/network

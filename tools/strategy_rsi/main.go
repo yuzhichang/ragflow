@@ -272,6 +272,19 @@ func (e *executor) runTraining(ctx context.Context, recs []trainsetRecord, meta 
 				}
 				return fmt.Errorf("batch %d.%d did not complete", cp.Pass, bi)
 			}
+			// Defense in depth: a batch that failed as a whole for TRANSPORT reasons is an
+			// infrastructure abort, not a measurement. Committing one advances the cursor past
+			// questions that were never really asked -- a 30s API restart once "completed" ten
+			// passes with zero scored questions this way. Wait the transport out and re-run.
+			if batchAbortedByTransport(outcomes) {
+				e.logf("batch %d.%d: all %d question(s) failed on transport errors; not committing, retrying",
+					cp.Pass, bi, len(outcomes))
+				if serr := e.retry.sleepClass(ctx, failNetwork, 0); serr != nil {
+					return e.writeLeaderboard(cp, set, false)
+				}
+				bi-- // undo the loop's bi++ so the SAME batch runs again
+				continue
+			}
 
 			next := cloneSet(set)
 			used := map[string]bool{}
@@ -417,6 +430,28 @@ func countCorrect(o []questionOutcome) int {
 		}
 	}
 	return n
+}
+
+// batchAbortedByTransport reports whether a batch failed as a WHOLE for transport reasons:
+// every question skipped and every skip a quota/network error. That is the API or the
+// provider being unreachable -- infrastructure, not a measurement -- so the batch must not
+// be banked. A batch whose skips are timeouts is a normal outcome (per §6.4) and commits as
+// usual, which is why the class is checked rather than just the skip count.
+func batchAbortedByTransport(o []questionOutcome) bool {
+	if len(o) == 0 {
+		return false
+	}
+	for _, oc := range o {
+		if !oc.Skipped || strings.TrimSpace(oc.Err) == "" {
+			return false
+		}
+		switch classify(errors.New(oc.Err)) {
+		case failQuota, failNetwork:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func scoresChanged(a, b *strategySet) bool {
