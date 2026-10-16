@@ -728,6 +728,31 @@ func TestRetryDelayByClass(t *testing.T) {
 	}
 }
 
+// TestProbeRetryClass pins the preflight failure policy: a provider-errored probe reached
+// Codex and must be waited out, while "no nonce rollout" is degradation and must abort.
+func TestProbeRetryClass(t *testing.T) {
+	const highDemand = "**ERROR**: codexagent: turn failed (kind=internalServerError): We’re currently experiencing high demand, which may cause temporary errors."
+	// A provider error answer means the request reached Codex -> retry on the quota interval.
+	if c, ok := probeRetryClass(&probeProviderError{answer: highDemand}); !ok || c != failQuota {
+		t.Fatalf("provider error: got (%v,%v), want (quota,true)", c, ok)
+	}
+	// No rollout at all -> engine degraded -> abort.
+	if _, ok := probeRetryClass(errNoProbeRollout); ok {
+		t.Fatal("errNoProbeRollout must abort, not retry")
+	}
+	// Transport-side transient errors from ask() -> retry.
+	if c, ok := probeRetryClass(&httpStatusError{Status: 429}); !ok || c != failQuota {
+		t.Fatalf("429: got (%v,%v), want (quota,true)", c, ok)
+	}
+	if c, ok := probeRetryClass(&httpStatusError{Status: 503}); !ok || c != failNetwork {
+		t.Fatalf("503: got (%v,%v), want (network,true)", c, ok)
+	}
+	// Permanent 4xx -> abort.
+	if _, ok := probeRetryClass(&httpStatusError{Status: 400}); ok {
+		t.Fatal("400 must abort, not retry")
+	}
+}
+
 // ---------------------------------------------------------------- helpers
 
 func errorsNew(s string) error { return fmt.Errorf("%s", s) }

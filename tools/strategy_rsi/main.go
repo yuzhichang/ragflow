@@ -819,37 +819,107 @@ func writeRunIdentity(out *outputDir, cfg config, idsHash, promptFP string) erro
 	return os.WriteFile(out.path("_prompt_fingerprint.json"), append(pf, '\n'), artifactPerm)
 }
 
+// probeProviderError marks a probe whose ANSWER is a decorated provider error. It means
+// the request DID reach Codex (the text comes from the codex agent), so the engine is up
+// and only the provider is unhappy -- a transient condition, not engine degradation.
+type probeProviderError struct{ answer string }
+
+func (e *probeProviderError) Error() string {
+	return "probe answer is a provider error: " + truncate(e.answer, 200)
+}
+
+// errNoProbeRollout means no rollout carrying the probe nonce appeared: the request never
+// ran on Codex, so the engine is degraded (or the rollout is not attributable).
+var errNoProbeRollout = errors.New("no rollout containing this probe's nonce appeared (engine likely degraded, or the rollout is not attributable to this request)")
+
 // preflightMode8 confirms the experiment actually runs on the Codex engine: the probe turn
 // must produce a rollout that CONTAINS a nonce unique to this probe. An unrelated rollout
 // (or a degraded non-codex pipeline) cannot satisfy that.
+//
+// The probe verifies the ENGINE, not the provider. A rollout carrying our nonce proves
+// Codex served the request even when the turn then died on a transient provider condition
+// ("high demand"), so that case PASSES -- the batch loop's own retry policy then handles
+// the provider. Only when no nonce rollout appears do we look at the failure: a
+// provider-side error is waited out (the same class-aware policy the batch loop uses) and
+// retried, anything else aborts.
 func (e *executor) preflightMode8(ctx context.Context) error {
 	home := envOr("CODEX_HOME", filepath.Join(os.Getenv("HOME"), ".codex"))
 	before := rolloutSet(home)
 	nonce := "rsi-probe-" + newUUIDv4()
+	for attempt := 1; ; attempt++ {
+		err := e.preflightProbeOnce(ctx, home, before, nonce)
+		if err == nil {
+			return nil
+		}
+		class, retryable := probeRetryClass(err)
+		if !retryable {
+			return err
+		}
+		e.logf("mode-8 preflight: transient %s failure on attempt %d (%v); retrying in %s",
+			class, attempt, err, e.retry.delayFor(class, attempt-1))
+		if serr := e.retry.sleepClass(ctx, class, attempt-1); serr != nil {
+			return serr
+		}
+	}
+}
+
+// preflightProbeOnce runs one probe turn. Success is "a rollout carrying the nonce
+// appeared", checked BEFORE the answer is inspected: a provider-errored turn still proves
+// Codex ran it.
+func (e *executor) preflightProbeOnce(ctx context.Context, home string, before map[string]bool, nonce string) error {
 	sid, err := e.client.createSession(ctx, e.cfg.ChatID)
 	if err != nil {
 		return err
 	}
-	res, err := e.client.ask(ctx, e.cfg.ChatID, "Reply with the single word: "+nonce, sid, e.cfg.Reasoning)
-	if err != nil {
-		return err
+	res, aerr := e.client.ask(ctx, e.cfg.ChatID, "Reply with the single word: "+nonce, sid, e.cfg.Reasoning)
+	if nonceRollout(home, before, nonce, 8*time.Second) {
+		return nil // this probe's turn really ran on Codex
+	}
+	if aerr != nil {
+		return aerr
 	}
 	if answerLooksLikeError(res.Answer) {
-		return fmt.Errorf("probe answer is a provider error: %s", truncate(res.Answer, 120))
+		return &probeProviderError{answer: res.Answer}
 	}
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
+	return errNoProbeRollout
+}
+
+// probeRetryClass decides whether a failed preflight probe is worth waiting out.
+func probeRetryClass(err error) (failClass, bool) {
+	var pe *probeProviderError
+	if errors.As(err, &pe) {
+		// Reached Codex, provider unhappy. Classify from the answer body so the wait
+		// matches the class ("high demand" -> the flat quota interval).
+		if c := classify(errors.New(pe.answer)); c == failQuota || c == failNetwork {
+			return c, true
+		}
+		return failQuota, true
+	}
+	switch classify(err) {
+	case failQuota, failNetwork:
+		return classify(err), true
+	default:
+		return failPermanent, false
+	}
+}
+
+// nonceRollout waits up to `wait` for a rollout created after `before` that contains nonce.
+func nonceRollout(home string, before map[string]bool, nonce string, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
 		for p := range rolloutSet(home) {
 			if before[p] {
 				continue
 			}
 			if b, err := os.ReadFile(p); err == nil && strings.Contains(string(b), nonce) {
-				return nil // this probe's turn really ran on Codex
+				return true
 			}
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		time.Sleep(time.Second)
 	}
-	return fmt.Errorf("no rollout containing this probe's nonce appeared (engine likely degraded, or the rollout is not attributable to this request)")
 }
 
 func rolloutSet(codexHome string) map[string]bool {
