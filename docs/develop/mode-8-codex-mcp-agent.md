@@ -480,7 +480,7 @@ memory 的写入由 app-server 进程内完成（`LocalMemoriesBackend` 用 `tok
 
 - 每 thread 注入 provider：`WithThreadModelProvider(ProviderID)` + `WithThreadConfigOverride("model_providers."+ProviderID, {name, base_url, wire_api:"responses", experimental_bearer_token})`（`internal/codexagent/run.go`）。
 - `base_url` / token 来自对话所选模型实例（`resolveCodexModelTarget`），`base_url` 先经 `normalizeResponsesBaseURL` 归一化（无版本段则补 `/v1`）。
-- 门控：provider driver `Name()` 必须在 `codex.responses_providers` 白名单内（默认 `openai,azure-openai,minimax`），否则降级普通 RAG、不发起该调用。
+- 门控（两层）：provider driver `Name()` 若在**已知支持集** `codex.responses_providers`（默认 `openai,azure-openai,minimax,deepseek,tongyi-qianwen,zhipu,moonshot,tencent hunyuan`）内则直接信任；否则对该模型实例的 `base_url` 做**动态探测**——向 `<base_url>/responses` 与一个必然不存在的对照路径发同一 POST（带实例真实 key），仅当两者状态码**不同**才判定支持。探测结果按 `base_url + key` 缓存（正负皆缓存，TTL 10 分钟）。两层都不通过才降级普通 RAG、不发起该调用。空集表示"无已知支持者"，即全部走探测。
 
 **③ Codex → RAGFlow MCP bridge（streamable HTTP），及其下游数据集权限**
 
@@ -587,7 +587,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 **未做**：候选冷却（eino 的 30s `failoverCooldown` 短路）。主模型每轮都会先被尝试，若它持续故障则每轮多一次快速失败 + 一次重建；后续可按需补上。
 
-**运维注意**：候选成员必须与主模型一样落在 `codex.responses_providers` 白名单内（默认 `openai,azure-openai,minimax`，见 §5.5），否则会被跳过（日志带 `reason`）——**跨 provider 的故障转移需要把备用 provider 一并加入白名单**。
+**运维注意**：候选成员与主模型共用同一门控（见 §5.5）：driver `Name()` 在已知支持集内、或其实例 `base_url` 探测出 Responses 路由，才算可用；否则被跳过（日志带 `reason`）。跨 provider 的故障转移若用未列入已知集的自定义端点，探测会自动放行而无需加白名单。
 
 **实测（2026-10-14，本机）**：让对话框主模型指向一个固定返回 HTTP 500 的本地端点、成员指向 MiniMax-M3，跑一轮 mode 8：
 
@@ -595,7 +595,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 - 触发转移并落 `codex: provider failover` 告警（含 from/to/kind/http_status）；
 - 重试**确实重建了 thread**（codex 侧出现两条独立 rollout）；
 - 思考流出现 `think_event{kind:"provider_failover", stage:"provider"}` 及其文本行。实测原文（主模型 = `MiniMax-M3` 实例 `sim500` 指向死端点，成员 = `MiniMax-M3` 实例 `xjx`）：`provider failover: MiniMax-M3(sim500) failed (internalServerError); retrying on MiniMax-M3(xjx)`；日志同形（`from` / `to` 用同一标签）；
-- 把成员换成 SiliconFlow 时被正确跳过：`reason: provider "SILICONFLOW" is outside codex.responses_providers`（best-effort 语义生效）。
+- 把成员换成 SiliconFlow 时被正确跳过：`reason: provider "SILICONFLOW" is not in codex.responses_providers and <base_url> exposes no Responses route`（best-effort 语义生效；此处 reason 文案为两层门控后的当前形态，原实测为旧白名单文案）。
 - **未演示"备用成功"**：白名单内只有 MiniMax，而当时它自身也在返回 500；要演示成功路径，需把某个健康 provider 加入白名单。
 
 ## 6. 依赖与版本固定
@@ -662,7 +662,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 ### 未决
 
 - **U1（前置验证，逐项实测）**：(a) `mcp_servers.<name>` 的 streamable-HTTP 配置字段/鉴权形状；(b) **resume 的 config overlay 是否会在服务端重载 `mcp_servers` 条目**（决定 KB/票据变化走「resume 刷新」还是「重建 thread」）——**已非架构阻塞**（SDK 已修复为 resume 转发 override，见 D3/commit `412c6d4`，即使不重载也可回退重建）；(c) 只读 sandbox + decline 的能力隔离效果（P1#2）。三项状态在 §11.2 独立记录。
-- **U2（剩余）**：dialog 模型需支持 Codex 的 `responses` wire API；若支持则用解析出的 `modelName`，否则需在 RAGFlow 侧做 Responses 兼容层或回退 provider。
+- **U2（已定，2026-10-16）**：dialog 模型需支持 Codex 的 `responses` wire API。判定分两层：driver `Name()` 在 `codex.responses_providers` 已知支持集内 → 直接信任；否则对该实例 `base_url` 做差分探测（`/responses` vs 对照路径，带实例真实 key）→ 仅当状态码不同才支持。不再要求运维预先把每个 provider 列入白名单。
 - **U3（已定）**：引用契约固定为「引用 chunk ID，后端编号」——见 §4.7，不再是未决。
 - **U4**：`codex.turn_timeout` 与 Codex 侧最大 turn 时长是否冲突；中断（`TurnInterrupt`）如何触发。
 
@@ -810,7 +810,7 @@ Codex 在对话逼近上下文窗口时会**压缩**历史：把较早的 turn �
 
 **原因**：`codexAgent` 只用 `target.APIConfig.BaseURL`（即模型实例的 `base_url`）；Codex 需要 `wire_api="responses"`，而 provider 工厂默认 URL 未必指向 Responses 端点。把“实例 `base_url` 为空 → 回退工厂默认”留给 Codex 会静默打到错误的 wire API。显式配置让“该实例是否可用于 mode 8”在配置期即可判断。
 
-**接入前校验（已实现）**：`codexResponsesCapable` 会同时要求 provider 在白名单内**且实例 `base_url` 非空**；不满足即**降级普通 RAG 并打明确告警**（`codex (mode 8) requires the dialog model instance to set base_url ...`）。`codexAgent` 亦对空 `base_url` 直接返回明确错误，不会以空 `base_url` 声明 provider。
+**接入前校验（已实现）**：`codexResponsesCapable` 要求实例 `base_url` 非空，且能力判定通过——provider 在已知支持集内，或该 `base_url` 探测出 Responses 路由（见 §5.5 / U2）；不满足即**降级普通 RAG 并打明确告警**（含 `reason`）。`codexAgent` 亦对空 `base_url` 直接返回明确错误，不会以空 `base_url` 声明 provider。
 
 ### P1-7 超时中断：SDK 暴露 turn ID + 已知协议限制
 

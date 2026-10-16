@@ -27,7 +27,7 @@ import (
 
 func clearCodexEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"ENDPOINT", "BEARER_TOKEN", "MCP_PUBLIC_BASE", "APPROVAL_POLICY", "SANDBOX_MODE", "TURN_TIMEOUT"} {
+	for _, key := range []string{"ENDPOINT", "BEARER_TOKEN", "MCP_PUBLIC_BASE", "APPROVAL_POLICY", "SANDBOX_MODE", "TURN_TIMEOUT", "RESPONSES_PROVIDERS", "REASONING_EFFORT"} {
 		name := "RAGFLOW_CODEX_" + key
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
@@ -70,7 +70,28 @@ func TestCodexConfigurationDefaults(t *testing.T) {
 		t.Fatalf("turn timeout default = %v, want %v", got.TurnTimeout, defaultCodexTurnTimeout)
 	}
 	if len(got.ResponsesProviders) == 0 || got.ResponsesProviders[0] != "openai" {
-		t.Fatalf("responses_providers default = %v, want a non-empty allowlist including openai", got.ResponsesProviders)
+		t.Fatalf("responses_providers default = %v, want a non-empty known-capable set including openai", got.ResponsesProviders)
+	}
+	// The default set is the maintained known-capable list. A gateway that must be probed
+	// rather than trusted (openai-api-compatible) and a provider with no Responses route
+	// (siliconflow) must NOT be in it.
+	has := func(name string) bool {
+		for _, p := range got.ResponsesProviders {
+			if p == name {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"minimax", "deepseek", "tongyi-qianwen", "zhipu", "moonshot", "tencent hunyuan"} {
+		if !has(want) {
+			t.Fatalf("responses_providers default = %v, want it to contain %q", got.ResponsesProviders, want)
+		}
+	}
+	for _, absent := range []string{"openai-api-compatible", "siliconflow"} {
+		if has(absent) {
+			t.Fatalf("responses_providers default = %v, must not contain %q", got.ResponsesProviders, absent)
+		}
 	}
 }
 

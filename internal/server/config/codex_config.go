@@ -49,10 +49,13 @@ type CodexConfig struct {
 	// SandboxMode is the Codex sandbox mode. Default "read-only": mode 8 must only
 	// reason and call the MCP retrieval tools, never execute or write.
 	SandboxMode string
-	// ResponsesProviders is the allowlist of dialog-model provider names (the
-	// driver Name(), lower-case) that speak the Responses wire API Codex requires.
-	// A mode 8 turn whose dialog model resolves to a provider outside this list is
-	// refused and falls back to the regular pipeline (see the plan, decision U2).
+	// ResponsesProviders is the set of dialog-model provider names (the driver
+	// Name(), lower-case) KNOWN to speak the Responses wire API Codex requires.
+	// It is a skip-probe fast path: a provider listed here is trusted without any
+	// network call. A provider NOT listed is probed at request time for a
+	// "/responses" route (see codexResponsesUsable) and falls back to the regular
+	// pipeline only when that probe fails. An empty set disables the fast path
+	// entirely, so every provider is probed.
 	ResponsesProviders []string
 	// ReasoningEffort is the fixed Codex reasoning effort mode 8 binds into every
 	// thread ("none" | "minimal" | "low" | "medium" | "high", plus the extended
@@ -73,8 +76,21 @@ const defaultCodexTurnTimeout = 30 * time.Minute
 // Responses provider may reject them.
 const defaultCodexReasoningEffort = "high"
 
-// defaultResponsesProviders are the providers known to speak the Responses API.
-var defaultResponsesProviders = []string{"openai", "azure-openai", "minimax"}
+// defaultResponsesProviders are the providers KNOWN to speak the Responses API,
+// verified by probing "POST <vendor base>/responses" (a routed-but-unauthorized
+// path answers 401/400, never 404). A provider outside this set is not refused:
+// it is probed dynamically instead (codexResponsesUsable), so a custom gateway
+// (openai-api-compatible) needs no entry here.
+//
+// Deliberately absent:
+//   - "openai-api-compatible": the whole point of dynamic probing; its instance
+//     base_url decides, not its provider name.
+//   - "siliconflow": a pure OpenAI Chat-Completions gateway; "POST <base>/responses"
+//     returns 404, so Codex can never run a turn there.
+var defaultResponsesProviders = []string{
+	"openai", "azure-openai", "minimax",
+	"deepseek", "tongyi-qianwen", "zhipu", "moonshot", "tencent hunyuan",
+}
 
 func (c *Config) parseCodexConfig(v *viper.Viper) error {
 	// LookupEnv preserves explicitly empty overrides (see parseMCPConfig).
@@ -133,8 +149,9 @@ func (c *Config) parseCodexConfig(v *viper.Viper) error {
 	return nil
 }
 
-// parseResponsesProviders splits a comma-separated provider allowlist, lower-casing and
-// dropping blanks. An empty result means "no restriction" (check disabled).
+// parseResponsesProviders splits a comma-separated known-capable provider set,
+// lower-casing and dropping blanks. An empty result means "no provider is known
+// capable", so every provider is resolved by the dynamic probe instead.
 func parseResponsesProviders(raw string) []string {
 	out := make([]string, 0, 4)
 	for _, p := range strings.Split(raw, ",") {

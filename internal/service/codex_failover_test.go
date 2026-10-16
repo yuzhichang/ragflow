@@ -22,9 +22,7 @@ import (
 	"testing"
 
 	"ragflow/internal/codexagent"
-	modelModule "ragflow/internal/entity/models"
 	"ragflow/internal/mcp"
-	serverconfig "ragflow/internal/server/config"
 
 	codexgo "github.com/zealbase/codex-app-server-go"
 )
@@ -73,38 +71,8 @@ func TestCodexFailoverEligible(t *testing.T) {
 	}
 }
 
-// TestCodexCandidateUsable pins the bar a failover member must clear: a Responses-capable
-// provider (when an allowlist is configured) whose instance declares a base_url, since the
-// thread declares exactly that URL as its endpoint.
-func TestCodexCandidateUsable(t *testing.T) {
-	saved := getCodexConfig()
-	defer SetCodexConfig(saved)
-
-	driver := modelModule.NewDummyModel(nil, modelModule.URLSuffix{}) // Name() == "dummy"
-
-	// No allowlist => only the base_url matters.
-	SetCodexConfig(nil)
-	if _, ok := codexCandidateUsable(nil); ok {
-		t.Fatal("a nil target must not be usable")
-	}
-	if _, ok := codexCandidateUsable(&ResolvedModelTarget{Driver: driver}); ok {
-		t.Fatal("an empty base_url must not be usable")
-	}
-	if _, ok := codexCandidateUsable(&ResolvedModelTarget{Driver: driver, BaseURL: "https://x/v1"}); !ok {
-		t.Fatal("a resolvable target with a base_url must be usable when no allowlist is set")
-	}
-
-	// An allowlist that excludes this provider rejects it even with a base_url.
-	SetCodexConfig(&serverconfig.CodexConfig{ResponsesProviders: []string{"someoneelse"}})
-	if _, ok := codexCandidateUsable(&ResolvedModelTarget{Driver: driver, BaseURL: "https://x/v1"}); ok {
-		t.Fatal("a provider outside the allowlist must not be usable")
-	}
-	// ...and one that names it accepts it.
-	SetCodexConfig(&serverconfig.CodexConfig{ResponsesProviders: []string{"dummy"}})
-	if _, ok := codexCandidateUsable(&ResolvedModelTarget{Driver: driver, BaseURL: "https://x/v1"}); !ok {
-		t.Fatal("a provider inside the allowlist must be usable")
-	}
-}
+// TestCodexResponsesUsable (moved to codex_responses_probe_test.go) pins the bar a mode-8
+// target must clear; it now covers both the known-capable fast path and the dynamic probe.
 
 // TestCandidateKey pins the dedup key: two candidates are the same only when they share both the
 // endpoint and the model, so the same model on another endpoint is still a distinct failover

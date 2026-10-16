@@ -18,8 +18,12 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -222,13 +226,14 @@ func InstallCodexWebSearchResolver() {
 	})
 }
 
-// codexProviderAllowed reports whether a provider speaks the Responses wire API Codex
-// requires, i.e. it is inside the configured allowlist. An unset or empty allowlist means
-// "no restriction" (see the plan, decision U2).
-func codexProviderAllowed(providerName string) bool {
+// codexProviderKnownCapable reports whether a provider is in the maintained set of
+// providers KNOWN to speak the Responses wire API Codex requires. It is only a skip-probe
+// fast path: an unknown provider is not refused, it is probed (codexResponsesUsable). An
+// unset or empty set means nothing is known capable, so every provider is probed.
+func codexProviderKnownCapable(providerName string) bool {
 	cfg := getCodexConfig()
 	if cfg == nil || len(cfg.ResponsesProviders) == 0 {
-		return true
+		return false
 	}
 	name := strings.ToLower(providerName)
 	for _, p := range cfg.ResponsesProviders {
@@ -239,30 +244,174 @@ func codexProviderAllowed(providerName string) bool {
 	return false
 }
 
-// codexResponsesCapable reports whether the dialog's model provider speaks the
-// Responses wire API Codex requires. A provider outside the configured allowlist makes
-// mode 8 fall back to the regular pipeline (see the plan, decision U2).
-func (s *ChatPipelineService) codexResponsesCapable(ctx context.Context, userID string, chat *entity.Chat) bool {
-	cfg := getCodexConfig()
-	if cfg == nil || len(cfg.ResponsesProviders) == 0 {
-		return true // no allowlist configured => no restriction
+// codexResponsesProbeControlPath is a path no provider serves. The probe compares the
+// "/responses" status against this control: only a difference proves the Responses route
+// was routed somewhere other than the catch-all.
+const codexResponsesProbeControlPath = "/__codex_responses_probe_absent__"
+
+const (
+	// codexResponsesProbeTTL bounds how long a probe verdict is reused. Positive and
+	// negative results are both cached, so an unavailable endpoint is not re-probed on
+	// every mode-8 turn.
+	codexResponsesProbeTTL = 10 * time.Minute
+	// codexResponsesProbeTimeout bounds ONE probe request. The probe makes two, so a
+	// cold cache costs at most ~2x this on the first mode-8 turn per endpoint.
+	codexResponsesProbeTimeout = 5 * time.Second
+)
+
+// codexResponsesProbeClient performs the probe. The scheme-safe client (not the strict
+// SSRF client) is required: the providers that reach probing are exactly the custom/local
+// ones whose base_url may point at a private address or loopback, and it honours
+// ProxyFromEnvironment like the model drivers do. Overridable in tests.
+var codexResponsesProbeClient = common.GetSchemeSafeHTTPClient()
+
+// codexResponsesProbeEntry is one cached verdict.
+type codexResponsesProbeEntry struct {
+	exists    bool
+	expiresAt time.Time
+}
+
+var codexResponsesProbeCache = struct {
+	mu sync.Mutex
+	m  map[string]codexResponsesProbeEntry
+}{m: map[string]codexResponsesProbeEntry{}}
+
+// resetCodexResponsesProbeCache clears the probe cache. Test-only.
+func resetCodexResponsesProbeCache() {
+	codexResponsesProbeCache.mu.Lock()
+	codexResponsesProbeCache.m = map[string]codexResponsesProbeEntry{}
+	codexResponsesProbeCache.mu.Unlock()
+}
+
+// codexResponsesProbeKey keys a verdict by endpoint AND credential: the same base_url with
+// a different (e.g. a stale/rotated) key can probe differently under an auth-first gateway,
+// so the two must not share a cache slot. The key is hashed so the raw secret is not kept
+// in memory for the TTL.
+func codexResponsesProbeKey(baseURL, apiKey string) string {
+	sum := sha256.Sum256([]byte(apiKey))
+	return baseURL + "\x00" + hex.EncodeToString(sum[:8])
+}
+
+func codexResponsesProbeLookup(baseURL, apiKey string) (bool, bool) {
+	now := time.Now()
+	codexResponsesProbeCache.mu.Lock()
+	defer codexResponsesProbeCache.mu.Unlock()
+	entry, ok := codexResponsesProbeCache.m[codexResponsesProbeKey(baseURL, apiKey)]
+	if !ok || now.After(entry.expiresAt) {
+		return false, false
 	}
+	return entry.exists, true
+}
+
+func codexResponsesProbeStore(baseURL, apiKey string, exists bool) {
+	codexResponsesProbeCache.mu.Lock()
+	codexResponsesProbeCache.m[codexResponsesProbeKey(baseURL, apiKey)] = codexResponsesProbeEntry{
+		exists:    exists,
+		expiresAt: time.Now().Add(codexResponsesProbeTTL),
+	}
+	codexResponsesProbeCache.mu.Unlock()
+}
+
+// probeResponsesPathStatus POSTs an empty body to rawURL with the instance's own key and
+// returns the HTTP status. ok is false when the request could not be completed (dial
+// error, timeout, malformed URL), which the caller treats as "cannot confirm". The body is
+// deliberately empty: it routes to the handler (so validation/auth answers) without asking
+// the model to generate anything.
+func probeResponsesPathStatus(ctx context.Context, rawURL, apiKey string) (int, bool) {
+	reqCtx, cancel := context.WithTimeout(ctx, codexResponsesProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, rawURL, strings.NewReader("{}"))
+	if err != nil {
+		return 0, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := codexResponsesProbeClient.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	return resp.StatusCode, true
+}
+
+// codexResponsesRouteExists reports whether baseURL exposes a Responses endpoint Codex can
+// POST to. It is a DIFFERENTIAL probe: it sends the identical request to "/responses" and to
+// a path nothing serves, and counts the route as present only when the two statuses differ.
+//
+// The differential is what makes an auth-first gateway readable: with a valid key it answers
+// "/responses" differently from the catch-all (typically 400 vs 404), whereas a gateway
+// without the route answers the same 404 to both — and a gateway that checks auth before
+// routing answers the same 401 to both. The instance's real API key must be sent, or an
+// auth-first gateway collapses both answers to 401 and the route looks absent.
+func codexResponsesRouteExists(ctx context.Context, baseURL, apiKey string) bool {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return false
+	}
+	if exists, ok := codexResponsesProbeLookup(base, apiKey); ok {
+		return exists
+	}
+	probeStatus, probeOK := probeResponsesPathStatus(ctx, base+"/responses", apiKey)
+	controlStatus, controlOK := probeResponsesPathStatus(ctx, base+codexResponsesProbeControlPath, apiKey)
+	exists := probeOK && controlOK && probeStatus != controlStatus
+	// Log only on a real probe (a cache hit returns above), so the dynamic decision — the
+	// thing that used to be invisible when mode 8 silently degraded — is diagnosable.
+	common.InfoCtx(ctx, "codex (mode 8): probed the dialog model endpoint for a Responses route",
+		zap.String("base_url", base),
+		zap.Int("responses_status", probeStatus),
+		zap.Int("control_status", controlStatus),
+		zap.Bool("responses_reachable", probeOK),
+		zap.Bool("control_reachable", controlOK),
+		zap.Bool("responses_supported", exists))
+	codexResponsesProbeStore(base, apiKey, exists)
+	return exists
+}
+
+// codexResponsesUsable reports whether a resolved target can carry a mode-8 turn, and why
+// not when it cannot. A provider in the known-capable set is trusted outright; any other
+// provider is probed for a Responses route at its instance base_url. The reason string is
+// for the log and the failover narration.
+func codexResponsesUsable(ctx context.Context, target *ResolvedModelTarget) (string, bool) {
+	if target == nil {
+		return "the model target could not be resolved", false
+	}
+	if strings.TrimSpace(target.BaseURL) == "" {
+		return "the model instance does not declare a base_url", false
+	}
+	name := ""
+	if target.Driver != nil {
+		name = target.Driver.Name()
+	}
+	if codexProviderKnownCapable(name) {
+		return "", true
+	}
+	if codexResponsesRouteExists(ctx, target.BaseURL, target.APIKey) {
+		return "", true
+	}
+	return fmt.Sprintf("provider %q is not in codex.responses_providers and %s exposes no Responses route", name, target.BaseURL), false
+}
+
+// codexResponsesCapable reports whether the dialog's model provider can carry a mode-8
+// turn: either it is in the known-capable set, or its instance base_url exposes a Responses
+// route (see codexResponsesUsable). Otherwise mode 8 falls back to the regular pipeline.
+func (s *ChatPipelineService) codexResponsesCapable(ctx context.Context, userID string, chat *entity.Chat) bool {
 	target, err := s.resolveCodexModelTarget(ctx, userID, chat)
 	if err != nil || target == nil {
+		common.WarnCtx(ctx, "codex (mode 8) could not resolve the dialog model; using the regular pipeline",
+			zap.String("chat_id", chat.ID), zap.Error(err))
 		return false
 	}
-	if !codexProviderAllowed(target.Driver.Name()) {
-		return false
+	reason, ok := codexResponsesUsable(ctx, target)
+	if !ok {
+		common.WarnCtx(ctx, "codex (mode 8) requires a Responses-capable dialog model; using the regular pipeline",
+			zap.String("chat_id", chat.ID), zap.String("provider", target.ProviderName), zap.String("reason", reason))
 	}
-	// The thread declares the instance's base_url as the provider endpoint; if it is
-	// empty, Codex has no Responses endpoint and the turn cannot run. Refuse now with a
-	// clear reason instead of failing deep in the turn (see the plan, §13 / P2-13).
-	if strings.TrimSpace(target.BaseURL) == "" {
-		common.WarnCtx(ctx, "codex (mode 8) requires the dialog model instance to set base_url (a Responses-capable endpoint); using the regular pipeline",
-			zap.String("chat_id", chat.ID), zap.String("provider", target.Driver.Name()))
-		return false
-	}
-	return true
+	return ok
 }
 
 // resolveCodexModelTarget resolves the dialog's chat model (or the tenant default) to its
@@ -321,7 +470,7 @@ func (s *ChatPipelineService) codexTurnTargets(ctx context.Context, userID strin
 			continue
 		}
 		target.BaseURL = normalizeResponsesBaseURL(target.BaseURL)
-		if reason, ok := codexCandidateUsable(target); !ok {
+		if reason, ok := codexResponsesUsable(ctx, target); !ok {
 			common.WarnCtx(ctx, "codex: failover model cannot carry a Responses turn; skipping it",
 				zap.String("chat_id", chat.ID), zap.String("llm_id", llmID), zap.String("reason", reason))
 			continue
@@ -355,22 +504,6 @@ func (s *ChatPipelineService) codexTurnTargetFor(ctx context.Context, tenantID, 
 // candidateKey identifies a candidate for dedup: the endpoint plus the model it serves.
 func candidateKey(target *ResolvedModelTarget) string {
 	return target.BaseURL + "\x00" + target.ModelName
-}
-
-// codexCandidateUsable reports whether a failover member can carry a mode-8 turn: its provider
-// must be inside the Responses allowlist, and its instance must declare a base_url — the thread
-// declares exactly that URL as its endpoint, so an empty one gives Codex no endpoint at all.
-func codexCandidateUsable(target *ResolvedModelTarget) (string, bool) {
-	if target == nil {
-		return "the model target could not be resolved", false
-	}
-	if !codexProviderAllowed(target.Driver.Name()) {
-		return fmt.Sprintf("provider %q is outside codex.responses_providers", target.Driver.Name()), false
-	}
-	if strings.TrimSpace(target.BaseURL) == "" {
-		return "the model instance does not declare a base_url", false
-	}
-	return "", true
 }
 
 // codexFailoverEligible reports whether a failed turn should be retried on the next provider,
