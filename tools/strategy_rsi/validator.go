@@ -167,14 +167,21 @@ func applyMerge(set *strategySet, out llmMergeOutput, lessons []lesson, maxStrat
 			return nil, nil, fmt.Errorf("item[%d] missing terse/corpus_specific verdict", i)
 		}
 		text := normalizeStrategyText(it.Text, maxWords)
+		// Keeping an existing strategy needs NO text. Requiring the model to echo every
+		// kept strategy verbatim put the whole batch update on a token-exact copy: a slip
+		// in the copy either breaks the reply outright or silently rewrites the strategy.
+		// An item that claims an existing id may therefore send "text":"" and the stored
+		// wording is used. The stored text already passed these checks when it entered the
+		// pool, so the verdicts below apply only to text the model actually wrote.
+		keepStored := text == "" && it.ID != "" && known[it.ID] != nil && containsStr(it.SourceIDs, it.ID)
 		switch {
-		case text == "":
+		case text == "" && !keepStored:
 			plans = append(plans, planned{retire: it.SourceIDs, reason: fmt.Sprintf("item[%d]: empty text", i)})
 			continue
-		case !*it.Terse:
+		case !keepStored && !*it.Terse:
 			plans = append(plans, planned{retire: it.SourceIDs, reason: fmt.Sprintf("item[%d]: not terse: %s", i, truncate(text, 60))})
 			continue
-		case *it.CorpusSpecific:
+		case !keepStored && *it.CorpusSpecific:
 			plans = append(plans, planned{retire: it.SourceIDs, reason: fmt.Sprintf("item[%d]: corpus-specific: %s", i, truncate(text, 60))})
 			continue
 		}
@@ -221,6 +228,15 @@ func applyMerge(set *strategySet, out llmMergeOutput, lessons []lesson, maxStrat
 				claimed[it.ID] = i
 				ownID = it.ID
 			}
+		}
+		if keepStored {
+			// The guard above only sets keepStored when the claim is legal, so ownID is set;
+			// substitute the stored wording for the omitted text.
+			if ownID == "" {
+				plans = append(plans, planned{retire: it.SourceIDs, reason: fmt.Sprintf("item[%d]: omitted text with no claimable id", i)})
+				continue
+			}
+			text = known[ownID].Text
 		}
 		score, count := inheritFrom(known, lessonByID, it.SourceIDs)
 		// Contradiction decided against the immutable scores, with a deterministic tie-break.

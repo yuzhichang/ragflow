@@ -47,6 +47,16 @@ type config struct {
 
 	Reasoning int `json:"reasoning"`
 
+	// UtilityReasoning is the engine for the tool's OWN one-shot calls: the grader
+	// (judge) and the merger. 0 = the regular pipeline, which is what the benchmark's
+	// grader uses (it sends no "reasoning" at all). They must NOT inherit `reasoning`:
+	// both are stateless JSON transformations on their own dialogs, and running them on
+	// the agentic engine both wraps a deterministic transform in an agent loop and makes
+	// the frozen evaluation use a DIFFERENT grader than the baseline it is compared to.
+	// The self-reflection turn is deliberately excluded: it continues the answering
+	// thread and must stay on that thread's engine.
+	UtilityReasoning int `json:"utility_reasoning"`
+
 	BatchSize        int     `json:"batch_size"`
 	MaxPasses        int     `json:"max_passes"` // 0 = unlimited (run to convergence)
 	Concurrency      int     `json:"concurrency"`
@@ -88,6 +98,7 @@ func defaultConfig() config {
 		JudgeChatID:       "",
 		MergeChatID:       "",
 		Reasoning:         8,
+		UtilityReasoning:  0, // judge + merge run on the regular pipeline (see the field doc)
 		BatchSize:         10,
 		MaxPasses:         0,
 		Concurrency:       4,

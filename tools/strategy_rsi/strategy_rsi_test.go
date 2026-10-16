@@ -867,6 +867,99 @@ func TestBatchAbortedByTransport(t *testing.T) {
 	}
 }
 
+// TestMergeKeepsStoredTextWhenTextOmitted pins the contract that removed the verbatim-copy
+// requirement: an item that claims an existing id with an EMPTY text keeps the stored
+// wording, so "keep this strategy" costs only the verdict fields.
+func TestMergeKeepsStoredTextWhenTextOmitted(t *testing.T) {
+	s := &strategySet{Version: 1, NextID: 3, ActiveIDs: []string{"s0001", "s0002"}, Items: []strategyItem{
+		{ID: "s0001", Text: "Keep me exactly", TotalScore: 1, RatingCount: 1},
+		{ID: "s0002", Text: "Old wording", TotalScore: 1, RatingCount: 1},
+	}}
+	n, _, err := applyMerge(s, llmMergeOutput{Items: []llmItem{
+		{ID: "s0001", Text: "", SourceIDs: []string{"s0001"}, Terse: boolPtr(true), CorpusSpecific: boolPtr(false)},
+		{ID: "s0002", Text: "New wording", SourceIDs: []string{"s0002"}, Terse: boolPtr(true), CorpusSpecific: boolPtr(false)},
+	}}, nil, 10, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.byID("s0001"); got == nil || got.Text != "Keep me exactly" {
+		t.Fatalf("an omitted text must keep the stored wording, got %+v", got)
+	}
+	if got := n.byID("s0002"); got == nil || got.Text != "New wording" {
+		t.Fatalf("an explicit text must win, got %+v", got)
+	}
+	// A NEW strategy still cannot omit its text.
+	n2, _, err := applyMerge(&strategySet{Version: 1, NextID: 1}, llmMergeOutput{Items: []llmItem{
+		{Text: "", SourceIDs: []string{"t1"}, Terse: boolPtr(true), CorpusSpecific: boolPtr(false)},
+	}}, []lesson{{TentativeID: "t1", Text: "x", Score: 1}}, 10, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(n2.Items) != 0 {
+		t.Fatalf("a new strategy without text must be dropped, got %+v", n2.Items)
+	}
+}
+
+// TestUtilityCallsUseTheUtilityEngine pins the engine split: the grader and the merger are
+// one-shot JSON transformations on their own dialogs and must run on UtilityReasoning (the
+// regular pipeline the benchmark's grader uses), never on the answering engine.
+func TestUtilityCallsUseTheUtilityEngine(t *testing.T) {
+	got := map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/chat/completions" {
+			fmt.Fprint(w, `{"code":0,"data":{"id":"sess"}}`)
+			return
+		}
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		chat, _ := b["chat_id"].(string)
+		got[chat] = b["reasoning"]
+		switch chat {
+		case "judge":
+			fmt.Fprint(w, `{"code":0,"data":{"answer":"correct: no\nconfidence: 50\nextracted_final_answer: x"}}`)
+		case "merge":
+			fmt.Fprint(w, `{"code":0,"data":{"answer":"{\"items\":[{\"id\":\"s0001\",\"text\":\"\",\"source_ids\":[\"s0001\"],\"terse\":true,\"corpus_specific\":false,\"duplicate_of\":\"\",\"contradicts\":[],\"reason\":\"kept\"}]}"}}`)
+		default:
+			fmt.Fprint(w, `{"code":0,"data":{"answer":"ok"}}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := defaultConfig()
+	cfg.OutputDir = t.TempDir()
+	cfg.ChatID, cfg.JudgeChatID, cfg.MergeChatID = "answer", "judge", "merge"
+	cfg.Reasoning, cfg.UtilityReasoning = 8, 3 // distinctive utility value so a leak is visible
+	o, err := openOutputDir(cfg.OutputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.release()
+	e := &executor{cfg: cfg, client: &httpClient{base: srv.URL, hc: srv.Client()},
+		retry: retryPolicy{initial: time.Millisecond, max: 2 * time.Millisecond, quota: time.Millisecond},
+		out:   o, quiet: true}
+
+	if _, err := e.judgeAnswer(context.Background(), trainsetRecord{Question: "q", GoldAnswer: "a"}, "my answer"); err != nil {
+		t.Fatalf("judgeAnswer: %v", err)
+	}
+	set := &strategySet{Version: 1, NextID: 2, ActiveIDs: []string{"s0001"},
+		Items: []strategyItem{{ID: "s0001", Text: "Keep me", TotalScore: 1, RatingCount: 1}}}
+	if _, err := e.mergeBatch(context.Background(), set, set, nil, 1, 0, attemptID("att"), nil); err != nil {
+		t.Fatalf("mergeBatch: %v", err)
+	}
+	for _, chat := range []string{"judge", "merge"} {
+		v, ok := got[chat]
+		if !ok {
+			t.Fatalf("%s: no call reached the server", chat)
+		}
+		if n, _ := v.(float64); n != 3 {
+			t.Fatalf("%s reasoning = %v, want the utility engine 3 (the answering engine 8 must not be used)", chat, v)
+		}
+	}
+	if v, ok := got["answer"]; ok {
+		t.Fatalf("these calls must not use the answering dialog, saw reasoning=%v", v)
+	}
+}
+
 // ---------------------------------------------------------------- helpers
 
 func errorsNew(s string) error { return fmt.Errorf("%s", s) }

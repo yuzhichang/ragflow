@@ -298,6 +298,8 @@ func (e *executor) reflect(ctx context.Context, session string, rec trainsetReco
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
+		// Keeps the ANSWERING engine (cfg.Reasoning) on purpose: reflection continues the
+		// answering session, so switching engines here would drop the agent's own context.
 		res, err := e.client.ask(ctx, e.cfg.ChatID, prompt, session, e.cfg.Reasoning)
 		if err == nil && !answerLooksLikeError(res.Answer) {
 			ls, rs, perr := parseReflection(res.Answer, active, e.cfg.MaxLessons)
@@ -338,11 +340,14 @@ func (e *executor) reflect(ctx context.Context, session string, rec trainsetReco
 }
 
 // judgeAnswer runs the grader on a FRESH session (§6.3: never reuse a gold-bearing one).
+// It uses UtilityReasoning, not the answering engine: the benchmark's grader sends no
+// "reasoning" (the regular pipeline), and a frozen evaluation is only comparable to the
+// baseline when the SAME grader harness produces both numbers.
 func (e *executor) judgeAnswer(ctx context.Context, rec trainsetRecord, answer string) (verdict, error) {
 	prompt := graderPrompt(rec.Question, answer, rec.GoldAnswer)
 	var v verdict
 	err := callWithRetry(ctx, e.retry, func(attempt int) error {
-		res, err := e.client.ask(ctx, e.cfg.JudgeChatID, prompt, "", e.cfg.Reasoning)
+		res, err := e.client.ask(ctx, e.cfg.JudgeChatID, prompt, "", e.cfg.UtilityReasoning)
 		if err != nil {
 			return err
 		}

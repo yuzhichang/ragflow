@@ -124,8 +124,10 @@ Merge these into the global set. HARD rules (judge each yourself and report the 
 Every input id (in-scope strategy id or lesson id) MUST appear EXACTLY ONCE, either in some
 item's "source_ids" or in "rejected". Never duplicate a source id, never invent one, and
 never leave a lesson unmapped. To keep an existing strategy unchanged, emit an item whose
-"id" is that strategy id, INCLUDING it in "source_ids". An item may NOT set "id" to a
-strategy that is not among its own "source_ids".
+"id" is that strategy id, INCLUDING it in "source_ids", and leave "text" EMPTY -- do NOT
+retype the strategy; an empty text keeps the stored wording exactly as it is. Fill "text"
+only when you are actually CHANGING the wording. An item may NOT set "id" to a strategy
+that is not among its own "source_ids".
 
 Output ONLY JSON:
 {"items":[{"id":"","text":"","source_ids":["..."],"terse":true,"corpus_specific":false,"duplicate_of":"","contradicts":[],"reason":""}],
@@ -169,7 +171,10 @@ func (e *executor) mergeBatch(ctx context.Context, set, base *strategySet, lesso
 	var out llmMergeOutput
 	raw := ""
 	err := callWithRetry(ctx, e.retry, func(attempt int) error {
-		res, err := e.client.ask(ctx, e.cfg.MergeChatID, prompt, "", e.cfg.Reasoning)
+		// UtilityReasoning, not the answering engine: the merge is a stateless JSON
+		// transformation on its own dialog, and the agentic engine wraps it in an agent
+		// loop that contributes nothing and adds a way to corrupt the whole batch.
+		res, err := e.client.ask(ctx, e.cfg.MergeChatID, prompt, "", e.cfg.UtilityReasoning)
 		if err != nil {
 			return err
 		}
