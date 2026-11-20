@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 24
+# updated: 2026-11-06T11:39:24+08:00
+# origin: pass=3 batch=2
+# sha256: f6aec379e103dada18ef3bda2d026475055c0228782ca15ce5c02bb58e82f8f2
+- Run cheap lexical before one batched semantic call; discard topic-only hits; probe coverage once and declare uncovered if nothing on-topic
+- Anchor probes on verbatim phrases, cap candidates at two, never expand rosters, and accept only when one passage per candidate covers every remaining clause
+- Split multi-hop clues into hops; run parallel tool calls, never spawn agents; cap two probes per hop; retire only failed hops
+- Require every mandatory clause to be satisfied by quoted passages before answering; treat a two-clue match only as a candidate, never a stopping condition
+- Batch independent clue chains as concurrent queries, cap each at two candidates and one quote, and defer final acceptance to mandatory-clause checks
+- Stop probing once one candidate has quoted passages for every mandatory clause; name any unconfirmed clause instead of answering
+- Combine rarest clue terms in one conjunctive probe; anchor relative-name/list-entry phrasing, read candidates directly, cap lexical at two literal greps, run one semantic sweep, and retire clauses after two rephrasings
+- Accept birth-year and birthplace facts from separate passages naming the same relative; reserve single-passage quotation for the answer's own wording
+- After two failed probes retire the clause; for location clues, enumerate candidate regions per clue, probe one representative each, then intersect survivors by date and author before choosing a country
+- For verbatim-text questions, prefer canonical or official sources and audio-derived transcriptions over fan pages, verify final wording in a second retrieved passage, and never fill gaps from memory

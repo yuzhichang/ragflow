@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 16
+# updated: 2026-11-06T00:36:01+08:00
+# origin: pass=2 batch=9
+# sha256: 5ddc8063df39093625251f0ee229a3b00869e681793300da4a255795f3ccb2fd
+- Order clue beats by distinctiveness, merge constraints per candidate, batch short queries, filter other clues in the resolving document, and defer new topics until the rarest clause fails
+- Run cheap lexical retrieval before semantic retrieval, batch clue clusters into one parallel query, cap semantic calls at one, discard topic-only hits, and stop when one chunk confirms two clues
+- Fan candidate probes to parallel subagents, one query each; after one confirming hit read it fully for totals and stop; if fixed probes fail, report confirmed names
+- If a non-hard numeric or timing clue remains unverifiable, leave it unresolved, answer from verified names, and rerank only existing candidates without widening
+- After two failed candidate probes, mine the resolved document's related-title list for the next lead instead of inventing names; rerank only existing candidates
+- Treat adjacency as final verification, not a candidate filter: accept a two-attribute candidate whose document co-locates anchor and target on one page, then stop
+- When a clue phrase is generic, skip semantic re-description; probe the two rarest clauses separately and require one document confirming two clues
+- Prefer an anchor whose evidence page co-locates several attributes; reserve rarer clauses to confirm resolved candidates, probe at most three candidates once, accept two-clue documents, and report only confirmed names
+- When one passage lists several titles by the same author, extract every candidate verbatim, choose with the separating clue, and stop after one targeted miss without broadening
+- Route independent clue chains to parallel subagents, join their outputs, and stop once a candidate satisfies two hard clues

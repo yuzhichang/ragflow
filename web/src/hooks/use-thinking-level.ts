@@ -19,8 +19,14 @@ import { useSyncExternalStore } from 'react';
 
 // Values mirror the strings persisted under the `thinkingLevel` localStorage
 // key; they double as the reasoning level sent with each message ('0' naive,
-// '5' agentic).
-export const ThinkingMode = { Naive: '0', Agentic: '5' } as const;
+// '5' react, '6' planer-explorer-auditor, '7' IterSynth, '8' coding-agent).
+export const ThinkingMode = {
+  Naive: '0',
+  Agentic: '5',
+  PlanExplorerAuditor: '6',
+  Iterative: '7',
+  Codex: '8',
+} as const;
 export type ThinkingMode = (typeof ThinkingMode)[keyof typeof ThinkingMode];
 
 const listeners = new Set<() => void>();

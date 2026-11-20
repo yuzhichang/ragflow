@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 2
+# updated: 2026-10-16T19:34:28+08:00
+# origin: pass=1 batch=3
+# sha256: ed8637193e04a01d93d1af3b72bc65f1a2ca2a8ca7787256133fb8c0b611395f
+- When a clue describes a relational trope, search broadly across genres rather than assuming romance-only
+- When clues include relocation, early writing age, and a degree, prioritize famous authors with documented biographies before niche matches
+- Run retrieval searches before composing any answer; never draft a response from memory alone
+- When initial clue matches point to one genre, semantically describe the full combined plot in one query before drilling into specifics
+- Decompose the clue into discrete verifiable attributes and run one parallel search per attribute before merging
+- Rank clues by discriminative power and anchor on the rarest one first to enumerate candidates before chasing memorable details
+- When asked for a specific name, search famous literary characters whose role is replaced by a protagonist in classic novels
+- For author-biographical clues about a pioneer parent, search the author's own biography and family page before inferring from plot
+- Fully read all high-relevance semantic search results before drawing conclusions, even when lexical results seem more authoritative
+- After locating a candidate publication title in a snippet, re-search the corpus verbatim to verify exact wording before answering

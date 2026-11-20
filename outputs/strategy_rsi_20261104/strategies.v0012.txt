@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 12
+# updated: 2026-11-05T15:35:38+08:00
+# origin: pass=2 batch=2
+# sha256: ad4d5f9eae3b3242c87e1c8676536a7933639158270cf9b1cb77b44e0da8efd8
+- Split the narrative into distinct beats and issue short keyword queries per beat, batching independent queries in each retrieval call
+- Anchor on the rarest numeric clause, read that passage fully, and verify every other attribute in the same document before new topical queries
+- Run cheap lexical retrieval before semantic retrieval, cap semantic calls at one, and discard semantic hits that match only the topic
+- When one passage lists several titles by the same author, extract every candidate string verbatim first, then choose using the clue that uniquely separates them
+- Fan clue beats to parallel subagents on a shared candidate list, cap two probes per name, commit when a candidate's document confirms the strongest clue
+- If a non-hard numeric or timing clue remains unverifiable, leave it unresolved and answer from verified names without widening candidates
+- Search distinctive tokens only, capped at a few probes per candidate, and abandon a candidate name that yields no hits after the first targeted query
+- Treat asserted distances or adjacency as hard filters requiring passage support, not unverified peripheral details
+- For ordered elements, drop stage directions and parentheticals before counting, then verify the count with a second independent transcription
+- For verbatim-text questions, prefer canonical or official sources and audio-derived transcriptions over fan wiki pages, and pull a second transcription before quoting any specific line

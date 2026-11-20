@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 1
+# updated: 2026-10-16T12:22:37+08:00
+# origin: pass=1 batch=1
+# sha256: 192a044bf099af6a26a18e352205ea47af852aa5a3774bef545040dcfe03fcef
+- When a clue describes a relational trope, search broadly across genres rather than assuming romance-only
+- When clues include relocation, early writing age, and a degree, prioritize famous authors with documented biographies before niche matches
+- Always use retrieval tools to locate and read the exact source document before quoting; never answer from background knowledge
+- When a question specifies source date and publication, treat exact wording as success criterion and verify it verbatim against the passage
+- When retrieved sources conflict on a key fact, investigate both rather than defaulting to the most familiar source
+- After locating a candidate publication title in a snippet, re-search the corpus verbatim to verify exact wording before answering
+- Once a primary entity and its affiliate are confirmed, pivot to a related entity linked by family or professional ties and search their attributes jointly
+- Before finalizing, verify every distinctive claim against at least one independent source; persist only when multiple clues align
+- When initial clue matches point to one genre, semantically describe the full combined plot in one query before drilling into specifics
+- When asked for a specific name, search famous literary characters whose role is replaced by a protagonist in classic novels

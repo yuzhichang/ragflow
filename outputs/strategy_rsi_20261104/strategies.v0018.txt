@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 18
+# updated: 2026-11-06T03:15:21+08:00
+# origin: pass=2 batch=11
+# sha256: 861d8a0d1e27e5c190d15760fbbda104d25d17daa7803487fd9e91c8fc39425e
+- Run cheap lexical retrieval before semantic retrieval, batch clue clusters into one parallel query, cap semantic calls at one, discard topic-only hits, and stop when one chunk confirms two clues
+- Anchor each hop on the rarest literal token; if a clue's distinctive wording is external, derive one concrete searchable name before querying, confirming each hop
+- Batch independent clue probes into one parallel multi-query call; if subagents are unavailable, run concurrently, and confirm both required chains before a two-clue match
+- Rank retrieved candidates above memory-recalled ones; enumerate those matching the rarest clause, accept the first document co-locating two clues, then attribute the role and stop
+- Time-box lexical probing to two rounds and one semantic probe; if no document co-locates two clues, report the unresolved link and stop expanding
+- After two failed candidate probes, mine the resolved document's related-title list for the next lead instead of inventing names; rerank only existing candidates
+- Probe the two rarest clue clauses as literal regex variants in one batch; after two non-matching probes, abandon that wording, keep confirmed names, and stop
+- Fix the stop gate first: accept the first document co-locating two hard clues, answer, name any unresolved link, and allow at most one related-title hop
+- Send independent clue chains to parallel subagents with two-candidate caps, one quote each, deadlines; rank by confirmed clues and accept the first two-clue confirmation
+- When one passage lists several titles by the same author, extract every candidate verbatim, choose with the separating clue, and stop after one targeted miss without broadening

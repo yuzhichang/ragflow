@@ -1,0 +1,11 @@
+# ragflow query-strategy set
+# version: 1
+# updated: 2026-11-04T20:46:49+08:00
+# origin: pass=1 batch=1
+# sha256: 0a6e005adf8dd438babbf4a38cb8bc7bea8cd4f532fe22ad9223b98f76e81022
+- Score candidate passages by distinct clues matched, prioritizing exact lexical overlap over inferred biographical consistency
+- Accept a well-supported candidate matching distinguishing clues even when peripheral biographical details cannot be verified
+- Query the exact requested attribute as a standalone phrase rather than inferring it from adjacent biographical text
+- Distinguish the requested attribute from adjacent claims about the same entity before answering
+- Split the narrative into distinct beats and issue short keyword queries per beat, batching independent queries in each retrieval call
+- Run lexical and semantic retrieval in parallel on the same clues, then merge candidate documents by shared narrative elements before reading chunks

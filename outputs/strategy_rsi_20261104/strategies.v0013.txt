@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 13
+# updated: 2026-11-05T17:00:14+08:00
+# origin: pass=2 batch=3
+# sha256: ada8017477ea95cb8b2cf9eb9e7b156439fb4efb6337367fc2332be6cf3e5f7e
+- Order clue beats by distinctiveness, merge constraints per candidate, batch short queries, filter other clues in the resolving document, and defer new topics until the rarest clause fails
+- Run cheap lexical retrieval before semantic retrieval, cap semantic calls at one, and discard semantic hits that match only the topic
+- Search distinctive tokens only, capped at a few probes per candidate, and abandon a candidate name that yields no hits after the first targeted query
+- Anchor on the rarest actual constraint, skip absent numeric clauses, verify it in one document, chain forward without reopening hops, stop broad queries once resolved, and filter broad dates
+- If a non-hard numeric or timing clue remains unverifiable, leave it unresolved and answer from verified names without widening candidates
+- When one passage lists several titles by the same author, extract every candidate string verbatim first, then choose using the clue that uniquely separates them
+- Treat asserted distances or adjacency as hard filters requiring passage support, not unverified peripheral details
+- Build one shared candidate list capped at three, batch parallel one or two distinctive probes per name, and stop when one document confirms the strongest clue or two attributes
+- When a multi-term pattern for a resolved title returns nothing, grep that title alone once, run one semantic re-description, then stop expanding lexical variants
+- When identifying an organization's members, exclude credits affiliated with publishers, contractors, or external vendors even if their names appear on multiple titles

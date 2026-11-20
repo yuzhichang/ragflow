@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 22
+# updated: 2026-11-06T08:19:12+08:00
+# origin: pass=2 batch=15
+# sha256: 463bedec51abd847c50356ab2a0b738844968222fefdeb1c589f274e2d49489a
+- Run cheap lexical retrieval before semantic retrieval, batch clue clusters into one parallel query, cap semantic calls at one, discard topic-only hits, and stop when one chunk confirms two clues
+- Anchor probes on verbatim corpus phrases; for cast questions, locate the series roster, verify actors' clues in separate passages, accept only two-clue candidates, and never infer unseen names
+- Split independent clue chains across concurrent subagents, cap each at two probes, retire chains missing twice, and confirm both required chains before a two-clue match
+- Stop searching before most of the budget is spent; rank survivors and write a partial answer naming unconfirmed links
+- Timebox each clue to two probes, retire misses, cap survivors at three, and stop when one passage confirms two clues; answer best candidate naming unconfirmed links
+- Grep quotes literally beside dates; intersect ordinal-ranked and structured birthplace rosters with casts before biographies; copy final answers verbatim and re-grep, never normalizing spelling
+- Run independent clue chains as concurrent queries in one batched call, cap each at two candidates and one quote, and accept the first two-clue confirmation
+- After two failed probes, retire the clause; for geographic clues, expand candidate regions, intersect survivors by date and author, and stop without inventing names
+- Merge parent-generation birth and marriage clues into one era band; require every candidate to satisfy it before checking actor-level attributes
+- Treat date and quote clues as one conjunctive constraint; require a single passage containing both before extracting the answer

@@ -1238,8 +1238,6 @@ This auto-tagging feature enhances retrieval by adding another layer of domain-s
       thinkingEnabled: 'Enabled',
       thinkingDisabled: 'Disabled',
       thinkingLevelNone: 'Naive',
-      thinkingLevelAgentic: 'Agentic',
-      thinkingLevelAgenticDescription: 'Self-directed corpus exploration',
       naiveSettings: 'Naive',
       agenticSettings: 'Agentic',
       agenticTemplate: 'Agentic template',
@@ -1247,6 +1245,33 @@ This auto-tagging feature enhances retrieval by adding another layer of domain-s
         'The system template the agentic RAG agent runs with. Editing it overrides the shipped default for this chat; reset to restore it.',
       agenticTemplateTooLong: 'Template must be at most 32768 characters',
       resetToDefault: 'Reset to default',
+      thinkingLevelLow: 'Low',
+      thinkingLevelLowDescription: 'Fast responses',
+      thinkingLevelMedium: 'Medium',
+      thinkingLevelMediumDescription: 'Balanced speed & depth',
+      thinkingLevelHigh: 'High',
+      thinkingLevelHighDescription: 'Deep reasoning',
+      thinkingLevelUltra: 'Ultra',
+      thinkingLevelUltraDescription: 'Maximum cognitive effort',
+      thinkingLevelAgentic: 'react',
+      thinkingLevelAgenticDescription: 'Self-directed corpus exploration',
+      thinkingLevelPlanExplorerAuditor: 'planer-explorer-auditor',
+      thinkingLevelPlanExplorerAuditorDescription:
+        'Plans a question decomposition, then explores it under a delivery gate',
+      thinkingLevelIterative: 'IterSynth',
+      thinkingLevelIterativeDescription:
+        'Rewrites its research summary every round',
+      thinkingLevelCodex: 'coding-agent',
+      thinkingLevelCodexDescription:
+        'Delegates to a shared Codex agent that reads the knowledge base',
+      failoverModels: 'Failover models',
+      failoverModelsTip:
+        'When the primary model hits a provider error, the agentic agent switches to the next model in this list, in order.',
+      failoverModelsPrimaryLabel: 'Primary model',
+      failoverModelsNoPrimary: 'Tenant default',
+      failoverModelsEmpty:
+        'No fallback model. Add at least one so a provider failure can be survived.',
+      failoverModelsAdd: 'Add a fallback model',
       thinkingTip:
         'Thinking is disabled by default. Select Enabled to turn it on for models that support thinking mode.',
       quote: 'Show citations',

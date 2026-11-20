@@ -1,0 +1,13 @@
+# ragflow query-strategy set
+# version: 8
+# updated: 2026-11-05T07:47:14+08:00
+# origin: pass=1 batch=10
+# sha256: c6b950c829a4e47090b3ee204aee1c6708e329db34a26e515842d3e0a588c0e9
+- Split the narrative into distinct beats and issue short keyword queries per beat, batching independent queries in each retrieval call
+- When one passage lists several titles by the same author, extract every candidate string verbatim first, then choose using the clue that uniquely separates them
+- Generate spelling and diacritic variants of the requested attribute, search each, and copy the exact variant co-occurring with all clues
+- Run lexical and semantic retrieval in parallel on the same clues, then merge candidate documents by shared narrative elements before reading chunks
+- Score topic clues separately from name clues, so a topic match never eliminates a candidate before the name attribute is resolved
+- Treat asserted distances or adjacency as hard filters requiring passage support, not unverified peripheral details
+- Enumerate candidates and name variants; query each variant separately, batch remaining clues per candidate, and semantically retry zero-hit variants
+- Accept candidate only when core name and all distinguishing clues, including numeric/timing, share one passage; prefer its spelling and confirm full form separately

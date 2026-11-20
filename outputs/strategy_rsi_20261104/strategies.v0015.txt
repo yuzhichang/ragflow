@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 15
+# updated: 2026-11-05T20:34:49+08:00
+# origin: pass=2 batch=6
+# sha256: a2649e1093bfc6aa0f6e0816bfec0364807576255dc32f140504b37864910ec2
+- Order clue beats by distinctiveness, merge constraints per candidate, batch short queries, filter other clues in the resolving document, and defer new topics until the rarest clause fails
+- Run cheap lexical retrieval before semantic retrieval, cap semantic calls at one, and discard semantic hits that match only the topic
+- When one document confirms two attributes, stop expanding that candidate; after a small fixed candidate set fails, report only confirmed names
+- After two failed candidate probes, mine the resolved document's related-title list for the next lead instead of inventing names; rerank only existing candidates
+- If a non-hard numeric or timing clue remains unverifiable, leave it unresolved, answer from verified names, and rerank only existing candidates without widening
+- Pick one rarest-clause anchor; probe at most three candidates in parallel once each; accept two-clue documents, abandon failures, else report only confirmed names, no new topics
+- Treat adjacency as final verification, not a candidate filter: accept a two-attribute candidate whose document co-locates anchor and target on one page, then stop
+- When one passage lists several titles by the same author, extract every candidate verbatim, choose with the separating clue, and stop after one targeted miss without broadening
+- When a clue phrase is generic, skip semantic re-description; probe the two rarest clauses separately and require one document confirming two clues
+- When identifying an organization's members, exclude credits affiliated with publishers, contractors, or external vendors even if their names appear on multiple titles

@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 23
+# updated: 2026-11-06T10:02:14+08:00
+# origin: pass=3 batch=1
+# sha256: d8a6729c4aa2ea5b0ed0d4ee3338770651aab41ddd2f85d09a0cd9cddb3c1c35
+- Run cheap lexical before one batched semantic call; discard topic-only hits; probe coverage once and declare uncovered if nothing on-topic
+- Anchor probes on verbatim corpus phrases; for cast questions, locate the series roster, verify actors' clues in separate passages, accept only two-clue candidates, and never infer unseen names
+- Split multi-hop clues into hops; run parallel tool calls, never spawn agents; cap two probes per hop; retire only failed hops
+- Require every mandatory clause to be satisfied by quoted passages before answering; treat a two-clue match only as a candidate, never a stopping condition
+- At half budget, stop probing; require candidate-specific passages for every confirmed clue, then rank survivors and name unconfirmed links
+- Batch independent clue chains as concurrent queries, cap each at two candidates and one quote, and defer final acceptance to mandatory-clause checks
+- Grep rare quoted phrases verbatim beside both dates; treat matching passages as anchors; intersect ordinal-ranked and structured birthplace rosters with casts; copy answers verbatim and re-grep without normalizing spelling
+- Treat date and quote clues as one conjunctive constraint; require a single passage containing both before extracting the answer
+- After two failed probes retire the clause; for location clues, enumerate candidate regions per clue, probe one representative each, then intersect survivors by date and author before choosing a country
+- Extract every title listed under the same author verbatim, choose with the separating clue, confirm spelling and prepositions from source, and stop after one targeted miss

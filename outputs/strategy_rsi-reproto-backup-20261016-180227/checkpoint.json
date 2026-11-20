@@ -1,0 +1,203 @@
+{
+  "phase": "train",
+  "version": 1,
+  "items": [
+    {
+      "id": "s0001",
+      "text": "When a clue describes a relational trope, search broadly across genres rather than assuming romance-only",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.1.0"
+      ]
+    },
+    {
+      "id": "s0002",
+      "text": "When clues include relocation, early writing age, and a degree, prioritize famous authors with documented biographies before niche matches",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.1.1"
+      ]
+    },
+    {
+      "id": "s0005",
+      "text": "Always use retrieval tools to locate and read the exact source document before quoting; never answer from background knowledge",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.3.0"
+      ]
+    },
+    {
+      "id": "s0006",
+      "text": "When a question specifies source date and publication, treat exact wording as success criterion and verify it verbatim against the passage",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.3.1"
+      ]
+    },
+    {
+      "id": "s0007",
+      "text": "When retrieved sources conflict on a key fact, investigate both rather than defaulting to the most familiar source",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.4.0"
+      ]
+    },
+    {
+      "id": "s0009",
+      "text": "After locating a candidate publication title in a snippet, re-search the corpus verbatim to verify exact wording before answering",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.6.0"
+      ]
+    },
+    {
+      "id": "s0010",
+      "text": "Once a primary entity and its affiliate are confirmed, pivot to a related entity linked by family or professional ties and search their attributes jointly",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.6.1"
+      ]
+    },
+    {
+      "id": "s0011",
+      "text": "Before finalizing, verify every distinctive claim against at least one independent source; persist only when multiple clues align",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.7.0"
+      ]
+    },
+    {
+      "id": "s0013",
+      "text": "When initial clue matches point to one genre, semantically describe the full combined plot in one query before drilling into specifics",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.8.0"
+      ]
+    },
+    {
+      "id": "s0003",
+      "text": "When asked for a specific name, search famous literary characters whose role is replaced by a protagonist in classic novels",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 1,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.2.0"
+      ]
+    },
+    {
+      "id": "s0004",
+      "text": "For author-biographical clues about a pioneer parent, search the author's own biography and family page before inferring from plot",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 1,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.2.1"
+      ]
+    },
+    {
+      "id": "s0008",
+      "text": "Fully read all high-relevance semantic search results before drawing conclusions, even when lexical results seem more authoritative",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 1,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.4.1"
+      ]
+    },
+    {
+      "id": "s0012",
+      "text": "When one regional hypothesis stalls on a key clue, pivot early to alternative regions rather than deepening the same branch",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 1,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.7.1"
+      ]
+    },
+    {
+      "id": "s0014",
+      "text": "Before committing to a hypothesis, run a sanity-check search for the presumed answer's title or author to falsify the guess",
+      "created_by": "merge",
+      "ts": "2026-10-16T12:22:37+08:00",
+      "total_score": 1,
+      "rating_count": 1,
+      "source_ids": [
+        "t1.0.8.1"
+      ]
+    }
+  ],
+  "active_ids": [
+    "s0001",
+    "s0002",
+    "s0005",
+    "s0006",
+    "s0007",
+    "s0009",
+    "s0010",
+    "s0011",
+    "s0013",
+    "s0003"
+  ],
+  "items_sha256": "fe1c6c9fdbacde5fd34e982e7185afadf51857ea88c1927e59790649f5da2735",
+  "pass": 1,
+  "next_batch_index": 4,
+  "pass_sample": null,
+  "committed_attempts": [
+    "b093bf06-c356-4c81-82eb-f23e9d8f9ed3",
+    "70601514-5911-41c9-92af-a6cef5472845",
+    "26c057d6-4d18-4bac-bc8e-c57e30e8c3ff",
+    "f04fadc8-29fe-4607-95e9-64eba4a6b824"
+  ],
+  "eval": {
+    "eval_id": "",
+    "version": 0,
+    "next_index": 0,
+    "last_committed": null,
+    "prev_eval_id": "",
+    "prev_accuracy": null
+  },
+  "evaluated": false,
+  "seed": 20261015,
+  "next_id": 14,
+  "strategies_file": "strategies.v0001.txt",
+  "strategies_sha256": "e256edf0bb67c11be8f4a99f5402c9f0ef761a8260051d40131299a641529c61",
+  "trainset_sha256": "1f4d9e373cf2bd2e241082d2d5409bc78531d4c96e80a7211e9b03fe2dc76ec1",
+  "selected_ids_hash": "344daa097298df24aab8389889dfc6c95b6044d94e5a9d31d1ea9b22453c7409",
+  "batch_size": 10,
+  "reasoning": 8,
+  "chat_id": "a476f195dd244637b5d7f09bdc438e4a",
+  "judge_chat_id": "7289513c907011f18a8527a64e461315",
+  "merge_chat_id": "7289513c907011f18a8527a64e461315",
+  "prompt_fingerprint": "f7918eecf4f860fd75299d762e1b7e4052f392d600cfda68e8ea11e036b973db"
+}

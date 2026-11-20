@@ -1,0 +1,38 @@
+{
+  "ragflow_api_key": "",
+  "backend": {
+    "scheme": "http",
+    "host": "127.0.0.1",
+    "port": 9380
+  },
+  "chat_id": "a476f195dd244637b5d7f09bdc438e4a",
+  "judge_chat_id": "7289513c907011f18a8527a64e461315",
+  "merge_chat_id": "7289513c907011f18a8527a64e461315",
+  "reasoning": 8,
+  "batch_size": 10,
+  "max_passes": 0,
+  "concurrency": 4,
+  "target_accuracy": 100,
+  "min_delta": 0.5,
+  "min_coverage": 0.9,
+  "eval_every_k_passes": 10,
+  "seed": 20261015,
+  "request_timeout": 900,
+  "retry_initial_seconds": 1,
+  "retry_max_seconds": 60,
+  "retry_jitter": 0.3,
+  "retry_quota_seconds": 600,
+  "require_mode8": true,
+  "max_strategies": 10,
+  "max_lessons": 2,
+  "max_strategy_words": 30,
+  "dataset": {
+    "questions_path": "/home/zhichyu/Downloads/data/browsecomp-plus/questions.jsonl",
+    "corpus_path": ""
+  },
+  "benchmark_outputs_dir": "",
+  "trainset": "train/browsecomp_top150.jsonl",
+  "strategies_file": "strategies.v%04d.txt",
+  "output_dir": "outputs/strategy_rsi",
+  "resume": true
+}

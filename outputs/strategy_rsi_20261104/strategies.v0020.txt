@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 20
+# updated: 2026-11-06T05:56:15+08:00
+# origin: pass=2 batch=13
+# sha256: 9f800d1ac15d4d3dc7b1d179cca0c8e6ba8ddca0c33d3870a513ecf5d611594b
+- Convert each relational clue into one concrete title name, query that title's document, then return to the candidate
+- Run cheap lexical retrieval before semantic retrieval, batch clue clusters into one parallel query, cap semantic calls at one, discard topic-only hits, and stop when one chunk confirms two clues
+- Batch independent clue probes into one parallel multi-query call; if subagents are unavailable, run concurrently, and confirm both required chains before a two-clue match
+- Rank retrieved candidates above memory, enumerate the rarest clause, expand until the final link is confirmed, then attribute and stop; after two failed probes give a named partial
+- Stop searching before most of the budget is spent; rank survivors and write a partial answer naming unconfirmed links
+- After two failed literal probes, mine the confirmed document's related-title list for the next lead instead of inventing names; rerank only existing candidates
+- Grep candidate quotes literally beside dates; for ordinal clues, retrieve structured ranked lists, intersect positions numerically, and never paraphrase wording
+- Confirm each multi-hop link in its own passage; cap clue chains at two probes, retire misses, and require one passage for final attribution
+- Send independent clue chains to parallel subagents with two-candidate caps, one quote each, deadlines; rank by confirmed clues and accept the first two-clue confirmation
+- Enumerate a season's episode titles from one structural index, then filter by the naming clue before plot details

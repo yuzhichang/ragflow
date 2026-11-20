@@ -164,10 +164,26 @@ export function NextMessageInput({
     };
   }, [isResizing]);
 
-  // Level 5 is not a deeper step on the same ladder: the backend hands it to
-  // the agentic RAG agent, which runs its own retrieval instead of the
-  // pipeline's.
+  // Levels 5–8 are not deeper steps on the same ladder: the backend hands each
+  // to a different engine that runs its own retrieval instead of the pipeline's.
+  // They sort first as the highest-effort choices: level 8 (coding-agent, a full
+  // external Codex agent), 7 (IterSynth), 6 (planer-explorer-auditor), 5 (react).
   const thinkingOptions = [
+    {
+      label: t('chat.thinkingLevelCodex'),
+      value: '8',
+      description: t('chat.thinkingLevelCodexDescription'),
+    },
+    {
+      label: t('chat.thinkingLevelIterative'),
+      value: '7',
+      description: t('chat.thinkingLevelIterativeDescription'),
+    },
+    {
+      label: t('chat.thinkingLevelPlanExplorerAuditor'),
+      value: '6',
+      description: t('chat.thinkingLevelPlanExplorerAuditorDescription'),
+    },
     {
       label: t('chat.thinkingLevelAgentic'),
       value: '5',
@@ -177,11 +193,10 @@ export function NextMessageInput({
   ];
 
   const handleThinkingChange = useCallback((value: string) => {
-    setThinkingLevel(
-      value === ThinkingMode.Agentic
-        ? ThinkingMode.Agentic
-        : ThinkingMode.Naive,
-    );
+    // The selector's option values are the ThinkingMode constants; storage
+    // sanitizes anything else on read, so the persisted value can pass
+    // through unchanged here.
+    setThinkingLevel(value as ThinkingMode);
   }, []);
 
   const handleInternetSelect = useCallback(() => {

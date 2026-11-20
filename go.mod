@@ -75,6 +75,7 @@ require (
 	github.com/yfedoseev/office_oxide/go v0.1.17
 	github.com/yfedoseev/pdf_oxide/go v0.3.78
 	github.com/yuin/goldmark v1.7.1
+	github.com/zealbase/codex-app-server-go v0.0.0-00010101000000-000000000000
 	github.com/zeebo/xxh3 v1.0.2
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/otel v1.47.0
@@ -138,6 +139,8 @@ require (
 	github.com/clbanning/mxj/v2 v2.7.0 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
+	github.com/creachadair/jrpc2 v1.3.5 // indirect
+	github.com/creachadair/mds v0.26.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dlclark/regexp2 v1.10.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
@@ -265,8 +268,13 @@ require (
 	modernc.org/mathutil v1.5.0 // indirect
 	modernc.org/memory v1.5.0 // indirect
 	modernc.org/sqlite v1.23.1 // indirect
+	nhooyr.io/websocket v1.8.17 // indirect
 )
 
 replace github.com/infiniflow/infinity-go-sdk => github.com/infiniflow/infinity/go v0.0.0-20261105024148-2fffa346354f
 
 replace github.com/AkmalOt/gomsg => github.com/infiniflow/gomsg v0.0.0-20260407083308-985c3a1a76b7
+
+// codex-app-server-go is checked out at github.com/yuzhichang/codex-app-server-go
+// (branch feat/schema-alignment-and-coverage); the upstream path is not yet published.
+replace github.com/zealbase/codex-app-server-go => github.com/yuzhichang/codex-app-server-go v0.0.0-20261103032107-637bf972b5d9

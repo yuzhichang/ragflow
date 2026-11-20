@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 17
+# updated: 2026-11-06T01:43:52+08:00
+# origin: pass=2 batch=10
+# sha256: ec7dc345cfbb87327a41daffdaf0dab6c55cc026554772e9d1c15ff47846687a
+- Order clues by distinctiveness, merge constraints per candidate, and resolve multi-hop chains link by link from the rarest literal term, confirming each hop before the next topic
+- Run cheap lexical retrieval before semantic retrieval, batch clue clusters into one parallel query, cap semantic calls at one, discard topic-only hits, and stop when one chunk confirms two clues
+- Route independent clue pairs to parallel subagents in round one; accept the first two-clue confirmation and read its document fully for totals, then stop
+- Do not answer while hard clues remain unverified; widen through resolved-document leads, but keep confirmed names, state the unresolved link, and stop if one targeted link resists
+- After two failed candidate probes, mine the resolved document's related-title list for the next lead instead of inventing names; rerank only existing candidates
+- Treat adjacency as final verification, not a candidate filter: accept a two-attribute candidate whose document co-locates anchor and target on one page, then stop
+- Time-box candidate generation to two rounds; probe at most three candidates once; anchor on rarest verbatim clue, read that document, accept two co-located attributes, stop at two hard clues
+- When a clue phrase is generic, skip semantic re-description; probe the two rarest clauses separately and require one document confirming two clues
+- Route independent clue chains to parallel subagents; each single-clue probe returns at most two candidates with a confirming quote, then join and stop at two hard clues
+- When one passage lists several titles by the same author, extract every candidate verbatim, choose with the separating clue, and stop after one targeted miss without broadening

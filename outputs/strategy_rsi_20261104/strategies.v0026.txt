@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 26
+# updated: 2026-11-06T15:12:40+08:00
+# origin: pass=3 batch=4
+# sha256: 91f8e496c1730831777511db55e60fcc29044a907c83d8b1285898909dec9561
+- When a semantic sweep returns category-off hits, re-describe the target by artifact form and era instead of rephrasing the concept, and rerun once
+- Cap total probes across all clues, launch independent chains concurrently in one wave, and retire failed clues instead of re-reading
+- Set a global two-wave budget; batch two hops per wave, start with most discriminative clause, stop when one candidate meets all mandatory clauses, name gaps, pivot once, never re-query empties
+- Split independent clue chains across parallel subagents with fixed budgets, require at most two candidates and one quote each, and accept only a candidate passing every clause
+- Require proof only for distinguishing clauses; once one candidate covers them, answer and name any unconfirmed corroborating clause
+- Stop when one passage satisfies the answer and every clue clause, or after a fixed probe count; list unverified clauses as gaps
+- Build a synonym family per clue before searching, and probe one representative of each family in parallel rather than committing to a single literal term
+- Never enumerate candidate rosters; keep only the single candidate satisfying every clause and discard the rest once one confirming passage exists
+- For verbatim-text questions, prefer canonical or audio-derived sources; verify wording, line boundaries, and numbering in a second passage, never filling gaps from memory
+- Accept birth-year and birthplace facts from separate passages naming the same relative; reserve single-passage quotation for the answer's own wording

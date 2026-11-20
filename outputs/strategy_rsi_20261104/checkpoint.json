@@ -1,0 +1,287 @@
+{
+  "phase": "train",
+  "version": 27,
+  "items": [
+    {
+      "id": "s0006",
+      "text": "After one semantic and one keyword sweep per clue, stop rephrasing; convert date constraints into month-day and year windows and search those",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 65,
+      "rating_count": 89,
+      "source_ids": [
+        "s0006",
+        "x3.4.1.0"
+      ]
+    },
+    {
+      "id": "s0005",
+      "text": "Cap total probes across all clues, launch independent chains concurrently in one wave, and retire failed clues instead of re-reading",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 44,
+      "rating_count": 89,
+      "source_ids": [
+        "s0005"
+      ]
+    },
+    {
+      "id": "s0002",
+      "text": "Require proof only for distinguishing clauses; once one candidate covers them, answer and name any unconfirmed corroborating clause",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 26,
+      "rating_count": 89,
+      "source_ids": [
+        "s0002"
+      ]
+    },
+    {
+      "id": "s0004",
+      "text": "Launch clue chains in one parallel wave; pin the most discriminative numeric clause before dependent hops, verify separating clauses, accept one passage, name gaps, and retire after two misses",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 25,
+      "rating_count": 83,
+      "source_ids": [
+        "s0004",
+        "x3.4.5.0",
+        "x3.4.9.0",
+        "x3.4.9.1"
+      ]
+    },
+    {
+      "id": "s0014",
+      "text": "Give each parallel subagent three probes; require one candidate plus one verbatim quote, accepting only candidates satisfying the discriminating date and relationship clauses together",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 25,
+      "rating_count": 53,
+      "source_ids": [
+        "s0014",
+        "x3.4.1.1"
+      ]
+    },
+    {
+      "id": "s0009",
+      "text": "Track clause-to-passage coverage separately; accept when discriminative clauses pin one candidate and remaining clauses each have confirming passages",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 15,
+      "rating_count": 61,
+      "source_ids": [
+        "s0009",
+        "x3.4.0.0"
+      ]
+    },
+    {
+      "id": "s0003",
+      "text": "Never enumerate candidate rosters; keep only the single candidate satisfying every clause and discard the rest once one confirming passage exists",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 11,
+      "rating_count": 89,
+      "source_ids": [
+        "s0003"
+      ]
+    },
+    {
+      "id": "s0013",
+      "text": "Launch clue chains in one parallel wave; cap each clue at two synonym probes per mode, probe one representative per family, then pivot to entity pages and retire empties",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 6,
+      "rating_count": 65,
+      "source_ids": [
+        "s0013",
+        "x3.4.0.1",
+        "x3.4.2.0",
+        "x3.4.5.1"
+      ]
+    },
+    {
+      "id": "s0018",
+      "text": "Accept birth-year and birthplace facts from separate passages naming the same relative; reserve single-passage quotation for the answer's own wording",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 4,
+      "rating_count": 26,
+      "source_ids": [
+        "s0018"
+      ]
+    },
+    {
+      "id": "s0012",
+      "text": "For verbatim-text questions, prefer canonical or audio-derived sources; verify wording, line boundaries, and numbering in a second passage, never filling gaps from memory",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 3,
+      "rating_count": 15,
+      "source_ids": [
+        "s0012"
+      ]
+    },
+    {
+      "id": "s0011",
+      "text": "For nth-line questions, count the source's own printed line breaks including parentheticals, never reflowed text; otherwise drop stage directions and verify with a second transcription",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 2,
+      "rating_count": 1,
+      "source_ids": [
+        "s0011"
+      ]
+    },
+    {
+      "id": "s0016",
+      "text": "Bootstrap the entity from biography clues in one document, then validate discography clues only after it names the artist",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 1,
+      "rating_count": 5,
+      "source_ids": [
+        "s0016"
+      ]
+    },
+    {
+      "id": "s0019",
+      "text": "For full birth-name clues, quote the field explicitly labeled birth name, not a narrative lead sentence",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 1,
+      "rating_count": 1,
+      "source_ids": [
+        "s0019"
+      ]
+    },
+    {
+      "id": "s0001",
+      "text": "Extract every title listed under the same author verbatim, choose with the separating clue, confirm spelling and prepositions from source, and stop after one targeted miss",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": 0,
+      "rating_count": 58,
+      "source_ids": [
+        "s0001"
+      ]
+    },
+    {
+      "id": "s0007",
+      "text": "When identifying an organization's members, exclude credits affiliated with publishers, contractors, or external vendors even if their names appear on multiple titles",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": -1,
+      "rating_count": 20,
+      "source_ids": [
+        "s0007"
+      ]
+    },
+    {
+      "id": "s0017",
+      "text": "Merge parent-generation birth and marriage clues into one era band; require every candidate to satisfy it before checking actor-level attributes",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": -2,
+      "rating_count": 9,
+      "source_ids": [
+        "s0017"
+      ]
+    },
+    {
+      "id": "s0015",
+      "text": "Enumerate a season's episode titles from one structural index, then filter by the naming clue before plot details",
+      "created_by": "merge",
+      "ts": "2026-11-06T16:40:47+08:00",
+      "total_score": -4,
+      "rating_count": 5,
+      "source_ids": [
+        "s0015"
+      ]
+    }
+  ],
+  "active_ids": [
+    "s0006",
+    "s0005",
+    "s0002",
+    "s0004",
+    "s0014",
+    "s0009",
+    "s0003",
+    "s0013",
+    "s0018",
+    "s0012"
+  ],
+  "items_sha256": "dccd2382053831da85a30380dfc0c3d2d929ca77160d88feaee60e7fd9970032",
+  "pass": 4,
+  "next_batch_index": 1,
+  "pass_sample": null,
+  "committed_attempts": [
+    "23276886-dc96-4e6d-bdd0-8df62d8b2b65",
+    "8bdd7dfc-d8c9-42dc-94e6-65875624ed17",
+    "76a28d86-5ff5-4d05-8fec-698cb28325bd",
+    "904cd144-ceee-4f58-8cf8-e4ba7e0fd558",
+    "14eb0238-0ed2-4c45-b4bb-e5f939d63d82",
+    "1f8ed86d-76ec-4713-9c67-99bf2f73a900",
+    "087b11af-3259-4c9c-9388-047fbcd3a1be",
+    "88d25521-d961-456b-8a2b-d6d86fba3b7d",
+    "bed46578-06f9-436a-a155-71ad148c2679",
+    "674b55a4-99b2-4ee1-9757-11f672d83b3c",
+    "745a0fcc-c3ff-4422-ba24-6c87f1bae5e7",
+    "86c6694a-18f5-4761-9a12-fa52a6590aea",
+    "e9b963e6-74d6-4386-b03c-68c009988e78",
+    "cc811bb7-45ae-4d16-bcad-2a150c6a5912",
+    "79883cff-3535-4981-a514-d99e2aec83da",
+    "7f8cc812-ef67-4fef-a42a-c0e6614b1326",
+    "1a80b4a1-3fea-4286-bc70-7cc04f7020c0",
+    "65f6dbf3-339b-436d-9344-ff06568aa0ce",
+    "0533284d-efb0-4176-969a-5534759f1a78",
+    "7e324cf6-0e62-4e21-9f56-12d08f8e0ca3",
+    "344b7f40-ae50-4c76-aeaa-94809dd34dc4",
+    "90efd48b-c745-4510-ae37-a831d07709a8",
+    "f5135278-c3cb-4ca3-bfd9-0bd475aab954",
+    "308d9c5f-428d-4b19-886b-da29e81dc68a",
+    "474f2bd4-d3c0-4efb-9071-258baad751d4",
+    "cf062b5f-1120-444f-a97a-b7a987538c70",
+    "7501587d-7c47-4b08-ab46-18d7ee062f0e",
+    "04ba91e3-9110-472c-b75d-d05fec0e7a3c",
+    "0c277c69-9ded-4009-9d54-19dac878f203",
+    "8f2148b7-e3fb-47da-9467-9c78aa8c3e90",
+    "1433023d-c40b-4bb0-940e-c10a5d65b713",
+    "67b3c8c8-c21f-4609-a23c-7c96f8034c4b",
+    "28cb4cd6-7732-49f8-a6d9-c87567a6c272",
+    "0b0d56c0-e373-4ca1-9ede-bd5b40137e4c",
+    "970b4903-8af6-4cd0-9555-1cc071447922",
+    "25d561f0-8b72-4ccf-ae0c-c899f8e00d45",
+    "7d442a66-6b5f-45c9-8f4d-b6b919a83814",
+    "a4d2b9f2-75fd-412d-8ea0-68f388b8ee5a",
+    "3a2058f0-d466-497b-a930-390e36c8535a",
+    "b60a6ee5-403e-43bc-9732-2d13f996461c",
+    "92d50601-8fb9-4b6a-ba8b-f815e6bdf5c0",
+    "b82c0cb4-d0b1-43d2-9839-7c48e110b625",
+    "9c525315-4573-4bca-833c-3e4eb734bbce",
+    "70da3514-bab9-4c93-b62a-9e62b8d7b67f",
+    "739ca2ce-58de-4063-b82d-46d7ebb0888f",
+    "9f5060d8-a7d5-40f2-87e8-bc24a5d003e5"
+  ],
+  "eval": {
+    "eval_id": "",
+    "version": 0,
+    "next_index": 0,
+    "last_committed": null,
+    "prev_eval_id": "",
+    "prev_accuracy": null
+  },
+  "evaluated": false,
+  "seed": 20261015,
+  "next_id": 19,
+  "strategies_file": "strategies.v0027.txt",
+  "strategies_sha256": "93c040f2bf5f38f1614a82528eba4ac2a9562d4a2e73c6322a5cc09e53a2342c",
+  "trainset_sha256": "1f4d9e373cf2bd2e241082d2d5409bc78531d4c96e80a7211e9b03fe2dc76ec1",
+  "selected_ids_hash": "344daa097298df24aab8389889dfc6c95b6044d94e5a9d31d1ea9b22453c7409",
+  "batch_size": 10,
+  "reasoning": 8,
+  "chat_id": "a476f195dd244637b5d7f09bdc438e4a",
+  "judge_chat_id": "7289513c907011f18a8527a64e461315",
+  "merge_chat_id": "7289513c907011f18a8527a64e461315",
+  "prompt_fingerprint": "f6e0d6ac333eaf6fdedea11afe430fd4d9c0cedf7e28aba8ac7ba2d469573aac"
+}

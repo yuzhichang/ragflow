@@ -1,0 +1,15 @@
+# ragflow query-strategy set
+# version: 21
+# updated: 2026-11-06T07:07:43+08:00
+# origin: pass=2 batch=14
+# sha256: 793c6bfa0942c1d51f5441516e06340ff83a334abf25cd05f47609123d2ffb00
+- Run cheap lexical retrieval before semantic retrieval, batch clue clusters into one parallel query, cap semantic calls at one, discard topic-only hits, and stop when one chunk confirms two clues
+- Anchor probes on distinctive literal phrases, genres, and quoted titles instead of inventing concrete title names to chase relationships
+- Batch independent clue probes into one parallel multi-query call; if subagents are unavailable, run concurrently, and confirm both required chains before a two-clue match
+- Stop searching before most of the budget is spent; rank survivors and write a partial answer naming unconfirmed links
+- Timebox each clue to two probes, retire misses, cap survivors at three, and stop when one passage confirms two clues; answer best candidate naming unconfirmed links
+- Grep candidate quotes literally beside dates; for ordinal clues, retrieve structured ranked lists, intersect positions numerically, and never paraphrase wording
+- Confirm each multi-hop link in its own passage; cap clue chains at two probes, retire misses, and require one passage for final attribution
+- After two failed probes, retire the clause, rank survivors by confirmed quotes, and stop without expanding or inventing names
+- Run independent clue chains as concurrent queries in one batched call, cap each at two candidates and one quote, and accept the first two-clue confirmation
+- Bootstrap the entity from biography clues in one document, then validate discography clues only after it names the artist

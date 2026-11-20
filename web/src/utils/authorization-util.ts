@@ -84,12 +84,12 @@ const storage = {
   setThinkingLevel: (level: string) => {
     localStorage.setItem(ThinkingLevel, level);
   },
-  // Only Naive (0) and Agentic (5) are offered; a level persisted by a
-  // since-removed option falls back to the Naive default rather than reaching
-  // the request as NaN.
+  // Only the numeric levels the selector offers (0, 5-8) are accepted; a
+  // value persisted by a since-removed mode falls back to the Naive default
+  // rather than reaching the request as NaN.
   getThinkingLevel: (): string => {
     const level = localStorage.getItem(ThinkingLevel);
-    return level === '0' || level === '5' ? level : '0';
+    return /^[05-8]$/.test(level ?? '') ? level : '0';
   },
 };
 

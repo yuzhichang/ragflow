@@ -1,0 +1,14 @@
+# ragflow query-strategy set
+# version: 2
+# updated: 2026-11-04T21:47:38+08:00
+# origin: pass=1 batch=2
+# sha256: f1a4e559f6942571c64af0708cb89b3f03c172ad22664e7214cd7b18b9707105
+- Score candidate passages by distinct clues matched, prioritizing exact lexical overlap over inferred biographical consistency
+- Accept a well-supported candidate matching distinguishing clues even when peripheral biographical details cannot be verified
+- Query the requested attribute as a standalone phrase with spelling variants, then copy the answer string exactly as it appears in a retrieved passage
+- Distinguish the requested attribute from adjacent claims about the same entity before answering
+- Split the narrative into distinct beats and issue short keyword queries per beat, batching independent queries in each retrieval call
+- For a rare-trait clue, first enumerate entities exhibiting the trait, then test the remaining clues against each candidate
+- Treat entity identification and attribute rendering as separate checks, and verify that the final answer string appears verbatim in a source passage
+- Run lexical and semantic retrieval in parallel on the same clues, then merge candidate documents by shared narrative elements before reading chunks
+- During candidate verification, batch one call per surviving candidate that covers all remaining clues together rather than separate clue-wide searches

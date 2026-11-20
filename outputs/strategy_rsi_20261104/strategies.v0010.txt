@@ -1,0 +1,14 @@
+# ragflow query-strategy set
+# version: 10
+# updated: 2026-11-05T11:29:04+08:00
+# origin: pass=1 batch=13
+# sha256: 7d2a4cae41b074c35065573e36731b351a16cbcd3ec2c650f6f719b19e7de157
+- Split the narrative into distinct beats and issue short keyword queries per beat, batching independent queries in each retrieval call
+- When one passage lists several titles by the same author, extract every candidate string verbatim first, then choose using the clue that uniquely separates them
+- Run lexical and semantic retrieval in parallel on the same clues, then merge candidate documents by shared narrative elements before reading chunks
+- For a name attribute, extract every token of the candidate spelling and search each token separately; never assert a variant absent without a literal search
+- Anchor first on the most distinctive quantitative clue, because topic matches are too broad to disambiguate titles
+- Treat asserted distances or adjacency as hard filters requiring passage support, not unverified peripheral details
+- Split the hunt into source-work and developer-catalog beats; accept a candidate once each beat's strongest clue is confirmed somewhere, not all in one passage
+- When identifying an organization's members, exclude credits affiliated with publishers, contractors, or external vendors even if their names appear on multiple titles
+- If a non-hard numeric or timing clue remains unverifiable, leave it unresolved and answer from verified names without widening candidates
